@@ -2,6 +2,7 @@
 package organizer
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -10,6 +11,7 @@ import (
 	"github.com/f2e/f2e/internal/application/port"
 	"github.com/f2e/f2e/internal/domain/f2e"
 	"github.com/f2e/f2e/internal/platform/config"
+	"io"
 )
 
 type Service struct {
@@ -20,16 +22,47 @@ type Service struct {
 
 func hash(s string) string { x := sha256.Sum256([]byte(s)); return hex.EncodeToString(x[:]) }
 func (s Service) Jobs(ctx context.Context, references []f2e.FileReference) ([]f2e.ChunkJob, error) {
+	files := make([]f2e.FileRequest, len(references))
+	for i, reference := range references {
+		files[i] = f2e.FileRequest{Bucket: reference.Bucket, Key: reference.Key, DataType: f2e.DataTypeFixedWidth}
+	}
+	return s.Plan(ctx, f2e.OrganizerRequest{SchemaVersion: f2e.SchemaVersion, Files: files})
+}
+
+// Plan converts the explicit organizer contract into explicit worker jobs.
+func (s Service) Plan(ctx context.Context, request f2e.OrganizerRequest) ([]f2e.ChunkJob, error) {
+	if request.SchemaVersion != f2e.SchemaVersion || len(request.Files) == 0 {
+		return nil, fmt.Errorf("invalid organizer request")
+	}
 	var jobs []f2e.ChunkJob
-	for _, reference := range references {
-		size, etag, e := s.Store.Head(ctx, reference.Bucket, reference.Key)
+	for _, file := range request.Files {
+		if file.Bucket == "" || file.Key == "" || !validType(file.DataType) || (file.Options.BypassJSONValidation && file.DataType != f2e.DataTypeJSONL && file.DataType != f2e.DataTypeNDJSON) {
+			return nil, fmt.Errorf("invalid file request")
+		}
+		size, etag, e := s.Store.Head(ctx, file.Bucket, file.Key)
 		if e != nil {
-			return nil, fmt.Errorf("head %s/%s: %w", reference.Bucket, reference.Key, e)
+			return nil, fmt.Errorf("head %s/%s: %w", file.Bucket, file.Key, e)
+		}
+		if file.MaxRecordLengthBytes > 0 && (file.DataType == f2e.DataTypeJSONL || file.DataType == f2e.DataTypeNDJSON || file.DataType == f2e.DataTypeText) {
+			planned, err := s.variableJobs(ctx, file, size, etag)
+			if err != nil {
+				return nil, err
+			}
+			jobs = append(jobs, planned...)
+			continue
+		}
+		if file.DataType != f2e.DataTypeFixedWidth {
+			if size == 0 {
+				return nil, fmt.Errorf("empty object")
+			}
+			fileID := hash(file.Bucket + "/" + file.Key + "/" + etag)
+			jobs = append(jobs, f2e.ChunkJob{SchemaVersion: f2e.SchemaVersion, JobID: hash(fileID), FileID: fileID, ChunkID: "00000001", Bucket: file.Bucket, Key: file.Key, ETag: etag, RecordCount: 1, StartByte: 0, EndByteInclusive: size - 1, MaxRecordLengthBytes: file.MaxRecordLengthBytes, DataType: file.DataType, Options: file.Options})
+			continue
 		}
 		if size == 0 || size%s.safeLen() != 0 {
 			return nil, fmt.Errorf("invalid fixed-width object size %d", size)
 		}
-		fileID := hash(reference.Bucket + "/" + reference.Key + "/" + etag)
+		fileID := hash(file.Bucket + "/" + file.Key + "/" + etag)
 		total := size / s.safeLen()
 		for start, chunk := int64(0), int64(1); start < total; start, chunk = start+int64(s.Config.RecordsPerChunk), chunk+1 {
 			count := int64(s.Config.RecordsPerChunk)
@@ -37,10 +70,62 @@ func (s Service) Jobs(ctx context.Context, references []f2e.FileReference) ([]f2
 				count = total - start
 			}
 			startByte := start * s.safeLen()
-			jobs = append(jobs, f2e.ChunkJob{SchemaVersion: f2e.SchemaVersion, JobID: hash(fileID), FileID: fileID, ChunkID: fmt.Sprintf("%08d", chunk), Bucket: reference.Bucket, Key: reference.Key, ETag: etag, StartRecord: start, RecordCount: count, RecordLengthBytes: s.safeLen(), StartByte: startByte, EndByteInclusive: startByte + count*s.safeLen() - 1})
+			jobs = append(jobs, f2e.ChunkJob{SchemaVersion: f2e.SchemaVersion, JobID: hash(fileID), FileID: fileID, ChunkID: fmt.Sprintf("%08d", chunk), Bucket: file.Bucket, Key: file.Key, ETag: etag, StartRecord: start, RecordCount: count, RecordLengthBytes: s.safeLen(), StartByte: startByte, EndByteInclusive: startByte + count*s.safeLen() - 1, DataType: file.DataType, Options: file.Options})
 		}
 	}
 	return jobs, nil
+}
+
+// variableJobs divides a newline-delimited object into nominal ranges. Each
+// range is extended only far enough to finish the record crossing its end.
+func (s Service) variableJobs(ctx context.Context, file f2e.FileRequest, size int64, etag string) ([]f2e.ChunkJob, error) {
+	if size == 0 {
+		return nil, fmt.Errorf("empty object")
+	}
+	if file.MaxRecordLengthBytes < 1 {
+		return nil, fmt.Errorf("invalid maximum record length")
+	}
+	nominalSize := int64(s.Config.RecordsPerChunk) * file.MaxRecordLengthBytes
+	if nominalSize < file.MaxRecordLengthBytes {
+		return nil, fmt.Errorf("variable chunk size overflow")
+	}
+	fileID := hash(file.Bucket + "/" + file.Key + "/" + etag)
+	var jobs []f2e.ChunkJob
+	for start, chunk := int64(0), int64(1); start < size; start, chunk = start+nominalSize, chunk+1 {
+		ownedEnd := start + nominalSize - 1
+		if ownedEnd >= size {
+			ownedEnd = size - 1
+		}
+		padding := int64(0)
+		if ownedEnd < size-1 {
+			lookEnd := ownedEnd + file.MaxRecordLengthBytes
+			if lookEnd >= size {
+				lookEnd = size - 1
+			}
+			r, err := s.Store.GetRange(ctx, file.Bucket, file.Key, ownedEnd+1, lookEnd)
+			if err != nil {
+				return nil, fmt.Errorf("read variable-record padding: %w", err)
+			}
+			data, err := io.ReadAll(r)
+			closeErr := r.Close()
+			if err != nil {
+				return nil, err
+			}
+			if closeErr != nil {
+				return nil, closeErr
+			}
+			at := bytes.IndexByte(data, '\n')
+			if at < 0 {
+				return nil, fmt.Errorf("record after byte %d exceeds maxRecordLengthBytes %d", ownedEnd, file.MaxRecordLengthBytes)
+			}
+			padding = int64(at + 1)
+		}
+		jobs = append(jobs, f2e.ChunkJob{SchemaVersion: f2e.SchemaVersion, JobID: hash(fileID), FileID: fileID, ChunkID: fmt.Sprintf("%08d", chunk), Bucket: file.Bucket, Key: file.Key, ETag: etag, StartByte: start, EndByteInclusive: ownedEnd + padding, MaxRecordLengthBytes: file.MaxRecordLengthBytes, TrailingPaddingBytes: padding, DataType: file.DataType, Options: file.Options})
+	}
+	return jobs, nil
+}
+func validType(t f2e.DataType) bool {
+	return t == f2e.DataTypeFixedWidth || t == f2e.DataTypeJSONL || t == f2e.DataTypeNDJSON || t == f2e.DataTypeCSV || t == f2e.DataTypeBinary || t == f2e.DataTypeText
 }
 func (s Service) safeLen() int64 { return int64(s.Config.RecordLength) }
 func (s Service) Publish(ctx context.Context, jobs []f2e.ChunkJob) error {
