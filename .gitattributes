@@ -1,0 +1,2 @@
+# Scripts mounted and executed inside Linux containers must retain LF endings.
+automacao/localstack/*.sh text eol=lf

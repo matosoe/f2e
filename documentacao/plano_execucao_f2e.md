@@ -39,9 +39,6 @@ Este plano foi escrito para execução sequencial por agentes no VS Code usando 
 
 ```text
 .
-├── cmd/
-│   ├── organizer/
-│   └── worker/
 ├── internal/
 │   ├── contracts/
 │   ├── organizer/
@@ -66,6 +63,12 @@ Este plano foi escrito para execução sequencial por agentes no VS Code usando 
 │   ├── validar-fluxo.sh
 │   └── parar-ambiente.sh
 ├── go.mod
+├── go.work
+├── lambdas/
+│   ├── cmd/
+│   │   ├── organizer/
+│   │   └── worker/
+│   └── go.mod
 └── README.md
 ```
 
@@ -147,7 +150,7 @@ O corpo individual deve respeitar o limite do SQS. O publisher deve formar lotes
 3. Criar configuração central por variáveis de ambiente: endpoint AWS, região, nomes das filas, bucket, tamanho do registro, registros por chunk, batch e concorrência.
 4. Criar `documentacao/contratos.md` com os contratos versionados do item 4 e exemplos completos de envelopes.
 
-**Aceite:** `go test ./...` e `go build ./cmd/...` executam com sucesso em uma máquina limpa com Go instalado.
+**Aceite:** `go test ./...` na raiz e em `lambdas/`, além de `cd lambdas && go build ./cmd/...`, executam com sucesso em uma máquina limpa com Go instalado.
 
 ### Passo 2 — Criar o ambiente LocalStack reproduzível
 

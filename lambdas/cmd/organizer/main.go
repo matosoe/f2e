@@ -1,3 +1,4 @@
+// Organizer Lambda bootstrap for the F2E framework.
 package main
 
 import (

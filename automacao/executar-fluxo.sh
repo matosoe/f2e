@@ -40,6 +40,22 @@ limpar_filas() {
   done
 }
 
+exibir_resumo_filas() {
+  local q url disponiveis em_processamento
+
+  printf '\nResumo das filas (antes da validação)\n'
+  printf '%-20s %14s %18s\n' 'Fila' 'Disponíveis' 'Em processamento'
+  printf '%-20s %14s %18s\n' '--------------------' '--------------' '------------------'
+
+  for q in file-intake chunk-jobs output-events file-intake-dlq chunk-jobs-dlq output-events-dlq; do
+    url="$(awsq get-queue-url --queue-name "$q" --query QueueUrl --output text)"
+    disponiveis="$(awsq get-queue-attributes --queue-url "$url" --attribute-names ApproximateNumberOfMessages --query 'Attributes.ApproximateNumberOfMessages' --output text)"
+    em_processamento="$(awsq get-queue-attributes --queue-url "$url" --attribute-names ApproximateNumberOfMessagesNotVisible --query 'Attributes.ApproximateNumberOfMessagesNotVisible' --output text)"
+    printf '%-20s %14s %18s\n' "$q" "$disponiveis" "$em_processamento"
+  done
+  printf '\n'
+}
+
 enviar_arquivo() {
   aws s3 --endpoint-url http://localhost:4566 --region us-east-1 cp "$data" "s3://f2e-input/input/entrada-${QUANTIDADE_REGISTROS}.txt"
 }
@@ -59,6 +75,7 @@ inicio_fluxo="$(agora_ms)"
 cleanup() {
   local inicio
   inicio="$(agora_ms)"
+  printf 'Iniciando: encerramento do ambiente\n'
   docker compose -f "$root/docker-compose.yml" down --remove-orphans >/dev/null
   exibir_duracao 'Concluída: encerramento do ambiente' "$inicio"
   exibir_duracao 'Duração total do fluxo' "$inicio_fluxo"
@@ -71,4 +88,5 @@ executar_etapa 'preparação do arquivo de entrada' preparar_arquivo
 executar_etapa 'limpeza das filas' limpar_filas
 executar_etapa 'upload do arquivo para o S3' enviar_arquivo
 executar_etapa 'processamento das mensagens' aguardar_processamento
+executar_etapa 'resumo das filas' exibir_resumo_filas
 executar_etapa 'validação do fluxo' "$root/validar-fluxo.sh"

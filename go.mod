@@ -3,7 +3,6 @@ module github.com/f2e/f2e
 go 1.26.0
 
 require (
-	github.com/aws/aws-lambda-go v1.53.0
 	github.com/aws/aws-sdk-go-v2 v1.40.0
 	github.com/aws/aws-sdk-go-v2/config v1.31.19
 	github.com/aws/aws-sdk-go-v2/credentials v1.18.23

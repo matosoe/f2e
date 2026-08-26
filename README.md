@@ -11,6 +11,6 @@ cd automacao
 ./executar-fluxo.sh
 ```
 
-O resultado esperado é `20.000/20.000 — nenhuma lacuna, nenhuma DLQ e nenhum erro.` Para testes de código: `go test ./...`; para compilar: `go build ./cmd/...`.
+O resultado esperado é `20.000/20.000 — nenhuma lacuna, nenhuma DLQ e nenhum erro.` O framework está na raiz; as Lambdas estão no módulo `lambdas/`. Para testar: `go test ./...` na raiz e em `lambdas/`. Para compilar as funções: `cd lambdas && go build ./cmd/...`.
 
 Consulte [operação local](documentacao/operacao_local.md) e os [contratos](documentacao/contratos.md).
