@@ -8,10 +8,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
+	"strings"
+
 	"github.com/f2e/f2e/internal/application/port"
 	"github.com/f2e/f2e/internal/domain/f2e"
 	"github.com/f2e/f2e/internal/platform/config"
-	"io"
 )
 
 type Service struct {
@@ -48,6 +50,14 @@ func (s Service) Plan(ctx context.Context, request f2e.OrganizerRequest) ([]f2e.
 		size, etag, e := s.Store.Head(ctx, file.Bucket, file.Key)
 		if e != nil {
 			return nil, fmt.Errorf("head %s/%s: %w", file.Bucket, file.Key, e)
+		}
+		if file.DataType == f2e.DataTypeMultiLine {
+			planned, err := s.multiLineJobs(ctx, file, size, etag)
+			if err != nil {
+				return nil, err
+			}
+			jobs = append(jobs, planned...)
+			continue
 		}
 		if file.MaxRecordLengthBytes > 0 && (file.DataType == f2e.DataTypeJSONL || file.DataType == f2e.DataTypeNDJSON || file.DataType == f2e.DataTypeText) {
 			planned, err := s.variableJobs(ctx, file, size, etag)
@@ -131,33 +141,136 @@ func (s Service) variableJobs(ctx context.Context, file f2e.FileRequest, size in
 	return jobs, nil
 }
 func validType(t f2e.DataType) bool {
-	return t == f2e.DataTypeFixedWidth || t == f2e.DataTypeJSONL || t == f2e.DataTypeNDJSON || t == f2e.DataTypeCSV || t == f2e.DataTypeBinary || t == f2e.DataTypeText
+	return t == f2e.DataTypeFixedWidth || t == f2e.DataTypeJSONL || t == f2e.DataTypeNDJSON || t == f2e.DataTypeCSV || t == f2e.DataTypeBinary || t == f2e.DataTypeText || t == f2e.DataTypeMultiLine
 }
 func (s Service) safeLen() int64 { return int64(s.Config.RecordLength) }
+
+// nextBreakOffset scans data line-by-line and returns the byte offset within data
+// of the first line whose content at breakPosition starts with breakMarker.
+// Returns -1 when no such line is found.
+func nextBreakOffset(data []byte, breakPosition int, breakMarker string) int {
+	i := 0
+	for i < len(data) {
+		eol := bytes.IndexByte(data[i:], '\n')
+		var line []byte
+		var next int
+		if eol < 0 {
+			line = data[i:]
+			next = len(data)
+		} else {
+			line = data[i : i+eol]
+			next = i + eol + 1
+		}
+		if len(line) > 0 && line[len(line)-1] == '\r' {
+			line = line[:len(line)-1]
+		}
+		if breakPosition < len(line) && strings.HasPrefix(string(line[breakPosition:]), breakMarker) {
+			return i
+		}
+		if eol < 0 {
+			break
+		}
+		i = next
+	}
+	return -1
+}
+
+// multiLineJobs divides a multi-line object into chunk ranges whose boundaries
+// always fall between logical records (never inside a record's constituent lines).
+func (s Service) multiLineJobs(ctx context.Context, file f2e.FileRequest, size int64, etag string) ([]f2e.ChunkJob, error) {
+	layout := file.MultiLineLayout
+	if layout.BreakMarker == "" {
+		return nil, fmt.Errorf("multi-line layout requires breakMarker")
+	}
+	if layout.MaxBytesPerRecord < 1 {
+		return nil, fmt.Errorf("multi-line layout requires maxBytesPerRecord")
+	}
+	if size == 0 {
+		return nil, fmt.Errorf("empty object")
+	}
+	nominalSize := int64(s.Config.RecordsPerChunk) * layout.MaxBytesPerRecord
+	if nominalSize < layout.MaxBytesPerRecord {
+		return nil, fmt.Errorf("multi-line chunk size overflow")
+	}
+	fileID := hash(file.Bucket + "/" + file.Key + "/" + etag)
+	var jobs []f2e.ChunkJob
+	for start, chunk := int64(0), int64(1); start < size; start, chunk = start+nominalSize, chunk+1 {
+		ownedEnd := start + nominalSize - 1
+		if ownedEnd >= size {
+			ownedEnd = size - 1
+		}
+		padding := int64(0)
+		if ownedEnd < size-1 {
+			lookEnd := ownedEnd + layout.MaxBytesPerRecord
+			if lookEnd >= size {
+				lookEnd = size - 1
+			}
+			r, err := s.Store.GetRange(ctx, file.Bucket, file.Key, ownedEnd+1, lookEnd)
+			if err != nil {
+				return nil, fmt.Errorf("read multi-line padding: %w", err)
+			}
+			data, err := io.ReadAll(r)
+			closeErr := r.Close()
+			if err != nil {
+				return nil, err
+			}
+			if closeErr != nil {
+				return nil, closeErr
+			}
+			at := nextBreakOffset(data, layout.BreakPosition, layout.BreakMarker)
+			if at < 0 {
+				if lookEnd < size-1 {
+					return nil, fmt.Errorf("no record break found after byte %d within maxBytesPerRecord %d", ownedEnd, layout.MaxBytesPerRecord)
+				}
+				// Lookahead reached EOF without a break: remaining bytes are the last record.
+				padding = size - 1 - ownedEnd
+			} else {
+				padding = int64(at)
+			}
+		}
+		jobs = append(jobs, f2e.ChunkJob{
+			SchemaVersion:        f2e.SchemaVersion,
+			JobID:                hash(fileID),
+			FileID:               fileID,
+			ChunkID:              fmt.Sprintf("%08d", chunk),
+			Bucket:               file.Bucket,
+			Key:                  file.Key,
+			ETag:                 etag,
+			StartByte:            start,
+			EndByteInclusive:     ownedEnd + padding,
+			MaxRecordLengthBytes: layout.MaxBytesPerRecord,
+			TrailingPaddingBytes: padding,
+			DataType:             file.DataType,
+			MultiLineLayout:      layout,
+			Options:              file.Options,
+		})
+	}
+	return jobs, nil
+}
 
 // PlanWithSummary converts the organizer request into worker jobs and returns execution summary
 func (s Service) PlanWithSummary(ctx context.Context, request f2e.OrganizerRequest) (*ExecutionSummary, error) {
 	startTime := f2e.CurrentTimeMillis()
-	
+
 	jobs, err := s.Plan(ctx, request)
 	if err != nil {
 		return nil, err
 	}
-	
+
 	endTime := f2e.CurrentTimeMillis()
 	duration := endTime - startTime
-	
+
 	// Build summary
 	summary := &f2e.OrganizerSummary{
 		SchemaVersion:        f2e.SchemaVersion,
-		StartTimeMillis:       startTime,
-		EndTimeMillis:         endTime,
-		ProcessingTimeMillis:  duration,
-		FilesProcessed:        len(request.Files),
-		TotalChunksGenerated:  int64(len(jobs)),
-		Files:                 []f2e.FileSummary{},
+		StartTimeMillis:      startTime,
+		EndTimeMillis:        endTime,
+		ProcessingTimeMillis: duration,
+		FilesProcessed:       len(request.Files),
+		TotalChunksGenerated: int64(len(jobs)),
+		Files:                []f2e.FileSummary{},
 	}
-	
+
 	// Create file summaries
 	for _, file := range request.Files {
 		size, _, err := s.Store.Head(ctx, file.Bucket, file.Key)
@@ -165,7 +278,7 @@ func (s Service) PlanWithSummary(ctx context.Context, request f2e.OrganizerReque
 			// Log error but continue
 			fmt.Printf("organizer_summary: error getting file size for %s/%s: %v\n", file.Bucket, file.Key, err)
 		}
-		
+
 		// Count chunks for this file
 		chunksForFile := int64(0)
 		for _, job := range jobs {
@@ -173,7 +286,7 @@ func (s Service) PlanWithSummary(ctx context.Context, request f2e.OrganizerReque
 				chunksForFile++
 			}
 		}
-		
+
 		summary.Files = append(summary.Files, f2e.FileSummary{
 			Bucket:               file.Bucket,
 			Key:                  file.Key,
@@ -182,7 +295,7 @@ func (s Service) PlanWithSummary(ctx context.Context, request f2e.OrganizerReque
 			ProcessingTimeMillis: duration,
 		})
 	}
-	
+
 	return &ExecutionSummary{
 		Summary: summary,
 		Jobs:    jobs,

@@ -102,7 +102,7 @@ func (s Service) valid(j f2e.ChunkJob) error {
 	if j.DataType == f2e.DataTypeFixedWidth && (j.RecordCount < 1 || j.RecordLengthBytes != int64(s.Config.RecordLength) || j.EndByteInclusive-j.StartByte+1 != j.RecordCount*j.RecordLengthBytes) {
 		return fmt.Errorf("invalid fixed-width chunk job")
 	}
-	if j.DataType != f2e.DataTypeFixedWidth && j.DataType != f2e.DataTypeJSONL && j.DataType != f2e.DataTypeNDJSON && j.DataType != f2e.DataTypeCSV && j.DataType != f2e.DataTypeBinary && j.DataType != f2e.DataTypeText {
+	if j.DataType != f2e.DataTypeFixedWidth && j.DataType != f2e.DataTypeJSONL && j.DataType != f2e.DataTypeNDJSON && j.DataType != f2e.DataTypeCSV && j.DataType != f2e.DataTypeBinary && j.DataType != f2e.DataTypeText && j.DataType != f2e.DataTypeMultiLine {
 		return fmt.Errorf("unsupported data type %q", j.DataType)
 	}
 	if j.Options.BypassJSONValidation && j.DataType != f2e.DataTypeJSONL && j.DataType != f2e.DataTypeNDJSON {
@@ -110,6 +110,9 @@ func (s Service) valid(j f2e.ChunkJob) error {
 	}
 	if j.MaxRecordLengthBytes > 0 && (j.DataType == f2e.DataTypeFixedWidth || j.DataType == f2e.DataTypeBinary || j.TrailingPaddingBytes < 0 || j.TrailingPaddingBytes > j.MaxRecordLengthBytes || j.EndByteInclusive-j.StartByte+1 < j.TrailingPaddingBytes) {
 		return fmt.Errorf("invalid variable-record chunk job")
+	}
+	if j.DataType == f2e.DataTypeMultiLine && j.MultiLineLayout.BreakMarker == "" {
+		return fmt.Errorf("multi-line chunk job missing breakMarker")
 	}
 	return nil
 }
@@ -176,6 +179,14 @@ func (s Service) stream(ctx context.Context, j f2e.ChunkJob, r io.Reader, readSt
 		if err == nil {
 			err = publish(0, 0, "", nil, body)
 		}
+	case f2e.DataTypeMultiLine:
+		layout := j.MultiLineLayout
+		err = fixedwidth.ReadMultiLine(ctx, r, layout.BreakPosition, layout.BreakMarker, layout.AcceptedPrefixes, layout.LineSeparator, func(n, off int64, raw string) error {
+			if readStart+off < j.StartByte || readStart+off > j.EndByteInclusive-j.TrailingPaddingBytes {
+				return nil
+			}
+			return publish(n, off, raw, nil, nil)
+		})
 	}
 	if err != nil {
 		return err
@@ -255,6 +266,14 @@ func (s Service) streamWithMetrics(ctx context.Context, j f2e.ChunkJob, r io.Rea
 		if err == nil {
 			err = publish(0, 0, "", nil, body)
 		}
+	case f2e.DataTypeMultiLine:
+		layout := j.MultiLineLayout
+		err = fixedwidth.ReadMultiLine(ctx, r, layout.BreakPosition, layout.BreakMarker, layout.AcceptedPrefixes, layout.LineSeparator, func(n, off int64, raw string) error {
+			if readStart+off < j.StartByte || readStart+off > j.EndByteInclusive-j.TrailingPaddingBytes {
+				return nil
+			}
+			return publish(n, off, raw, nil, nil)
+		})
 	}
 	if err != nil {
 		return 0, err
