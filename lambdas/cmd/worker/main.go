@@ -3,12 +3,13 @@ package main
 
 import (
 	"context"
+	"log"
+
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/f2e/f2e/internal/application/worker"
 	awsclient "github.com/f2e/f2e/internal/platform/aws"
 	"github.com/f2e/f2e/internal/platform/config"
-	"log"
 )
 
 var service worker.Service
@@ -23,7 +24,7 @@ func init() {
 	if e != nil {
 		log.Fatal(e)
 	}
-	service = worker.Service{Store: a, Queue: a, Config: c}
+	service = worker.Service{Resolver: a, Queue: a, Config: c}
 }
 func handler(ctx context.Context, e events.SQSEvent) (events.SQSEventResponse, error) {
 	out := events.SQSEventResponse{}

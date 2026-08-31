@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/http"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awscfg "github.com/aws/aws-sdk-go-v2/config"
@@ -13,6 +14,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	sqsTypes "github.com/aws/aws-sdk-go-v2/service/sqs/types"
 	"github.com/f2e/f2e/internal/application/port"
+	"github.com/f2e/f2e/internal/domain/f2e"
 	"github.com/f2e/f2e/internal/platform/config"
 )
 
@@ -23,6 +25,7 @@ type AWS struct {
 
 var _ port.ObjectStore = (*AWS)(nil)
 var _ port.Queue = (*AWS)(nil)
+var _ port.SourceResolver = (*AWS)(nil)
 
 func New(ctx context.Context, c config.Config) (*AWS, error) {
 	opts := []func(*awscfg.LoadOptions) error{awscfg.WithRegion(c.Region)}
@@ -78,4 +81,30 @@ func (a *AWS) Send(ctx context.Context, url string, bodies []string, attrs map[s
 		}
 	}
 	return failed, nil
+}
+
+// OpenChunkRange implements port.SourceResolver. It uses the pre-signed URL when
+// present, falling back to S3 SDK access via bucket/key.
+func (a *AWS) OpenChunkRange(ctx context.Context, job f2e.ChunkJob, start, end int64) (io.ReadCloser, error) {
+	if job.PresignedURL != "" {
+		return presignedGetRange(ctx, job.PresignedURL, start, end)
+	}
+	return a.GetRange(ctx, job.Bucket, job.Key, start, end)
+}
+
+func presignedGetRange(ctx context.Context, rawURL string, start, end int64) (io.ReadCloser, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start, end))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusPartialContent && resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		return nil, fmt.Errorf("presigned range request failed with status %d", resp.StatusCode)
+	}
+	return resp.Body, nil
 }

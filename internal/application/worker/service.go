@@ -23,9 +23,10 @@ import (
 )
 
 type Service struct {
-	Store  port.ObjectStore
-	Queue  port.Queue
-	Config config.Config
+	Resolver  port.SourceResolver
+	Processor port.RecordProcessor
+	Queue     port.Queue
+	Config    config.Config
 }
 
 // ChunkProcessingResult contains metrics from processing a chunk
@@ -67,7 +68,7 @@ func (s Service) ProcessWithMetrics(ctx context.Context, body []byte) (*ChunkPro
 			readStart = 0
 		}
 	}
-	r, e := s.Store.GetRange(ctx, j.Bucket, j.Key, readStart, j.EndByteInclusive)
+	r, e := s.Resolver.OpenChunkRange(ctx, j, readStart, j.EndByteInclusive)
 	if e != nil {
 		return nil, e
 	}
@@ -196,6 +197,16 @@ func (s Service) streamWithMetrics(ctx context.Context, j f2e.ChunkJob, r io.Rea
 		}
 		if binary != nil {
 			env.Data.Base64 = base64.StdEncoding.EncodeToString(binary)
+		}
+		if s.Processor != nil {
+			processed, er := s.Processor.Process(ctx, env)
+			if er != nil {
+				return er
+			}
+			if processed == nil {
+				return nil
+			}
+			env = *processed
 		}
 		b, er := json.Marshal(env)
 		if er != nil {

@@ -1,5 +1,4 @@
 package internal
-package internal
 
 // OrganizerRequest is the explicit input contract sent to the file-intake queue.
 type OrganizerRequest struct {

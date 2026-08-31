@@ -80,7 +80,7 @@ func (s Service) Plan(ctx context.Context, request f2e.OrganizerRequest) ([]f2e.
 				return nil, fmt.Errorf("empty object")
 			}
 			fileID := hash(file.Bucket + "/" + file.Key + "/" + etag)
-			jobs = append(jobs, f2e.ChunkJob{SchemaVersion: f2e.SchemaVersion, JobID: hash(fileID), FileID: fileID, ChunkID: "00000001", Bucket: file.Bucket, Key: file.Key, ETag: etag, VersionID: versionID, FileSize: size, RecordCount: 1, StartByte: 0, EndByteInclusive: size - 1, MaxRecordLengthBytes: file.MaxRecordLengthBytes, DataType: file.DataType, Options: file.Options})
+			jobs = append(jobs, f2e.ChunkJob{SchemaVersion: f2e.SchemaVersion, JobID: hash(fileID), FileID: fileID, ChunkID: "00000001", Bucket: file.Bucket, Key: file.Key, PresignedURL: file.PresignedURL, ETag: etag, VersionID: versionID, FileSize: size, RecordCount: 1, StartByte: 0, EndByteInclusive: size - 1, MaxRecordLengthBytes: file.MaxRecordLengthBytes, DataType: file.DataType, Options: file.Options})
 			continue
 		}
 		if size == 0 || size%s.safeLen() != 0 {
@@ -94,7 +94,7 @@ func (s Service) Plan(ctx context.Context, request f2e.OrganizerRequest) ([]f2e.
 				count = total - start
 			}
 			startByte := start * s.safeLen()
-			jobs = append(jobs, f2e.ChunkJob{SchemaVersion: f2e.SchemaVersion, JobID: hash(fileID), FileID: fileID, ChunkID: fmt.Sprintf("%08d", chunk), Bucket: file.Bucket, Key: file.Key, ETag: etag, VersionID: versionID, FileSize: size, StartRecord: start, RecordCount: count, RecordLengthBytes: s.safeLen(), StartByte: startByte, EndByteInclusive: startByte + count*s.safeLen() - 1, DataType: file.DataType, Options: file.Options})
+			jobs = append(jobs, f2e.ChunkJob{SchemaVersion: f2e.SchemaVersion, JobID: hash(fileID), FileID: fileID, ChunkID: fmt.Sprintf("%08d", chunk), Bucket: file.Bucket, Key: file.Key, PresignedURL: file.PresignedURL, ETag: etag, VersionID: versionID, FileSize: size, StartRecord: start, RecordCount: count, RecordLengthBytes: s.safeLen(), StartByte: startByte, EndByteInclusive: startByte + count*s.safeLen() - 1, DataType: file.DataType, Options: file.Options})
 		}
 	}
 	return jobs, nil
@@ -144,7 +144,7 @@ func (s Service) variableJobs(ctx context.Context, file f2e.FileRequest, size in
 			}
 			padding = int64(at + 1)
 		}
-		jobs = append(jobs, f2e.ChunkJob{SchemaVersion: f2e.SchemaVersion, JobID: hash(fileID), FileID: fileID, ChunkID: fmt.Sprintf("%08d", chunk), Bucket: file.Bucket, Key: file.Key, ETag: etag, VersionID: versionID, FileSize: size, StartByte: start, EndByteInclusive: ownedEnd + padding, MaxRecordLengthBytes: file.MaxRecordLengthBytes, TrailingPaddingBytes: padding, DataType: file.DataType, Options: file.Options})
+		jobs = append(jobs, f2e.ChunkJob{SchemaVersion: f2e.SchemaVersion, JobID: hash(fileID), FileID: fileID, ChunkID: fmt.Sprintf("%08d", chunk), Bucket: file.Bucket, Key: file.Key, PresignedURL: file.PresignedURL, ETag: etag, VersionID: versionID, FileSize: size, StartByte: start, EndByteInclusive: ownedEnd + padding, MaxRecordLengthBytes: file.MaxRecordLengthBytes, TrailingPaddingBytes: padding, DataType: file.DataType, Options: file.Options})
 	}
 	return jobs, nil
 }
@@ -243,6 +243,7 @@ func (s Service) multiLineJobs(ctx context.Context, file f2e.FileRequest, size i
 			ChunkID:              fmt.Sprintf("%08d", chunk),
 			Bucket:               file.Bucket,
 			Key:                  file.Key,
+			PresignedURL:         file.PresignedURL,
 			ETag:                 etag,
 			VersionID:            versionID,
 			FileSize:             size,
@@ -415,6 +416,7 @@ func (s Service) jsonArrayJobs(ctx context.Context, file f2e.FileRequest, size i
 			ChunkID:              fmt.Sprintf("%08d", chunk),
 			Bucket:               file.Bucket,
 			Key:                  file.Key,
+			PresignedURL:         file.PresignedURL,
 			ETag:                 etag,
 			VersionID:            versionID,
 			FileSize:             size,

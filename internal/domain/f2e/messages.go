@@ -56,6 +56,7 @@ type ProcessingOptions struct {
 type FileRequest struct {
 	Bucket               string            `json:"bucket"`
 	Key                  string            `json:"key"`
+	PresignedURL         string            `json:"presignedUrl,omitempty"`
 	DataType             DataType          `json:"dataType"`
 	MaxRecordLengthBytes int64             `json:"maxRecordLengthBytes,omitempty"`
 	MultiLineLayout      MultiLineLayout   `json:"multiLineLayout,omitempty"`
@@ -76,6 +77,7 @@ type ChunkJob struct {
 	ChunkID              string            `json:"chunkId"`
 	Bucket               string            `json:"bucket"`
 	Key                  string            `json:"key"`
+	PresignedURL         string            `json:"presignedUrl,omitempty"`
 	ETag                 string            `json:"etag"`
 	StartRecord          int64             `json:"startRecord"`
 	RecordCount          int64             `json:"recordCount"`

@@ -1,4 +1,3 @@
-package e2e_test
 // Package e2e_test contains end-to-end tests for the F2E pipeline using Godog (Gherkin/BDD).
 //
 // Prerequisites: start the local environment with automacao/subir-ambiente.sh before running.
@@ -33,7 +32,7 @@ func TestE2E(t *testing.T) {
 	}
 
 	suite := godog.TestSuite{
-		Name: "f2e-e2e",
+		Name:                "f2e-e2e",
 		ScenarioInitializer: internal.NewScenarioInitializer(client),
 		Options: &godog.Options{
 			Format:      "pretty",
