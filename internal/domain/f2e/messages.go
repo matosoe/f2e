@@ -19,6 +19,7 @@ const (
 	DataTypeBinary     DataType = "binary"
 	DataTypeText       DataType = "text"
 	DataTypeMultiLine  DataType = "multi-line"
+	DataTypeJSON       DataType = "json"
 )
 
 // MultiLineLayout describes how to group physical lines into logical multi-line records.
@@ -38,6 +39,14 @@ type MultiLineLayout struct {
 	MaxBytesPerRecord int64 `json:"maxBytesPerRecord,omitempty"`
 }
 
+// JSONArrayLayout describes how to locate and iterate an array inside a JSON file.
+type JSONArrayLayout struct {
+	// ArrayPath is the dot-separated key path to the target array (empty = root array).
+	ArrayPath string `json:"arrayPath,omitempty"`
+	// MaxBytesPerElement is the maximum byte size of one array element; required for chunk planning.
+	MaxBytesPerElement int64 `json:"maxBytesPerElement"`
+}
+
 // ProcessingOptions are deliberately carried in both organizer and worker
 // contracts so each worker has all decisions needed to process its chunk.
 type ProcessingOptions struct {
@@ -50,6 +59,7 @@ type FileRequest struct {
 	DataType             DataType          `json:"dataType"`
 	MaxRecordLengthBytes int64             `json:"maxRecordLengthBytes,omitempty"`
 	MultiLineLayout      MultiLineLayout   `json:"multiLineLayout,omitempty"`
+	JSONArrayLayout      JSONArrayLayout   `json:"jsonArrayLayout,omitempty"`
 	Options              ProcessingOptions `json:"options,omitempty"`
 }
 
@@ -76,6 +86,8 @@ type ChunkJob struct {
 	TrailingPaddingBytes int64             `json:"trailingPaddingBytes,omitempty"`
 	DataType             DataType          `json:"dataType"`
 	MultiLineLayout      MultiLineLayout   `json:"multiLineLayout,omitempty"`
+	JSONArrayLayout      JSONArrayLayout   `json:"jsonArrayLayout,omitempty"`
+	JSONArrayOffset      int64             `json:"jsonArrayOffset,omitempty"`
 	Options              ProcessingOptions `json:"options,omitempty"`
 	VersionID            string            `json:"versionId,omitempty"`
 	FileSize             int64             `json:"fileSize,omitempty"`

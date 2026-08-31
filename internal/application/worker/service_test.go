@@ -191,3 +191,92 @@ func TestMultiLineChunksDoNotDuplicateRecords(t *testing.T) {
 		t.Fatalf("records=%v", raws)
 	}
 }
+
+func TestJSONArrayWorkerSingleChunk(t *testing.T) {
+	// File: [{"a":1},{"b":2},{"c":3}] — array starts at byte 1, 3 elements.
+	data := `[{"a":1},{"b":2},{"c":3}]`
+	q := &queue{}
+	layout := f2e.JSONArrayLayout{ArrayPath: "", MaxBytesPerElement: 10}
+	job := f2e.ChunkJob{
+		SchemaVersion:        f2e.SchemaVersion,
+		FileID:               "f",
+		JobID:                "j",
+		ChunkID:              "00000001",
+		Bucket:               "b",
+		Key:                  "k",
+		StartByte:            1, // after '['
+		EndByteInclusive:     int64(len(data) - 1),
+		MaxRecordLengthBytes: 10,
+		DataType:             f2e.DataTypeJSON,
+		JSONArrayLayout:      layout,
+		JSONArrayOffset:      1,
+	}
+	body, _ := json.Marshal(job)
+	s := Service{
+		Store:  rangedStore{data},
+		Queue:  q,
+		Config: config.Config{OutputQueueURL: "out", EventSchemaID: "s", EventSchemaVersion: "1", EventFormat: "json"},
+	}
+	if err := s.Process(context.Background(), body); err != nil {
+		t.Fatal(err)
+	}
+	var raws []string
+	for _, batch := range q.batches {
+		for _, b := range batch {
+			var env f2e.Envelope[f2e.RecordPayload]
+			_ = json.Unmarshal([]byte(b), &env)
+			raws = append(raws, env.Data.Raw)
+		}
+	}
+	if strings.Join(raws, ",") != `{"a":1},{"b":2},{"c":3}` {
+		t.Fatalf("records=%v", raws)
+	}
+}
+
+func TestJSONArrayWorkerNestedAndMultiChunk(t *testing.T) {
+	// File: {"items":[{"a":1},{"b":2},{"c":3},{"d":4}]}
+	// Array starts at byte 10 (after '{"items":[').
+	data := `{"items":[{"a":1},{"b":2},{"c":3},{"d":4}]}`
+	// Manually create two jobs that would result from planning.
+	layout := f2e.JSONArrayLayout{ArrayPath: "items", MaxBytesPerElement: 8}
+	jobs := []f2e.ChunkJob{
+		{
+			SchemaVersion: f2e.SchemaVersion, FileID: "f", JobID: "j", ChunkID: "00000001",
+			Bucket: "b", Key: "k",
+			// owns bytes [10..24], padding to end of {"b":2}
+			StartByte: 10, EndByteInclusive: 24, MaxRecordLengthBytes: 8,
+			TrailingPaddingBytes: 0,
+			DataType:             f2e.DataTypeJSON, JSONArrayLayout: layout, JSONArrayOffset: 10,
+		},
+		{
+			SchemaVersion: f2e.SchemaVersion, FileID: "f", JobID: "j", ChunkID: "00000002",
+			Bucket: "b", Key: "k",
+			StartByte: 26, EndByteInclusive: int64(len(data) - 1), MaxRecordLengthBytes: 8,
+			TrailingPaddingBytes: 0,
+			DataType:             f2e.DataTypeJSON, JSONArrayLayout: layout, JSONArrayOffset: 10,
+		},
+	}
+	q := &queue{}
+	s := Service{
+		Store:  rangedStore{data},
+		Queue:  q,
+		Config: config.Config{OutputQueueURL: "out", EventSchemaID: "s", EventSchemaVersion: "1", EventFormat: "json"},
+	}
+	for _, job := range jobs {
+		body, _ := json.Marshal(job)
+		if err := s.Process(context.Background(), body); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var raws []string
+	for _, batch := range q.batches {
+		for _, b := range batch {
+			var env f2e.Envelope[f2e.RecordPayload]
+			_ = json.Unmarshal([]byte(b), &env)
+			raws = append(raws, env.Data.Raw)
+		}
+	}
+	if len(raws) != 4 {
+		t.Fatalf("expected 4 elements, got %d: %v", len(raws), raws)
+	}
+}

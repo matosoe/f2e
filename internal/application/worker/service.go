@@ -104,7 +104,7 @@ func (s Service) valid(j f2e.ChunkJob) error {
 	if j.DataType == f2e.DataTypeFixedWidth && (j.RecordCount < 1 || j.RecordLengthBytes != int64(s.Config.RecordLength) || j.EndByteInclusive-j.StartByte+1 != j.RecordCount*j.RecordLengthBytes) {
 		return fmt.Errorf("invalid fixed-width chunk job")
 	}
-	if j.DataType != f2e.DataTypeFixedWidth && j.DataType != f2e.DataTypeJSONL && j.DataType != f2e.DataTypeNDJSON && j.DataType != f2e.DataTypeCSV && j.DataType != f2e.DataTypeBinary && j.DataType != f2e.DataTypeText && j.DataType != f2e.DataTypeMultiLine {
+	if j.DataType != f2e.DataTypeFixedWidth && j.DataType != f2e.DataTypeJSONL && j.DataType != f2e.DataTypeNDJSON && j.DataType != f2e.DataTypeCSV && j.DataType != f2e.DataTypeBinary && j.DataType != f2e.DataTypeText && j.DataType != f2e.DataTypeMultiLine && j.DataType != f2e.DataTypeJSON {
 		return fmt.Errorf("unsupported data type %q", j.DataType)
 	}
 	if j.Options.BypassJSONValidation && j.DataType != f2e.DataTypeJSONL && j.DataType != f2e.DataTypeNDJSON {
@@ -115,6 +115,9 @@ func (s Service) valid(j f2e.ChunkJob) error {
 	}
 	if j.DataType == f2e.DataTypeMultiLine && j.MultiLineLayout.BreakMarker == "" {
 		return fmt.Errorf("multi-line chunk job missing breakMarker")
+	}
+	if j.DataType == f2e.DataTypeJSON && j.JSONArrayLayout.MaxBytesPerElement < 1 {
+		return fmt.Errorf("json array chunk job missing maxBytesPerElement")
 	}
 	return nil
 }
@@ -155,9 +158,15 @@ func (s Service) streamWithMetrics(ctx context.Context, j f2e.ChunkJob, r io.Rea
 		}
 		recNum := j.StartRecord + n + 1
 		var byteLen *int64
-		if j.DataType == f2e.DataTypeFixedWidth {
+		switch j.DataType {
+		case f2e.DataTypeFixedWidth:
 			bl := j.RecordLengthBytes
 			byteLen = &bl
+		case f2e.DataTypeJSON:
+			if raw != "" {
+				bl := int64(len(raw))
+				byteLen = &bl
+			}
 		}
 		env := f2e.Envelope[f2e.RecordPayload]{
 			Metadata: f2e.Metadata{
@@ -233,6 +242,10 @@ func (s Service) streamWithMetrics(ctx context.Context, j f2e.ChunkJob, r io.Rea
 			}
 			return publish(n, off, raw, nil, nil)
 		})
+	case f2e.DataTypeJSON:
+		err = readJSONArray(ctx, r, j, readStart, func(n, off int64, raw string) error {
+			return publish(n, off, raw, nil, nil)
+		})
 	}
 	if err != nil {
 		return 0, err
@@ -304,4 +317,58 @@ func readCSV(ctx context.Context, r io.Reader, fn func(int64, int64, []string) e
 			return err
 		}
 	}
+}
+
+// readJSONArray streams elements from a JSON array within the chunk's owned byte range.
+func readJSONArray(ctx context.Context, r io.Reader, j f2e.ChunkJob, readStart int64, fn func(int64, int64, string) error) error {
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return err
+	}
+	// Trim the buffer to start at the array content.
+	var scanStart int64
+	if j.JSONArrayOffset >= readStart {
+		scanStart = j.JSONArrayOffset - readStart
+	}
+	trimmed := data[scanStart:]
+	bufferBase := readStart + scanStart
+	ownedEnd := j.EndByteInclusive - j.TrailingPaddingBytes
+	pos := 0
+	var n int64
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		elemStart, elemEnd := nextCompleteElement(trimmed, pos)
+		if elemStart < 0 {
+			break
+		}
+		fileOffset := bufferBase + int64(elemStart)
+		if fileOffset > ownedEnd {
+			break
+		}
+		if fileOffset >= j.StartByte {
+			off := fileOffset - readStart
+			if err := fn(n, off, string(trimmed[elemStart:elemEnd])); err != nil {
+				return err
+			}
+			n++
+		}
+		pos = elemEnd
+	}
+	return nil
+}
+
+// nextCompleteElement returns the [start, end) byte positions of the next complete
+// JSON element (object or array) in data at or after pos.
+// If the content at pos is mid-element, the partial element is skipped first.
+// Returns (-1, -1) when no complete element is found.
+func nextCompleteElement(data []byte, pos int) (int, int) {
+	return f2e.NextCompleteJSONElement(data, pos)
+}
+
+// jsonObjectEnd returns the number of bytes consumed to close the first JSON element
+// that begins (or is already open) in data. Returns -1 if no boundary is found.
+func jsonObjectEnd(data []byte) int {
+	return f2e.JSONObjectEnd(data)
 }

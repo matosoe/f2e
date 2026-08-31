@@ -154,3 +154,68 @@ func (s rangeStore) Head(context.Context, string, string) (int64, string, string
 func (s rangeStore) GetRange(_ context.Context, _ string, _ string, start, end int64) (io.ReadCloser, error) {
 	return io.NopCloser(strings.NewReader(s.data[start : end+1])), nil
 }
+
+func TestJSONArrayJobsRootArray(t *testing.T) {
+	// Root array with 3 elements; MaxBytesPerElement=10 → nominal=10 per chunk of 1.
+	data := `[{"a":1},{"b":2},{"c":3}]`
+	s := Service{Store: rangeStore{data}, Config: config.Config{RecordsPerChunk: 1}}
+	layout := f2e.JSONArrayLayout{ArrayPath: "", MaxBytesPerElement: 10}
+	jobs, err := s.Plan(context.Background(), f2e.OrganizerRequest{
+		SchemaVersion: f2e.SchemaVersion,
+		Files:         []f2e.FileRequest{{Bucket: "b", Key: "k", DataType: f2e.DataTypeJSON, JSONArrayLayout: layout}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs) < 1 {
+		t.Fatalf("expected jobs, got 0")
+	}
+	if jobs[0].JSONArrayOffset != 1 {
+		t.Fatalf("expected JSONArrayOffset=1, got %d", jobs[0].JSONArrayOffset)
+	}
+	if jobs[0].JSONArrayLayout.MaxBytesPerElement != 10 {
+		t.Fatalf("MaxBytesPerElement not propagated: %+v", jobs[0].JSONArrayLayout)
+	}
+}
+
+func TestJSONArrayJobsNestedArray(t *testing.T) {
+	// Array nested at "items"; 2 elements of ~7 bytes each.
+	data := `{"meta":"x","items":[{"a":1},{"b":2}]}`
+	s := Service{Store: rangeStore{data}, Config: config.Config{RecordsPerChunk: 2}}
+	layout := f2e.JSONArrayLayout{ArrayPath: "items", MaxBytesPerElement: 10}
+	jobs, err := s.Plan(context.Background(), f2e.OrganizerRequest{
+		SchemaVersion: f2e.SchemaVersion,
+		Files:         []f2e.FileRequest{{Bucket: "b", Key: "k", DataType: f2e.DataTypeJSON, JSONArrayLayout: layout}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Both elements fit in a single chunk (nominalSize=2*10=20).
+	if len(jobs) != 1 {
+		t.Fatalf("expected 1 job, got %d: %+v", len(jobs), jobs)
+	}
+	// Array starts after `{"meta":"x","items":[` = 21 bytes.
+	if jobs[0].JSONArrayOffset != 21 {
+		t.Fatalf("expected JSONArrayOffset=21, got %d", jobs[0].JSONArrayOffset)
+	}
+}
+
+func TestJSONArrayJobsMultiChunk(t *testing.T) {
+	// Array with 4 elements; RecordsPerChunk=2, MaxBytesPerElement=8 → 2 chunks.
+	data := `[{"a":1},{"b":2},{"c":3},{"d":4}]`
+	s := Service{Store: rangeStore{data}, Config: config.Config{RecordsPerChunk: 2}}
+	layout := f2e.JSONArrayLayout{ArrayPath: "", MaxBytesPerElement: 8}
+	jobs, err := s.Plan(context.Background(), f2e.OrganizerRequest{
+		SchemaVersion: f2e.SchemaVersion,
+		Files:         []f2e.FileRequest{{Bucket: "b", Key: "k", DataType: f2e.DataTypeJSON, JSONArrayLayout: layout}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs) < 2 {
+		t.Fatalf("expected at least 2 chunks, got %d: %+v", len(jobs), jobs)
+	}
+	if jobs[0].StartByte != jobs[0].JSONArrayOffset {
+		t.Fatalf("first chunk should start at array offset, got start=%d offset=%d", jobs[0].StartByte, jobs[0].JSONArrayOffset)
+	}
+}

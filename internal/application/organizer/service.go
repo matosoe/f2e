@@ -59,6 +59,14 @@ func (s Service) Plan(ctx context.Context, request f2e.OrganizerRequest) ([]f2e.
 			jobs = append(jobs, planned...)
 			continue
 		}
+		if file.DataType == f2e.DataTypeJSON {
+			planned, err := s.jsonArrayJobs(ctx, file, size, etag, versionID)
+			if err != nil {
+				return nil, err
+			}
+			jobs = append(jobs, planned...)
+			continue
+		}
 		if file.MaxRecordLengthBytes > 0 && (file.DataType == f2e.DataTypeJSONL || file.DataType == f2e.DataTypeNDJSON || file.DataType == f2e.DataTypeText) {
 			planned, err := s.variableJobs(ctx, file, size, etag, versionID)
 			if err != nil {
@@ -141,7 +149,7 @@ func (s Service) variableJobs(ctx context.Context, file f2e.FileRequest, size in
 	return jobs, nil
 }
 func validType(t f2e.DataType) bool {
-	return t == f2e.DataTypeFixedWidth || t == f2e.DataTypeJSONL || t == f2e.DataTypeNDJSON || t == f2e.DataTypeCSV || t == f2e.DataTypeBinary || t == f2e.DataTypeText || t == f2e.DataTypeMultiLine
+	return t == f2e.DataTypeFixedWidth || t == f2e.DataTypeJSONL || t == f2e.DataTypeNDJSON || t == f2e.DataTypeCSV || t == f2e.DataTypeBinary || t == f2e.DataTypeText || t == f2e.DataTypeMultiLine || t == f2e.DataTypeJSON
 }
 func (s Service) safeLen() int64 { return int64(s.Config.RecordLength) }
 
@@ -333,4 +341,168 @@ func (s Service) Publish(ctx context.Context, jobs []f2e.ChunkJob) error {
 		return flush()
 	}
 	return nil
+}
+
+// jsonArrayJobs divides a JSON file's target array into chunk ranges whose boundaries
+// always fall between array elements (never inside an element's JSON structure).
+func (s Service) jsonArrayJobs(ctx context.Context, file f2e.FileRequest, size int64, etag, versionID string) ([]f2e.ChunkJob, error) {
+	layout := file.JSONArrayLayout
+	if layout.MaxBytesPerElement < 1 {
+		return nil, fmt.Errorf("json array layout requires maxBytesPerElement")
+	}
+	if size == 0 {
+		return nil, fmt.Errorf("empty object")
+	}
+	// Probe up to 64 KB to locate the array, regardless of element size.
+	probeEnd := int64(65535)
+	if probeEnd >= size {
+		probeEnd = size - 1
+	}
+	arrayOffset, err := s.findJSONArrayOffset(ctx, file.Bucket, file.Key, probeEnd, layout.ArrayPath)
+	if err != nil {
+		return nil, fmt.Errorf("find json array offset for %q: %w", layout.ArrayPath, err)
+	}
+	nominalSize := int64(s.Config.RecordsPerChunk) * layout.MaxBytesPerElement
+	if nominalSize < layout.MaxBytesPerElement {
+		return nil, fmt.Errorf("json array chunk size overflow")
+	}
+	fileID := hash(file.Bucket + "/" + file.Key + "/" + etag)
+	var jobs []f2e.ChunkJob
+	for start, chunk := arrayOffset, int64(1); start < size; start, chunk = start+nominalSize, chunk+1 {
+		ownedEnd := start + nominalSize - 1
+		if ownedEnd >= size {
+			ownedEnd = size - 1
+		}
+		padding := int64(0)
+		if ownedEnd < size-1 {
+			// Read one element-width before ownedEnd so we never start mid-string.
+			contextStart := ownedEnd - layout.MaxBytesPerElement + 1
+			if contextStart < arrayOffset {
+				contextStart = arrayOffset
+			}
+			lookEnd := ownedEnd + layout.MaxBytesPerElement
+			if lookEnd >= size {
+				lookEnd = size - 1
+			}
+			r, err := s.Store.GetRange(ctx, file.Bucket, file.Key, contextStart, lookEnd)
+			if err != nil {
+				return nil, fmt.Errorf("read json array padding: %w", err)
+			}
+			data, err := io.ReadAll(r)
+			closeErr := r.Close()
+			if err != nil {
+				return nil, err
+			}
+			if closeErr != nil {
+				return nil, closeErr
+			}
+			relPos := int(ownedEnd - contextStart)
+			at := f2e.JSONElementEndAfter(data, relPos)
+			if at < 0 {
+				// ownedEnd already falls between elements — no padding needed.
+				padding = 0
+			} else {
+				// at is the exclusive end position within the window.
+				// file position of that end = contextStart + at - 1
+				// padding = that position - ownedEnd
+				padding = contextStart + int64(at) - 1 - ownedEnd
+			}
+		}
+		jobs = append(jobs, f2e.ChunkJob{
+			SchemaVersion:        f2e.SchemaVersion,
+			JobID:                hash(fileID),
+			FileID:               fileID,
+			ChunkID:              fmt.Sprintf("%08d", chunk),
+			Bucket:               file.Bucket,
+			Key:                  file.Key,
+			ETag:                 etag,
+			VersionID:            versionID,
+			FileSize:             size,
+			StartByte:            start,
+			EndByteInclusive:     ownedEnd + padding,
+			MaxRecordLengthBytes: layout.MaxBytesPerElement,
+			TrailingPaddingBytes: padding,
+			DataType:             file.DataType,
+			JSONArrayLayout:      layout,
+			JSONArrayOffset:      arrayOffset,
+			Options:              file.Options,
+		})
+	}
+	return jobs, nil
+}
+
+// findJSONArrayOffset reads the start of the file and returns the byte offset
+// immediately after the '[' of the target array.
+func (s Service) findJSONArrayOffset(ctx context.Context, bucket, key string, probeEnd int64, arrayPath string) (int64, error) {
+	r, err := s.Store.GetRange(ctx, bucket, key, 0, probeEnd)
+	if err != nil {
+		return 0, err
+	}
+	data, err := io.ReadAll(r)
+	closeErr := r.Close()
+	if err != nil {
+		return 0, err
+	}
+	if closeErr != nil {
+		return 0, closeErr
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	if err := navigateToArrayStart(dec, arrayPath); err != nil {
+		return 0, err
+	}
+	return dec.InputOffset(), nil
+}
+
+// navigateToArrayStart advances dec to just after the '[' of the target array.
+func navigateToArrayStart(dec *json.Decoder, arrayPath string) error {
+	if arrayPath == "" {
+		t, err := dec.Token()
+		if err != nil {
+			return fmt.Errorf("read JSON root: %w", err)
+		}
+		if t != json.Delim('[') {
+			return fmt.Errorf("root is not a JSON array")
+		}
+		return nil
+	}
+	return navigateObjectPath(dec, strings.Split(arrayPath, "."))
+}
+
+// navigateObjectPath navigates through nested JSON objects following parts,
+// leaving dec positioned just after the '[' of the final array value.
+func navigateObjectPath(dec *json.Decoder, parts []string) error {
+	t, err := dec.Token()
+	if err != nil {
+		return err
+	}
+	if t != json.Delim('{') {
+		return fmt.Errorf("expected JSON object, got %v", t)
+	}
+	target, rest := parts[0], parts[1:]
+	for dec.More() {
+		kt, err := dec.Token()
+		if err != nil {
+			return err
+		}
+		ks, _ := kt.(string)
+		if ks != target {
+			var skip json.RawMessage
+			if err := dec.Decode(&skip); err != nil {
+				return err
+			}
+			continue
+		}
+		if len(rest) == 0 {
+			t, err := dec.Token()
+			if err != nil {
+				return err
+			}
+			if t != json.Delim('[') {
+				return fmt.Errorf("key %q is not a JSON array", target)
+			}
+			return nil
+		}
+		return navigateObjectPath(dec, rest)
+	}
+	return fmt.Errorf("key %q not found in JSON object", target)
 }
