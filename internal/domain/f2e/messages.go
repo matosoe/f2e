@@ -73,3 +73,43 @@ type OutputEvent struct {
 		Base64 string   `json:"base64,omitempty"`
 	} `json:"payload"`
 }
+
+// FileSummary contains processing summary for a single file
+type FileSummary struct {
+	Bucket                string `json:"bucket"`
+	Key                   string `json:"key"`
+	SizeBytes             int64  `json:"sizeBytes"`
+	ChunksGenerated       int64  `json:"chunksGenerated"`
+	ProcessingTimeMillis  int64  `json:"processingTimeMillis"`
+}
+
+// OrganizerSummary contains the summary of the organizer execution
+type OrganizerSummary struct {
+	SchemaVersion        string           `json:"schemaVersion"`
+	StartTimeMillis      int64            `json:"startTimeMillis"`
+	EndTimeMillis        int64            `json:"endTimeMillis"`
+	ProcessingTimeMillis int64            `json:"processingTimeMillis"`
+	FilesProcessed       int              `json:"filesProcessed"`
+	TotalChunksGenerated int64            `json:"totalChunksGenerated"`
+	Files                []FileSummary    `json:"files"`
+}
+
+// ChunkProcessingSummary contains summary for a processed chunk
+type ChunkProcessingSummary struct {
+	ChunkID               string  `json:"chunkId"`
+	RecordsProcessed      int64   `json:"recordsProcessed"`
+	ProcessingTimeMillis  int64   `json:"processingTimeMillis"`
+	TPS                   float64 `json:"tps"`
+}
+
+// WorkerSummary contains the summary of the worker execution
+type WorkerSummary struct {
+	SchemaVersion       string                     `json:"schemaVersion"`
+	StartTimeMillis     int64                      `json:"startTimeMillis"`
+	EndTimeMillis       int64                      `json:"endTimeMillis"`
+	ProcessingTimeMillis int64                     `json:"processingTimeMillis"`
+	ChunksProcessed     int                        `json:"chunksProcessed"`
+	TotalRecordsProcessed int64                    `json:"totalRecordsProcessed"`
+	TPS                 float64                    `json:"tps"`
+	Chunks              []ChunkProcessingSummary   `json:"chunks"`
+}

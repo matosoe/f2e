@@ -73,12 +73,22 @@ aguardar_processamento() {
 
 inicio_fluxo="$(agora_ms)"
 cleanup() {
-  local inicio
+  local inicio duracao_total tps
   inicio="$(agora_ms)"
   printf 'Iniciando: encerramento do ambiente\n'
   docker compose -f "$root/docker-compose.yml" down --remove-orphans >/dev/null
   exibir_duracao 'Concluída: encerramento do ambiente' "$inicio"
-  exibir_duracao 'Duração total do fluxo' "$inicio_fluxo"
+  duracao_total=$(($(agora_ms) - inicio_fluxo))
+  
+  # Calculate and display overall TPS
+  printf '\n=== EXECUTION SUMMARY ===\n'
+  printf 'Total Records: %d\n' "$QUANTIDADE_REGISTROS"
+  exibir_duracao 'Total Duration' "$inicio_fluxo"
+  if [[ $duracao_total -gt 0 ]]; then
+    tps=$(echo "scale=2; $QUANTIDADE_REGISTROS * 1000 / $duracao_total" | bc)
+    printf 'Overall TPS: %.2f records/sec\n' "$tps"
+  fi
+  printf '========================\n\n'
 }
 trap cleanup EXIT
 awsq() { aws sqs --endpoint-url http://localhost:4566 --region us-east-1 "$@"; }

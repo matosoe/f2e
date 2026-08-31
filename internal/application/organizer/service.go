@@ -20,6 +20,12 @@ type Service struct {
 	Config config.Config
 }
 
+// ExecutionSummary contains metrics from a planning execution
+type ExecutionSummary struct {
+	Summary *f2e.OrganizerSummary
+	Jobs    []f2e.ChunkJob
+}
+
 func hash(s string) string { x := sha256.Sum256([]byte(s)); return hex.EncodeToString(x[:]) }
 func (s Service) Jobs(ctx context.Context, references []f2e.FileReference) ([]f2e.ChunkJob, error) {
 	files := make([]f2e.FileRequest, len(references))
@@ -128,6 +134,61 @@ func validType(t f2e.DataType) bool {
 	return t == f2e.DataTypeFixedWidth || t == f2e.DataTypeJSONL || t == f2e.DataTypeNDJSON || t == f2e.DataTypeCSV || t == f2e.DataTypeBinary || t == f2e.DataTypeText
 }
 func (s Service) safeLen() int64 { return int64(s.Config.RecordLength) }
+
+// PlanWithSummary converts the organizer request into worker jobs and returns execution summary
+func (s Service) PlanWithSummary(ctx context.Context, request f2e.OrganizerRequest) (*ExecutionSummary, error) {
+	startTime := f2e.CurrentTimeMillis()
+	
+	jobs, err := s.Plan(ctx, request)
+	if err != nil {
+		return nil, err
+	}
+	
+	endTime := f2e.CurrentTimeMillis()
+	duration := endTime - startTime
+	
+	// Build summary
+	summary := &f2e.OrganizerSummary{
+		SchemaVersion:        f2e.SchemaVersion,
+		StartTimeMillis:       startTime,
+		EndTimeMillis:         endTime,
+		ProcessingTimeMillis:  duration,
+		FilesProcessed:        len(request.Files),
+		TotalChunksGenerated:  int64(len(jobs)),
+		Files:                 []f2e.FileSummary{},
+	}
+	
+	// Create file summaries
+	for _, file := range request.Files {
+		size, _, err := s.Store.Head(ctx, file.Bucket, file.Key)
+		if err != nil {
+			// Log error but continue
+			fmt.Printf("organizer_summary: error getting file size for %s/%s: %v\n", file.Bucket, file.Key, err)
+		}
+		
+		// Count chunks for this file
+		chunksForFile := int64(0)
+		for _, job := range jobs {
+			if job.Bucket == file.Bucket && job.Key == file.Key {
+				chunksForFile++
+			}
+		}
+		
+		summary.Files = append(summary.Files, f2e.FileSummary{
+			Bucket:               file.Bucket,
+			Key:                  file.Key,
+			SizeBytes:            size,
+			ChunksGenerated:      chunksForFile,
+			ProcessingTimeMillis: duration,
+		})
+	}
+	
+	return &ExecutionSummary{
+		Summary: summary,
+		Jobs:    jobs,
+	}, nil
+}
+
 func (s Service) Publish(ctx context.Context, jobs []f2e.ChunkJob) error {
 	bodies := make([]string, 0, 10)
 	flush := func() error {

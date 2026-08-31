@@ -48,12 +48,36 @@ func handler(ctx context.Context, e events.SQSEvent) (events.SQSEventResponse, e
 func jobsFor(ctx context.Context, body []byte) ([]f2e.ChunkJob, error) {
 	var request f2e.OrganizerRequest
 	if err := json.Unmarshal(body, &request); err == nil && request.SchemaVersion != "" {
-		return service.Plan(ctx, request)
+		execution, err := service.PlanWithSummary(ctx, request)
+		if err != nil {
+			return nil, err
+		}
+		// Log summary
+		if execution.Summary != nil {
+			logSummary(execution.Summary)
+		}
+		return execution.Jobs, nil
 	}
 	references, err := s3event.Parse(body)
 	if err != nil {
 		return nil, err
 	}
 	return service.Jobs(ctx, references)
+}
+
+// logSummary logs the organizer summary to stdout
+func logSummary(summary *f2e.OrganizerSummary) {
+	log.Println("=== ORGANIZER SUMMARY ===")
+	log.Printf("Files Processed: %d", summary.FilesProcessed)
+	log.Printf("Total Chunks Generated: %d", summary.TotalChunksGenerated)
+	log.Printf("Processing Time: %s", f2e.FormatDuration(summary.ProcessingTimeMillis))
+	
+	for _, fileSummary := range summary.Files {
+		log.Printf("  File: %s/%s", fileSummary.Bucket, fileSummary.Key)
+		log.Printf("    Size: %d bytes", fileSummary.SizeBytes)
+		log.Printf("    Chunks: %d", fileSummary.ChunksGenerated)
+		log.Printf("    Time: %s", f2e.FormatDuration(fileSummary.ProcessingTimeMillis))
+	}
+	log.Println("========================")
 }
 func main() { lambda.Start(handler) }

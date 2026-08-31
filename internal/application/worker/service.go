@@ -11,12 +11,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
+	"strings"
+
 	"github.com/f2e/f2e/internal/application/port"
 	"github.com/f2e/f2e/internal/domain/f2e"
 	"github.com/f2e/f2e/internal/domain/fixedwidth"
 	"github.com/f2e/f2e/internal/platform/config"
-	"io"
-	"strings"
 )
 
 type Service struct {
@@ -25,18 +26,37 @@ type Service struct {
 	Config config.Config
 }
 
+// ChunkProcessingResult contains metrics from processing a chunk
+type ChunkProcessingResult struct {
+	ChunkID              string
+	RecordsProcessed     int64
+	ProcessingTimeMillis int64
+	TPS                  float64
+}
+
 func hash(s string) string { x := sha256.Sum256([]byte(s)); return hex.EncodeToString(x[:]) }
 func (s Service) Process(ctx context.Context, body []byte) error {
+	result, err := s.ProcessWithMetrics(ctx, body)
+	if err == nil && result != nil {
+		logChunkSummary(result)
+	}
+	return err
+}
+
+// ProcessWithMetrics processes a chunk and returns metrics
+func (s Service) ProcessWithMetrics(ctx context.Context, body []byte) (*ChunkProcessingResult, error) {
+	startTime := f2e.CurrentTimeMillis()
+
 	var j f2e.ChunkJob
 	if e := json.Unmarshal(body, &j); e != nil {
-		return fmt.Errorf("decode job: %w", e)
+		return nil, fmt.Errorf("decode job: %w", e)
 	}
 	// Jobs produced before the explicit dataType contract were fixed-width.
 	if j.DataType == "" {
 		j.DataType = f2e.DataTypeFixedWidth
 	}
 	if e := s.valid(j); e != nil {
-		return e
+		return nil, e
 	}
 	readStart := j.StartByte
 	if j.MaxRecordLengthBytes > 0 && readStart > 0 {
@@ -47,10 +67,33 @@ func (s Service) Process(ctx context.Context, body []byte) error {
 	}
 	r, e := s.Store.GetRange(ctx, j.Bucket, j.Key, readStart, j.EndByteInclusive)
 	if e != nil {
-		return e
+		return nil, e
 	}
 	defer r.Close()
-	return s.stream(ctx, j, r, readStart)
+
+	recordCount, err := s.streamWithMetrics(ctx, j, r, readStart)
+	if err != nil {
+		return nil, err
+	}
+
+	endTime := f2e.CurrentTimeMillis()
+	duration := endTime - startTime
+
+	return &ChunkProcessingResult{
+		ChunkID:              j.ChunkID,
+		RecordsProcessed:     recordCount,
+		ProcessingTimeMillis: duration,
+		TPS:                  f2e.CalculateTPS(recordCount, duration),
+	}, nil
+}
+
+// logChunkSummary logs the chunk processing summary
+func logChunkSummary(result *ChunkProcessingResult) {
+	fmt.Printf("worker_chunk_summary: chunkId=%s records=%d time=%s tps=%.2f\n",
+		result.ChunkID,
+		result.RecordsProcessed,
+		f2e.FormatDuration(result.ProcessingTimeMillis),
+		result.TPS)
 }
 func (s Service) valid(j f2e.ChunkJob) error {
 	if j.SchemaVersion != f2e.SchemaVersion || j.Bucket == "" || j.Key == "" || j.EndByteInclusive < j.StartByte {
@@ -141,6 +184,87 @@ func (s Service) stream(ctx context.Context, j f2e.ChunkJob, r io.Reader, readSt
 		return flush()
 	}
 	return nil
+}
+
+// streamWithMetrics processes a chunk and returns the number of records processed
+func (s Service) streamWithMetrics(ctx context.Context, j f2e.ChunkJob, r io.Reader, readStart int64) (int64, error) {
+	batch := make([]string, 0, 10)
+	var recordsProcessed int64 = 0
+
+	flush := func() error {
+		failed, e := s.Queue.Send(ctx, s.Config.OutputQueueURL, batch)
+		if e != nil {
+			return e
+		}
+		if len(failed) > 0 {
+			return fmt.Errorf("output batch partial failure: %v", failed)
+		}
+		batch = nil
+		return nil
+	}
+
+	publish := func(n, off int64, raw string, fields []string, binary []byte) error {
+		byteOffset := j.StartByte + off
+		if j.MaxRecordLengthBytes > 0 {
+			byteOffset = readStart + off
+		}
+		eventID := hash(j.FileID + "/" + j.ChunkID + "/" + fmt.Sprint(j.StartRecord+n+1))
+		if j.MaxRecordLengthBytes > 0 {
+			eventID = hash(j.FileID + "/" + fmt.Sprint(byteOffset))
+		}
+		e := f2e.OutputEvent{SchemaVersion: f2e.SchemaVersion, EventID: eventID, FileID: j.FileID, JobID: j.JobID, ChunkID: j.ChunkID, RecordNumber: j.StartRecord + n + 1, ByteOffset: byteOffset, DataType: j.DataType}
+		e.Payload.Raw = raw
+		e.Payload.Fields = fields
+		if binary != nil {
+			e.Payload.Base64 = base64.StdEncoding.EncodeToString(binary)
+		}
+		b, er := json.Marshal(e)
+		if er != nil {
+			return er
+		}
+		batch = append(batch, string(b))
+		recordsProcessed++
+		if len(batch) == 10 {
+			return flush()
+		}
+		return nil
+	}
+
+	var err error
+	switch j.DataType {
+	case f2e.DataTypeFixedWidth:
+		err = fixedwidth.Read(ctx, r, j.RecordLengthBytes, j.RecordCount, func(n, off int64, raw string) error { return publish(n, off, raw, nil, nil) })
+	case f2e.DataTypeJSONL, f2e.DataTypeNDJSON, f2e.DataTypeText:
+		err = readLines(ctx, r, j.MaxRecordLengthBytes > 0 && readStart > 0, func(n, off int64, raw string) error {
+			if j.MaxRecordLengthBytes > 0 && (readStart+off < j.StartByte || readStart+off > j.EndByteInclusive-j.TrailingPaddingBytes) {
+				return nil
+			}
+			if (j.DataType == f2e.DataTypeJSONL || j.DataType == f2e.DataTypeNDJSON) && !j.Options.BypassJSONValidation {
+				var value any
+				if e := json.Unmarshal([]byte(raw), &value); e != nil {
+					return fmt.Errorf("invalid JSON at record %d: %w", n+1, e)
+				}
+			}
+			return publish(n, off, raw, nil, nil)
+		})
+	case f2e.DataTypeCSV:
+		err = readCSV(ctx, r, func(n, off int64, fields []string) error { return publish(n, off, "", fields, nil) })
+	case f2e.DataTypeBinary:
+		var body []byte
+		body, err = io.ReadAll(r)
+		if err == nil {
+			err = publish(0, 0, "", nil, body)
+		}
+	}
+	if err != nil {
+		return 0, err
+	}
+	if len(batch) > 0 {
+		if err := flush(); err != nil {
+			return 0, err
+		}
+	}
+	return recordsProcessed, nil
 }
 
 func readLines(ctx context.Context, r io.Reader, discardFirst bool, fn func(int64, int64, string) error) error {
