@@ -12,7 +12,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"path"
 	"strings"
+	"time"
 
 	"github.com/f2e/f2e/internal/application/port"
 	"github.com/f2e/f2e/internal/domain/f2e"
@@ -117,93 +119,21 @@ func (s Service) valid(j f2e.ChunkJob) error {
 	return nil
 }
 func (s Service) stream(ctx context.Context, j f2e.ChunkJob, r io.Reader, readStart int64) error {
-	batch := make([]string, 0, 10)
-	flush := func() error {
-		failed, e := s.Queue.Send(ctx, s.Config.OutputQueueURL, batch)
-		if e != nil {
-			return e
-		}
-		if len(failed) > 0 {
-			return fmt.Errorf("output batch partial failure: %v", failed)
-		}
-		batch = nil
-		return nil
-	}
-	publish := func(n, off int64, raw string, fields []string, binary []byte) error {
-		byteOffset := j.StartByte + off
-		if j.MaxRecordLengthBytes > 0 {
-			byteOffset = readStart + off
-		}
-		eventID := hash(j.FileID + "/" + j.ChunkID + "/" + fmt.Sprint(j.StartRecord+n+1))
-		if j.MaxRecordLengthBytes > 0 {
-			eventID = hash(j.FileID + "/" + fmt.Sprint(byteOffset))
-		}
-		e := f2e.OutputEvent{SchemaVersion: f2e.SchemaVersion, EventID: eventID, FileID: j.FileID, JobID: j.JobID, ChunkID: j.ChunkID, RecordNumber: j.StartRecord + n + 1, ByteOffset: byteOffset, DataType: j.DataType}
-		e.Payload.Raw = raw
-		e.Payload.Fields = fields
-		if binary != nil {
-			e.Payload.Base64 = base64.StdEncoding.EncodeToString(binary)
-		}
-		b, er := json.Marshal(e)
-		if er != nil {
-			return er
-		}
-		batch = append(batch, string(b))
-		if len(batch) == 10 {
-			return flush()
-		}
-		return nil
-	}
-	var err error
-	switch j.DataType {
-	case f2e.DataTypeFixedWidth:
-		err = fixedwidth.Read(ctx, r, j.RecordLengthBytes, j.RecordCount, func(n, off int64, raw string) error { return publish(n, off, raw, nil, nil) })
-	case f2e.DataTypeJSONL, f2e.DataTypeNDJSON, f2e.DataTypeText:
-		err = readLines(ctx, r, j.MaxRecordLengthBytes > 0 && readStart > 0, func(n, off int64, raw string) error {
-			if j.MaxRecordLengthBytes > 0 && (readStart+off < j.StartByte || readStart+off > j.EndByteInclusive-j.TrailingPaddingBytes) {
-				return nil
-			}
-			if (j.DataType == f2e.DataTypeJSONL || j.DataType == f2e.DataTypeNDJSON) && !j.Options.BypassJSONValidation {
-				var value any
-				if e := json.Unmarshal([]byte(raw), &value); e != nil {
-					return fmt.Errorf("invalid JSON at record %d: %w", n+1, e)
-				}
-			}
-			return publish(n, off, raw, nil, nil)
-		})
-	case f2e.DataTypeCSV:
-		err = readCSV(ctx, r, func(n, off int64, fields []string) error { return publish(n, off, "", fields, nil) })
-	case f2e.DataTypeBinary:
-		var body []byte
-		body, err = io.ReadAll(r)
-		if err == nil {
-			err = publish(0, 0, "", nil, body)
-		}
-	case f2e.DataTypeMultiLine:
-		layout := j.MultiLineLayout
-		err = fixedwidth.ReadMultiLine(ctx, r, layout.BreakPosition, layout.BreakMarker, layout.AcceptedPrefixes, layout.LineSeparator, func(n, off int64, raw string) error {
-			if readStart+off < j.StartByte || readStart+off > j.EndByteInclusive-j.TrailingPaddingBytes {
-				return nil
-			}
-			return publish(n, off, raw, nil, nil)
-		})
-	}
-	if err != nil {
-		return err
-	}
-	if len(batch) > 0 {
-		return flush()
-	}
-	return nil
+	_, err := s.streamWithMetrics(ctx, j, r, readStart)
+	return err
 }
 
 // streamWithMetrics processes a chunk and returns the number of records processed
 func (s Service) streamWithMetrics(ctx context.Context, j f2e.ChunkJob, r io.Reader, readStart int64) (int64, error) {
+	attrs := map[string]port.MessageAttribute{
+		"schema": {DataType: "String", Value: s.Config.EventSchemaID + ":" + s.Config.EventSchemaVersion},
+		"format": {DataType: "String", Value: s.Config.EventFormat},
+	}
 	batch := make([]string, 0, 10)
 	var recordsProcessed int64 = 0
 
 	flush := func() error {
-		failed, e := s.Queue.Send(ctx, s.Config.OutputQueueURL, batch)
+		failed, e := s.Queue.Send(ctx, s.Config.OutputQueueURL, batch, attrs)
 		if e != nil {
 			return e
 		}
@@ -223,13 +153,42 @@ func (s Service) streamWithMetrics(ctx context.Context, j f2e.ChunkJob, r io.Rea
 		if j.MaxRecordLengthBytes > 0 {
 			eventID = hash(j.FileID + "/" + fmt.Sprint(byteOffset))
 		}
-		e := f2e.OutputEvent{SchemaVersion: f2e.SchemaVersion, EventID: eventID, FileID: j.FileID, JobID: j.JobID, ChunkID: j.ChunkID, RecordNumber: j.StartRecord + n + 1, ByteOffset: byteOffset, DataType: j.DataType}
-		e.Payload.Raw = raw
-		e.Payload.Fields = fields
-		if binary != nil {
-			e.Payload.Base64 = base64.StdEncoding.EncodeToString(binary)
+		recNum := j.StartRecord + n + 1
+		var byteLen *int64
+		if j.DataType == f2e.DataTypeFixedWidth {
+			bl := j.RecordLengthBytes
+			byteLen = &bl
 		}
-		b, er := json.Marshal(e)
+		env := f2e.Envelope[f2e.RecordPayload]{
+			Metadata: f2e.Metadata{
+				EventID:   eventID,
+				Schema:    f2e.Schema{ID: s.Config.EventSchemaID, Version: s.Config.EventSchemaVersion},
+				Format:    s.Config.EventFormat,
+				CreatedAt: time.Now().UTC().Format(time.RFC3339),
+			},
+			Source: f2e.Source{
+				Type:       "s3",
+				Bucket:     j.Bucket,
+				Key:        j.Key,
+				VersionID:  j.VersionID,
+				ETag:       j.ETag,
+				FileName:   path.Base(j.Key),
+				FileFormat: string(j.DataType),
+				FileSize:   j.FileSize,
+			},
+			Processing: f2e.Processing{
+				JobID:        j.JobID,
+				ChunkID:      j.ChunkID,
+				RecordNumber: &recNum,
+				ByteOffset:   &byteOffset,
+				ByteLength:   byteLen,
+			},
+			Data: f2e.RecordPayload{Raw: raw, Fields: fields},
+		}
+		if binary != nil {
+			env.Data.Base64 = base64.StdEncoding.EncodeToString(binary)
+		}
+		b, er := json.Marshal(env)
 		if er != nil {
 			return er
 		}

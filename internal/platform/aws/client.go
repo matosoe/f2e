@@ -4,6 +4,8 @@ package aws
 import (
 	"context"
 	"fmt"
+	"io"
+
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awscfg "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
@@ -12,7 +14,6 @@ import (
 	sqsTypes "github.com/aws/aws-sdk-go-v2/service/sqs/types"
 	"github.com/f2e/f2e/internal/application/port"
 	"github.com/f2e/f2e/internal/platform/config"
-	"io"
 )
 
 type AWS struct {
@@ -34,12 +35,12 @@ func New(ctx context.Context, c config.Config) (*AWS, error) {
 	}
 	return &AWS{S3: s3.NewFromConfig(cfg, func(o *s3.Options) { o.UsePathStyle = true }), SQS: sqs.NewFromConfig(cfg)}, nil
 }
-func (a *AWS) Head(ctx context.Context, b, k string) (int64, string, error) {
+func (a *AWS) Head(ctx context.Context, b, k string) (int64, string, string, error) {
 	out, e := a.S3.HeadObject(ctx, &s3.HeadObjectInput{Bucket: aws.String(b), Key: aws.String(k)})
 	if e != nil {
-		return 0, "", e
+		return 0, "", "", e
 	}
-	return aws.ToInt64(out.ContentLength), aws.ToString(out.ETag), nil
+	return aws.ToInt64(out.ContentLength), aws.ToString(out.ETag), aws.ToString(out.VersionId), nil
 }
 func (a *AWS) GetRange(ctx context.Context, b, k string, start, end int64) (io.ReadCloser, error) {
 	out, e := a.S3.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(b), Key: aws.String(k), Range: aws.String(fmt.Sprintf("bytes=%d-%d", start, end))})
@@ -48,14 +49,22 @@ func (a *AWS) GetRange(ctx context.Context, b, k string, start, end int64) (io.R
 	}
 	return out.Body, nil
 }
-func (a *AWS) Send(ctx context.Context, url string, bodies []string) ([]int, error) {
+func (a *AWS) Send(ctx context.Context, url string, bodies []string, attrs map[string]port.MessageAttribute) ([]int, error) {
 	if len(bodies) == 0 {
 		return nil, nil
 	}
 	entries := make([]sqsTypes.SendMessageBatchRequestEntry, len(bodies))
 	for i, b := range bodies {
 		id := fmt.Sprintf("%d", i)
-		entries[i] = sqsTypes.SendMessageBatchRequestEntry{Id: &id, MessageBody: &b}
+		entry := sqsTypes.SendMessageBatchRequestEntry{Id: &id, MessageBody: &b}
+		if len(attrs) > 0 {
+			entry.MessageAttributes = make(map[string]sqsTypes.MessageAttributeValue, len(attrs))
+			for k, v := range attrs {
+				dt, val := v.DataType, v.Value
+				entry.MessageAttributes[k] = sqsTypes.MessageAttributeValue{DataType: &dt, StringValue: &val}
+			}
+		}
+		entries[i] = entry
 	}
 	out, e := a.SQS.SendMessageBatch(ctx, &sqs.SendMessageBatchInput{QueueUrl: &url, Entries: entries})
 	if e != nil {

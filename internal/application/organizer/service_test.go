@@ -139,15 +139,17 @@ func TestMultiLineJobsRejectsEmptyBreakMarker(t *testing.T) {
 
 type fakeHead struct{}
 
-func (fakeHead) Head(context.Context, string, string) (int64, string, error) { return 250, "etag", nil }
+func (fakeHead) Head(context.Context, string, string) (int64, string, string, error) {
+	return 250, "etag", "", nil
+}
 func (fakeHead) GetRange(context.Context, string, string, int64, int64) (io.ReadCloser, error) {
 	return nil, nil
 }
 
 type rangeStore struct{ data string }
 
-func (s rangeStore) Head(context.Context, string, string) (int64, string, error) {
-	return int64(len(s.data)), "etag", nil
+func (s rangeStore) Head(context.Context, string, string) (int64, string, string, error) {
+	return int64(len(s.data)), "etag", "", nil
 }
 func (s rangeStore) GetRange(_ context.Context, _ string, _ string, start, end int64) (io.ReadCloser, error) {
 	return io.NopCloser(strings.NewReader(s.data[start : end+1])), nil

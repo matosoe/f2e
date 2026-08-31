@@ -77,21 +77,58 @@ type ChunkJob struct {
 	DataType             DataType          `json:"dataType"`
 	MultiLineLayout      MultiLineLayout   `json:"multiLineLayout,omitempty"`
 	Options              ProcessingOptions `json:"options,omitempty"`
+	VersionID            string            `json:"versionId,omitempty"`
+	FileSize             int64             `json:"fileSize,omitempty"`
 }
-type OutputEvent struct {
-	SchemaVersion string   `json:"schemaVersion"`
-	EventID       string   `json:"eventId"`
-	FileID        string   `json:"fileId"`
-	JobID         string   `json:"jobId"`
-	ChunkID       string   `json:"chunkId"`
-	RecordNumber  int64    `json:"recordNumber"`
-	ByteOffset    int64    `json:"byteOffset"`
-	DataType      DataType `json:"dataType"`
-	Payload       struct {
-		Raw    string   `json:"raw,omitempty"`
-		Fields []string `json:"fields,omitempty"`
-		Base64 string   `json:"base64,omitempty"`
-	} `json:"payload"`
+
+// RecordPayload carries the raw parsed content of a single record.
+type RecordPayload struct {
+	Raw    string   `json:"raw,omitempty"`
+	Fields []string `json:"fields,omitempty"`
+	Base64 string   `json:"base64,omitempty"`
+}
+
+// Envelope is the standard File-to-Envelope contract for every published event.
+type Envelope[T any] struct {
+	Metadata   Metadata   `json:"metadata"`
+	Source     Source     `json:"source"`
+	Processing Processing `json:"processing"`
+	Data       T          `json:"data"`
+}
+
+type Metadata struct {
+	EventID       string `json:"eventId"`
+	Schema        Schema `json:"schema"`
+	Format        string `json:"format"`
+	CreatedAt     string `json:"createdAt"`
+	TransactionID string `json:"transactionId,omitempty"`
+	CorrelationID string `json:"correlationId,omitempty"`
+	TraceID       string `json:"traceId,omitempty"`
+}
+
+type Schema struct {
+	ID      string `json:"id"`
+	Version string `json:"version"`
+}
+
+type Source struct {
+	Type       string `json:"type"`
+	System     string `json:"system,omitempty"`
+	Bucket     string `json:"bucket,omitempty"`
+	Key        string `json:"key,omitempty"`
+	VersionID  string `json:"versionId,omitempty"`
+	ETag       string `json:"etag,omitempty"`
+	FileName   string `json:"fileName,omitempty"`
+	FileFormat string `json:"fileFormat,omitempty"`
+	FileSize   int64  `json:"fileSize,omitempty"`
+}
+
+type Processing struct {
+	JobID        string `json:"jobId"`
+	ChunkID      string `json:"chunkId"`
+	RecordNumber *int64 `json:"recordNumber,omitempty"`
+	ByteOffset   *int64 `json:"byteOffset,omitempty"`
+	ByteLength   *int64 `json:"byteLength,omitempty"`
 }
 
 // FileSummary contains processing summary for a single file

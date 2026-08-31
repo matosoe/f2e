@@ -10,6 +10,7 @@ import (
 type Config struct {
 	Endpoint, Region, InputBucket, IntakeQueueURL, ChunkQueueURL, OutputQueueURL string
 	RecordLength, RecordsPerChunk, BatchSize, WorkerConcurrency                  int
+	EventSchemaID, EventSchemaVersion, EventFormat                               string
 }
 
 func Load() (Config, error) {
@@ -30,6 +31,9 @@ func Load() (Config, error) {
 	if c.RecordLength < 2 || c.RecordsPerChunk < 1 || c.BatchSize < 1 || c.BatchSize > 10 || c.WorkerConcurrency < 1 {
 		return c, fmt.Errorf("invalid F2E numeric configuration")
 	}
+	c.EventSchemaID = value("F2E_EVENT_SCHEMA_ID", "f2e-record")
+	c.EventSchemaVersion = value("F2E_EVENT_SCHEMA_VERSION", "1")
+	c.EventFormat = value("F2E_EVENT_FORMAT", "json")
 	return c, nil
 }
 func value(k, d string) string {
