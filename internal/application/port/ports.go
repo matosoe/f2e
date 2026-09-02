@@ -14,13 +14,32 @@ type MessageAttribute struct {
 	Value    string
 }
 
+// OutboundMessage keeps broker metadata coupled to the exact serialized body.
+// This prevents attributes from diverging when an extension changes an envelope.
+type OutboundMessage struct {
+	Body       string
+	Attributes map[string]MessageAttribute
+}
+
 type ObjectStore interface {
-	Head(context.Context, string, string) (size int64, eTag string, versionID string, err error)
-	GetRange(context.Context, string, string, int64, int64) (io.ReadCloser, error)
+	Head(context.Context, string, string) (f2e.ObjectIdentity, error)
+	GetRange(context.Context, f2e.ObjectIdentity, int64, int64) (io.ReadCloser, error)
 }
 
 type Queue interface {
-	Send(context.Context, string, []string, map[string]MessageAttribute) ([]int, error)
+	Send(context.Context, string, []OutboundMessage) ([]int, error)
+}
+
+// JobLedger persists the technical state required for reconciliation and replay.
+// Implementations must make every operation idempotent and concurrency-safe.
+type JobLedger interface {
+	Plan(context.Context, f2e.JobPlan, []f2e.ChunkJob) error
+	MarkScheduled(context.Context, []string) error
+	MarkSchedulingFailed(context.Context, []string, string) error
+	StartChunk(context.Context, string, string, int) error
+	CompleteChunk(context.Context, f2e.ChunkResult) error
+	FailChunk(context.Context, f2e.ChunkResult) error
+	Replay(context.Context, string, string, []string) ([]f2e.ChunkJob, error)
 }
 
 // SourceResolver fetches a byte range for a chunk job, hiding the underlying

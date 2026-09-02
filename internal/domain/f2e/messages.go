@@ -8,6 +8,14 @@ type FileReference struct {
 	Key    string
 }
 
+type ObjectIdentity struct {
+	Bucket    string
+	Key       string
+	VersionID string
+	ETag      string
+	Size      int64
+}
+
 // DataType describes how the object is split and represented by workers.
 type DataType string
 
@@ -53,6 +61,15 @@ type ProcessingOptions struct {
 	BypassJSONValidation bool `json:"bypassJsonValidation,omitempty"`
 }
 
+// CorporateContext carries trace identifiers through every internal hop and
+// into the self-contained output envelope.
+type CorporateContext struct {
+	TransactionID string `json:"transactionId,omitempty"`
+	CorrelationID string `json:"correlationId,omitempty"`
+	TraceID       string `json:"traceId,omitempty"`
+	SourceSystem  string `json:"sourceSystem,omitempty"`
+}
+
 type FileRequest struct {
 	Bucket               string            `json:"bucket"`
 	Key                  string            `json:"key"`
@@ -62,12 +79,16 @@ type FileRequest struct {
 	MultiLineLayout      MultiLineLayout   `json:"multiLineLayout,omitempty"`
 	JSONArrayLayout      JSONArrayLayout   `json:"jsonArrayLayout,omitempty"`
 	Options              ProcessingOptions `json:"options,omitempty"`
+	Context              CorporateContext  `json:"context,omitempty"`
 }
 
 // OrganizerRequest is the explicit input contract accepted by the organizer.
 type OrganizerRequest struct {
-	SchemaVersion string        `json:"schemaVersion"`
-	Files         []FileRequest `json:"files"`
+	SchemaVersion string `json:"schemaVersion"`
+	// ExecutionID identifies one intake occurrence. Lambda fills it from the
+	// SQS message ID so retries reuse job/event identities while replay creates new ones.
+	ExecutionID string        `json:"executionId,omitempty"`
+	Files       []FileRequest `json:"files"`
 }
 
 type ChunkJob struct {
@@ -91,6 +112,7 @@ type ChunkJob struct {
 	JSONArrayLayout      JSONArrayLayout   `json:"jsonArrayLayout,omitempty"`
 	JSONArrayOffset      int64             `json:"jsonArrayOffset,omitempty"`
 	Options              ProcessingOptions `json:"options,omitempty"`
+	Context              CorporateContext  `json:"context,omitempty"`
 	VersionID            string            `json:"versionId,omitempty"`
 	FileSize             int64             `json:"fileSize,omitempty"`
 }
@@ -111,13 +133,14 @@ type Envelope[T any] struct {
 }
 
 type Metadata struct {
-	EventID       string `json:"eventId"`
-	Schema        Schema `json:"schema"`
-	Format        string `json:"format"`
-	CreatedAt     string `json:"createdAt"`
-	TransactionID string `json:"transactionId,omitempty"`
-	CorrelationID string `json:"correlationId,omitempty"`
-	TraceID       string `json:"traceId,omitempty"`
+	EventID        string `json:"eventId"`
+	SourceRecordID string `json:"sourceRecordId"`
+	Schema         Schema `json:"schema"`
+	Format         string `json:"format"`
+	CreatedAt      string `json:"createdAt"`
+	TransactionID  string `json:"transactionId,omitempty"`
+	CorrelationID  string `json:"correlationId,omitempty"`
+	TraceID        string `json:"traceId,omitempty"`
 }
 
 type Schema struct {

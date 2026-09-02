@@ -1,67 +1,23 @@
 package f2e
 
-// JSONObjectEnd returns the number of bytes consumed to close the first JSON element
-// that begins (or is already open) in data.  Handles nested objects/arrays and strings
-// with escape sequences.  Returns -1 if no element boundary is found within data.
-func JSONObjectEnd(data []byte) int {
-	depth := 0
-	inStr := false
-	for i := 0; i < len(data); i++ {
-		b := data[i]
-		if inStr {
-			if b == '\\' {
-				i++
-				continue
-			}
-			if b == '"' {
-				inStr = false
-			}
-			continue
-		}
-		switch b {
-		case '"':
-			inStr = true
-		case '{', '[':
-			depth++
-		case '}', ']':
-			depth--
-			if depth <= 0 {
-				return i + 1
-			}
-		}
-	}
-	return -1
-}
+import (
+	"bytes"
+	"encoding/json"
+)
 
-// NextCompleteJSONElement returns the [start, end) byte positions of the next complete
-// JSON element (object or array) in data at or after pos.
-// If the content at pos is the tail of a partial element (non-bracket content), that
-// partial element is skipped first.
-// Returns (-1, -1) when no complete element is found.
+// NextCompleteJSONElement returns the [start, end) byte positions of the next
+// complete JSON value in data at or after an element boundary. It accepts every
+// JSON value type. Returns (-1, -1) at the containing array's end or when the
+// available bounded buffer does not hold a complete value.
 func NextCompleteJSONElement(data []byte, pos int) (int, int) {
 	for pos < len(data) {
 		b := data[pos]
 		if b == ']' || b == '}' {
 			return -1, -1
 		}
-		if b == '{' || b == '[' {
-			break
-		}
 		if b == ' ' || b == '\t' || b == '\n' || b == '\r' || b == ',' {
 			pos++
 			continue
-		}
-		// Mid-element content: skip to end of the partial element.
-		end := JSONObjectEnd(data[pos:])
-		if end < 0 {
-			return -1, -1
-		}
-		pos += end
-		for pos < len(data) && (data[pos] == ' ' || data[pos] == '\t' || data[pos] == '\n' || data[pos] == '\r' || data[pos] == ',') {
-			pos++
-		}
-		if pos >= len(data) || data[pos] == ']' || data[pos] == '}' {
-			return -1, -1
 		}
 		break
 	}
@@ -69,11 +25,12 @@ func NextCompleteJSONElement(data []byte, pos int) (int, int) {
 		return -1, -1
 	}
 	start := pos
-	length := JSONObjectEnd(data[start:])
-	if length < 0 {
+	decoder := json.NewDecoder(bytes.NewReader(data[start:]))
+	var raw json.RawMessage
+	if err := decoder.Decode(&raw); err != nil {
 		return -1, -1
 	}
-	return start, start + length
+	return start, start + int(decoder.InputOffset())
 }
 
 // JSONElementEndAfter iterates elements in data and returns the end position (exclusive)
@@ -84,6 +41,10 @@ func JSONElementEndAfter(data []byte, afterPos int) int {
 	for {
 		start, end := NextCompleteJSONElement(data, pos)
 		if start < 0 {
+			return -1
+		}
+		if start > afterPos {
+			// afterPos already lies between complete values.
 			return -1
 		}
 		if end > afterPos {

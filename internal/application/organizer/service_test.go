@@ -24,6 +24,38 @@ func TestJobs(t *testing.T) {
 	}
 }
 
+func TestPlanCreatesNewJobForReplayButPreservesFileIdentity(t *testing.T) {
+	s := Service{Store: fakeHead{}, Config: config.Config{RecordLength: 10, RecordsPerChunk: 10}}
+	req := f2e.OrganizerRequest{SchemaVersion: f2e.SchemaVersion, Files: []f2e.FileRequest{{Bucket: "b", Key: "k", DataType: f2e.DataTypeFixedWidth}}}
+	first, err := s.Plan(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := s.Plan(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first[0].FileID != second[0].FileID || first[0].JobID == second[0].JobID {
+		t.Fatalf("first=%+v second=%+v", first[0], second[0])
+	}
+}
+
+func TestPlanPreservesJobForSameIntakeOccurrence(t *testing.T) {
+	s := Service{Store: fakeHead{}, Config: config.Config{RecordLength: 50, RecordsPerChunk: 10}}
+	req := f2e.OrganizerRequest{SchemaVersion: f2e.SchemaVersion, ExecutionID: "sqs-message-id", Files: []f2e.FileRequest{{Bucket: "b", Key: "k", DataType: f2e.DataTypeFixedWidth}}}
+	first, err := s.Plan(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retry, err := s.Plan(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first[0].JobID != retry[0].JobID || first[0].FileID != retry[0].FileID {
+		t.Fatalf("same intake occurrence changed identity: first=%+v retry=%+v", first[0], retry[0])
+	}
+}
+
 func TestPlanCarriesFormatAndOptionsToWorkerJob(t *testing.T) {
 	s := Service{Store: fakeHead{}, Config: config.Config{RecordLength: 10, RecordsPerChunk: 10}}
 	jobs, err := s.Plan(context.Background(), f2e.OrganizerRequest{SchemaVersion: f2e.SchemaVersion, Files: []f2e.FileRequest{{Bucket: "b", Key: "events.jsonl", DataType: f2e.DataTypeJSONL, Options: f2e.ProcessingOptions{BypassJSONValidation: true}}}})
@@ -139,19 +171,19 @@ func TestMultiLineJobsRejectsEmptyBreakMarker(t *testing.T) {
 
 type fakeHead struct{}
 
-func (fakeHead) Head(context.Context, string, string) (int64, string, string, error) {
-	return 250, "etag", "", nil
+func (fakeHead) Head(_ context.Context, bucket, key string) (f2e.ObjectIdentity, error) {
+	return f2e.ObjectIdentity{Bucket: bucket, Key: key, Size: 250, ETag: "etag"}, nil
 }
-func (fakeHead) GetRange(context.Context, string, string, int64, int64) (io.ReadCloser, error) {
+func (fakeHead) GetRange(context.Context, f2e.ObjectIdentity, int64, int64) (io.ReadCloser, error) {
 	return nil, nil
 }
 
 type rangeStore struct{ data string }
 
-func (s rangeStore) Head(context.Context, string, string) (int64, string, string, error) {
-	return int64(len(s.data)), "etag", "", nil
+func (s rangeStore) Head(_ context.Context, bucket, key string) (f2e.ObjectIdentity, error) {
+	return f2e.ObjectIdentity{Bucket: bucket, Key: key, Size: int64(len(s.data)), ETag: "etag"}, nil
 }
-func (s rangeStore) GetRange(_ context.Context, _ string, _ string, start, end int64) (io.ReadCloser, error) {
+func (s rangeStore) GetRange(_ context.Context, _ f2e.ObjectIdentity, start, end int64) (io.ReadCloser, error) {
 	return io.NopCloser(strings.NewReader(s.data[start : end+1])), nil
 }
 

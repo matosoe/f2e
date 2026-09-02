@@ -41,10 +41,11 @@ type Envelope struct {
 
 // EnvMetadata holds event identification fields.
 type EnvMetadata struct {
-	EventID   string    `json:"eventId"`
-	Schema    EnvSchema `json:"schema"`
-	Format    string    `json:"format"`
-	CreatedAt string    `json:"createdAt"`
+	EventID        string    `json:"eventId"`
+	SourceRecordID string    `json:"sourceRecordId"`
+	Schema         EnvSchema `json:"schema"`
+	Format         string    `json:"format"`
+	CreatedAt      string    `json:"createdAt"`
 }
 
 // EnvSchema identifies the schema used by the event.

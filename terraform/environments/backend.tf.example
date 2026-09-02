@@ -1,0 +1,10 @@
+terraform {
+  backend "s3" {
+    bucket       = "replace-with-corporate-state-bucket"
+    key          = "f2e/production/terraform.tfstate"
+    region       = "us-east-1"
+    encrypt      = true
+    use_lockfile = true
+    kms_key_id   = "replace-with-corporate-kms-key-arn"
+  }
+}

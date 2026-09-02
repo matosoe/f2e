@@ -1,0 +1,88 @@
+name: promote
+
+on:
+  workflow_dispatch:
+    inputs:
+      artifact_run_id:
+        description: Successful CI run containing the signed build-evidence artifact
+        required: true
+        type: string
+      environment:
+        description: Target GitHub/AWS environment
+        required: true
+        type: choice
+        options: [staging, production]
+
+permissions:
+  actions: read
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - name: Resolve immutable source revision
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.artifact_run_id }}
+        run: |
+          sha=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}" \
+            --jq 'if .conclusion == "success" and .event == "push" and .head_branch == "main" then .head_sha else error("run is not an approved main build") end')
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ steps.source.outputs.sha }}
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
+        with:
+          terraform_version: 1.16.0
+      - uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
+      - name: Download and verify immutable artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.artifact_run_id }}
+        run: |
+          gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" --name build-evidence --dir .build
+          (cd .build && sha256sum --check SHA256SUMS)
+          cosign verify-blob \
+            --bundle .build/SHA256SUMS.bundle \
+            --certificate-identity-regexp "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/ci.yml@.*" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            .build/SHA256SUMS
+      - uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708 # v5
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - name: Plan and deploy the approved artifact
+        env:
+          TARGET: ${{ inputs.environment }}
+          TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+          TF_STATE_KMS_KEY_ARN: ${{ vars.TF_STATE_KMS_KEY_ARN }}
+          AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+          APP_KMS_KEY_ARN: ${{ vars.APP_KMS_KEY_ARN }}
+          INPUT_BUCKET: ${{ vars.INPUT_BUCKET }}
+        run: |
+          cp terraform/environments/backend.tf.example terraform/backend.tf
+          terraform -chdir=terraform init \
+            -backend-config="bucket=${TF_STATE_BUCKET}" \
+            -backend-config="key=f2e/${TARGET}/terraform.tfstate" \
+            -backend-config="region=${AWS_REGION}" \
+            -backend-config="kms_key_id=${TF_STATE_KMS_KEY_ARN}"
+          terraform -chdir=terraform plan -input=false \
+            -var-file="environments/${TARGET}.tfvars" \
+            -var="aws_account_id=${AWS_ACCOUNT_ID}" \
+            -var="kms_key_arn=${APP_KMS_KEY_ARN}" \
+            -var="f2e_input_bucket=${INPUT_BUCKET}" \
+            -out="${RUNNER_TEMP}/promotion.tfplan"
+          terraform -chdir=terraform apply -input=false -auto-approve "${RUNNER_TEMP}/promotion.tfplan"
+      - name: Smoke test deployed aliases and state stores
+        env:
+          TARGET: ${{ inputs.environment }}
+        run: |
+          aws lambda get-alias --function-name "f2e-${TARGET}-organizer" --name live
+          aws lambda get-alias --function-name "f2e-${TARGET}-worker" --name live
+          aws sqs get-queue-url --queue-name "f2e-${TARGET}-file-intake"
+          aws sqs get-queue-url --queue-name "f2e-${TARGET}-chunk-jobs"
+          aws dynamodb describe-table --table-name "f2e-${TARGET}-job-ledger"

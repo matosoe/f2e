@@ -22,11 +22,13 @@ provider "aws" {
   dynamic "endpoints" {
     for_each = local.is_localstack ? [var.localstack_endpoint] : []
     content {
-      s3     = endpoints.value
-      sqs    = endpoints.value
-      lambda = endpoints.value
-      iam    = endpoints.value
-      logs   = endpoints.value
+      s3         = endpoints.value
+      sqs        = endpoints.value
+      lambda     = endpoints.value
+      iam        = endpoints.value
+      logs       = endpoints.value
+      dynamodb   = endpoints.value
+      cloudwatch = endpoints.value
     }
   }
 }

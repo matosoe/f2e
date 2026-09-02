@@ -7,11 +7,14 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	dynamodbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	sqstypes "github.com/aws/aws-sdk-go-v2/service/sqs/types"
@@ -23,6 +26,7 @@ const (
 	inputBucket        = "f2e-input"
 	intakeQueueName    = "file-intake"
 	outputQueueName    = "output-events"
+	ledgerTableName    = "f2e-job-ledger"
 	schemaVersion      = "1"
 )
 
@@ -30,6 +34,7 @@ const (
 type AWSClient struct {
 	s3Client       *s3.Client
 	sqsClient      *sqs.Client
+	dynamoClient   *dynamodb.Client
 	intakeQueueURL string
 	outputQueueURL string
 	bucket         string
@@ -66,10 +71,62 @@ func NewAWSClient() *AWSClient {
 	return &AWSClient{
 		s3Client:       s3c,
 		sqsClient:      sqsc,
+		dynamoClient:   dynamodb.NewFromConfig(cfg),
 		intakeQueueURL: mustQueueURL(ctx, sqsc, intakeQueueName),
 		outputQueueURL: mustQueueURL(ctx, sqsc, outputQueueName),
 		bucket:         inputBucket,
 	}
+}
+
+// AssertLedgerComplete proves that every planned E2E job and chunk reached a
+// reconciled terminal state, with no double-counted or missing chunk.
+func (c *AWSClient) AssertLedgerComplete(ctx context.Context, expectedJobs int) error {
+	input := &dynamodb.ScanInput{TableName: aws.String(ledgerTableName), ConsistentRead: aws.Bool(true)}
+	jobs, chunks := 0, 0
+	for {
+		out, err := c.dynamoClient.Scan(ctx, input)
+		if err != nil {
+			return fmt.Errorf("scan ledger: %w", err)
+		}
+		for _, item := range out.Items {
+			sk, _ := item["sk"].(*dynamodbtypes.AttributeValueMemberS)
+			status, _ := item["status"].(*dynamodbtypes.AttributeValueMemberS)
+			if sk == nil || status == nil {
+				continue
+			}
+			if sk.Value == "JOB" {
+				jobs++
+				expected := ledgerNumber(item, "expectedChunks")
+				completed := ledgerNumber(item, "completedChunks")
+				failed := ledgerNumber(item, "failedChunks")
+				if status.Value != "COMPLETED" || expected < 1 || completed != expected || failed != 0 {
+					return fmt.Errorf("unreconciled job: status=%s expected=%d completed=%d failed=%d", status.Value, expected, completed, failed)
+				}
+			} else if strings.HasPrefix(sk.Value, "CHUNK#") {
+				chunks++
+				if status.Value != "COMPLETED" {
+					return fmt.Errorf("unreconciled chunk %s: status=%s", sk.Value, status.Value)
+				}
+			}
+		}
+		if len(out.LastEvaluatedKey) == 0 {
+			break
+		}
+		input.ExclusiveStartKey = out.LastEvaluatedKey
+	}
+	if jobs != expectedJobs || chunks < jobs {
+		return fmt.Errorf("unexpected ledger cardinality: jobs=%d (want %d), chunks=%d", jobs, expectedJobs, chunks)
+	}
+	return nil
+}
+
+func ledgerNumber(item map[string]dynamodbtypes.AttributeValue, name string) int64 {
+	value, _ := item[name].(*dynamodbtypes.AttributeValueMemberN)
+	if value == nil {
+		return 0
+	}
+	n, _ := strconv.ParseInt(value.Value, 10, 64)
+	return n
 }
 
 func mustQueueURL(ctx context.Context, c *sqs.Client, name string) string {
@@ -105,11 +162,11 @@ func (c *AWSClient) SendOrganizerRequest(ctx context.Context, req OrganizerReque
 	return err
 }
 
-// DrainOutputQueue removes all messages currently in the output-events queue.
-// Used in the Before hook to isolate each scenario.
+// DrainOutputQueue removes all messages from the dedicated output queue after a
+// count-only scenario. The E2E suite is sequential and provisions this queue
+// exclusively, so it never touches an application queue shared with a user.
 func (c *AWSClient) DrainOutputQueue(ctx context.Context) error {
-	emptyRuns := 0
-	for emptyRuns < 3 {
+	for {
 		out, err := c.sqsClient.ReceiveMessage(ctx, &sqs.ReceiveMessageInput{
 			QueueUrl:            aws.String(c.outputQueueURL),
 			MaxNumberOfMessages: 10,
@@ -119,16 +176,11 @@ func (c *AWSClient) DrainOutputQueue(ctx context.Context) error {
 			return fmt.Errorf("drain receive: %w", err)
 		}
 		if len(out.Messages) == 0 {
-			emptyRuns++
-			continue
+			return nil
 		}
-		emptyRuns = 0
 		entries := make([]sqstypes.DeleteMessageBatchRequestEntry, len(out.Messages))
 		for i, m := range out.Messages {
-			entries[i] = sqstypes.DeleteMessageBatchRequestEntry{
-				Id:            m.MessageId,
-				ReceiptHandle: m.ReceiptHandle,
-			}
+			entries[i] = sqstypes.DeleteMessageBatchRequestEntry{Id: m.MessageId, ReceiptHandle: m.ReceiptHandle}
 		}
 		if _, err = c.sqsClient.DeleteMessageBatch(ctx, &sqs.DeleteMessageBatchInput{
 			QueueUrl: aws.String(c.outputQueueURL),
@@ -137,13 +189,16 @@ func (c *AWSClient) DrainOutputQueue(ctx context.Context) error {
 			return fmt.Errorf("drain delete: %w", err)
 		}
 	}
-	return nil
 }
 
 // ApproximateCount returns the approximate number of messages available in the output queue.
 func (c *AWSClient) ApproximateCount(ctx context.Context) (int, error) {
+	return c.approximateCount(ctx, c.outputQueueURL)
+}
+
+func (c *AWSClient) approximateCount(ctx context.Context, queueURL string) (int, error) {
 	out, err := c.sqsClient.GetQueueAttributes(ctx, &sqs.GetQueueAttributesInput{
-		QueueUrl:       aws.String(c.outputQueueURL),
+		QueueUrl:       aws.String(queueURL),
 		AttributeNames: []sqstypes.QueueAttributeName{"ApproximateNumberOfMessages"},
 	})
 	if err != nil {
@@ -151,6 +206,18 @@ func (c *AWSClient) ApproximateCount(ctx context.Context) (int, error) {
 	}
 	n, _ := strconv.Atoi(out.Attributes["ApproximateNumberOfMessages"])
 	return n, nil
+}
+
+// DLQCounts returns visible poison messages after the suite has allowed all
+// redrive attempts to settle.
+func (c *AWSClient) DLQCounts(ctx context.Context) (intake, chunks int, err error) {
+	intakeURL := mustQueueURL(ctx, c.sqsClient, "file-intake-dlq")
+	chunkURL := mustQueueURL(ctx, c.sqsClient, "chunk-jobs-dlq")
+	if intake, err = c.approximateCount(ctx, intakeURL); err != nil {
+		return 0, 0, err
+	}
+	chunks, err = c.approximateCount(ctx, chunkURL)
+	return intake, chunks, err
 }
 
 // WaitForCount polls until at least expected messages appear in the output queue or timeout elapses.
@@ -190,9 +257,10 @@ func (c *AWSClient) ConsumeAll(ctx context.Context, expected int, timeout time.D
 
 	for len(envelopes) < limit && emptyRuns < 3 {
 		out, err := c.sqsClient.ReceiveMessage(ctx, &sqs.ReceiveMessageInput{
-			QueueUrl:            aws.String(c.outputQueueURL),
-			MaxNumberOfMessages: 10,
-			WaitTimeSeconds:     1,
+			QueueUrl:              aws.String(c.outputQueueURL),
+			MaxNumberOfMessages:   10,
+			WaitTimeSeconds:       1,
+			MessageAttributeNames: []string{"All"},
 		})
 		if err != nil {
 			return nil, err
@@ -208,6 +276,13 @@ func (c *AWSClient) ConsumeAll(ctx context.Context, expected int, timeout time.D
 			var env Envelope
 			if err := json.Unmarshal([]byte(*m.Body), &env); err != nil {
 				return nil, fmt.Errorf("unmarshal envelope (msgId=%s): %w", *m.MessageId, err)
+			}
+			schema := env.Metadata.Schema.ID + ":" + env.Metadata.Schema.Version
+			if attr, ok := m.MessageAttributes["schema"]; !ok || aws.ToString(attr.StringValue) != schema {
+				return nil, fmt.Errorf("message attribute schema diverges from body (msgId=%s)", aws.ToString(m.MessageId))
+			}
+			if attr, ok := m.MessageAttributes["format"]; !ok || aws.ToString(attr.StringValue) != env.Metadata.Format {
+				return nil, fmt.Errorf("message attribute format diverges from body (msgId=%s)", aws.ToString(m.MessageId))
 			}
 			envelopes = append(envelopes, env)
 			entries = append(entries, sqstypes.DeleteMessageBatchRequestEntry{

@@ -1,0 +1,20 @@
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule: { interval: monthly }
+  - package-ecosystem: gomod
+    directory: /lambdas
+    schedule: { interval: monthly }
+  - package-ecosystem: gomod
+    directory: /e2e
+    schedule: { interval: monthly }
+  - package-ecosystem: terraform
+    directory: /terraform
+    schedule: { interval: monthly }
+  - package-ecosystem: docker
+    directory: /automacao
+    schedule: { interval: monthly }
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: monthly }

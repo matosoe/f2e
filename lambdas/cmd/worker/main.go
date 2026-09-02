@@ -3,7 +3,10 @@ package main
 
 import (
 	"context"
-	"log"
+	"errors"
+	"log/slog"
+	"os"
+	"strconv"
 
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
@@ -15,22 +18,37 @@ import (
 var service worker.Service
 
 func init() {
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 	ctx := context.Background()
 	c, e := config.Load()
 	if e != nil {
-		log.Fatal(e)
+		slog.Error("invalid configuration", "service", "worker", "error", e)
+		os.Exit(1)
 	}
 	a, e := awsclient.New(ctx, c)
 	if e != nil {
-		log.Fatal(e)
+		slog.Error("aws initialization failed", "service", "worker", "error", e)
+		os.Exit(1)
 	}
 	service = worker.Service{Resolver: a, Queue: a, Config: c}
+	if c.LedgerTable != "" {
+		service.Ledger = a
+	}
 }
 func handler(ctx context.Context, e events.SQSEvent) (events.SQSEventResponse, error) {
 	out := events.SQSEventResponse{}
 	for _, r := range e.Records {
-		if err := service.Process(ctx, []byte(r.Body)); err != nil {
-			log.Printf("worker message=%s error=%v", r.MessageId, err)
+		attempt, _ := strconv.Atoi(r.Attributes["ApproximateReceiveCount"])
+		if attempt < 1 {
+			attempt = 1
+		}
+		if err := service.ProcessAttempt(ctx, []byte(r.Body), attempt); err != nil {
+			classification := "permanent"
+			var transient interface{ Transient() bool }
+			if errors.As(err, &transient) && transient.Transient() {
+				classification = "transient"
+			}
+			slog.Error("worker message failed", "service", "worker", "sqsMessageId", r.MessageId, "receiveCount", r.Attributes["ApproximateReceiveCount"], "errorClass", classification, "error", err)
 			out.BatchItemFailures = append(out.BatchItemFailures, events.SQSBatchItemFailure{ItemIdentifier: r.MessageId})
 		}
 	}

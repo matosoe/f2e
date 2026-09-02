@@ -35,7 +35,7 @@ preparar_arquivo() {
 
 limpar_filas() {
   local q
-  for q in file-intake chunk-jobs output-events file-intake-dlq chunk-jobs-dlq output-events-dlq; do
+  for q in file-intake chunk-jobs output-events file-intake-dlq chunk-jobs-dlq; do
     awsq purge-queue --queue-url "$(awsq get-queue-url --queue-name "$q" --query QueueUrl --output text)" 2>/dev/null || true
   done
 }
@@ -47,7 +47,7 @@ exibir_resumo_filas() {
   printf '%-20s %14s %18s\n' 'Fila' 'Disponíveis' 'Em processamento'
   printf '%-20s %14s %18s\n' '--------------------' '--------------' '------------------'
 
-  for q in file-intake chunk-jobs output-events file-intake-dlq chunk-jobs-dlq output-events-dlq; do
+  for q in file-intake chunk-jobs output-events file-intake-dlq chunk-jobs-dlq; do
     url="$(awsq get-queue-url --queue-name "$q" --query QueueUrl --output text)"
     disponiveis="$(awsq get-queue-attributes --queue-url "$url" --attribute-names ApproximateNumberOfMessages --query 'Attributes.ApproximateNumberOfMessages' --output text)"
     em_processamento="$(awsq get-queue-attributes --queue-url "$url" --attribute-names ApproximateNumberOfMessagesNotVisible --query 'Attributes.ApproximateNumberOfMessagesNotVisible' --output text)"

@@ -1,12 +1,12 @@
 services:
   localstack:
-    image: localstack/localstack:3.8.1
+    image: localstack/localstack@sha256:b279c01f4cfb8f985a482e4014cabc1e2697b9d7a6c8c8db2e40f4d9f93687c7
     container_name: localstack-main
     hostname: localstack
     ports:
       - "4566:4566"
     environment:
-      - SERVICES=s3,sqs,lambda,logs,iam
+      - SERVICES=s3,sqs,lambda,logs,iam,dynamodb
       - SQS_ENDPOINT_STRATEGY=path
       - DOCKER_HOST=unix:///var/run/docker.sock
       - LAMBDA_DOCKER_NETWORK=automacao_default

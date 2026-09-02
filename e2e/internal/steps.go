@@ -51,27 +51,27 @@ func NewScenarioInitializer(client *AWSClient) func(*godog.ScenarioContext) {
 
 		sc.Before(func(ctx context.Context, _ *godog.Scenario) (context.Context, error) {
 			s.reset()
-			return ctx, s.aws.DrainOutputQueue(ctx)
+			return ctx, nil
 		})
 
 		// ── File generation steps ───────────────────────────────────────────────
-		sc.Step(`I have a fixed-width file with {int} records`, s.haveFixedWidthFile)
-		sc.Step(`I have a CSV file with {int} records`, s.haveCSVFile)
-		sc.Step(`I have a JSONL file with {int} records`, s.haveJSONLFile)
-		sc.Step(`I have an NDJSON file with {int} records`, s.haveNDJSONFile)
-		sc.Step(`I have a text file with {int} records`, s.haveTextFile)
-		sc.Step(`I have a multi-line file with header, {int} data records, and trailer`, s.haveMultiLineFile)
-		sc.Step(`I have a JSON array file with {int} elements`, s.haveJSONArrayFile)
-		sc.Step(`I have an empty {string} file`, s.haveEmptyFile)
+		sc.Step(`^I have a fixed-width file with (\d+) records$`, s.haveFixedWidthFile)
+		sc.Step(`^I have a CSV file with (\d+) records$`, s.haveCSVFile)
+		sc.Step(`^I have a JSONL file with (\d+) records$`, s.haveJSONLFile)
+		sc.Step(`^I have an NDJSON file with (\d+) records$`, s.haveNDJSONFile)
+		sc.Step(`^I have a text file with (\d+) records$`, s.haveTextFile)
+		sc.Step(`^I have a multi-line file with header, (\d+) data records, and trailer$`, s.haveMultiLineFile)
+		sc.Step(`^I have a JSON array file with (\d+) elements$`, s.haveJSONArrayFile)
+		sc.Step(`^I have an empty "([^"]*)" file$`, s.haveEmptyFile)
 
 		// ── Upload + trigger step ───────────────────────────────────────────────
-		sc.Step(`I upload and process the file`, s.uploadAndProcess)
+		sc.Step(`^I upload and process the file$`, s.uploadAndProcess)
 
 		// ── Assertion steps ─────────────────────────────────────────────────────
-		sc.Step(`I receive exactly {int} events within {int} seconds`, s.receiveExactly)
-		sc.Step(`no events are produced within {int} seconds`, s.noEventsWithin)
-		sc.Step(`all events are valid F2E envelopes`, s.allEventsAreValidEnvelopes)
-		sc.Step(`all event record numbers from {int} to {int} are present`, s.recordNumbersArePresent)
+		sc.Step(`^I receive exactly (\d+) events within (\d+) seconds$`, s.receiveExactly)
+		sc.Step(`^no events are produced within (\d+) seconds$`, s.noEventsWithin)
+		sc.Step(`^all events are valid F2E envelopes$`, s.allEventsAreValidEnvelopes)
+		sc.Step(`^all event record numbers from (\d+) to (\d+) are present$`, s.recordNumbersArePresent)
 	}
 }
 
@@ -197,7 +197,7 @@ func (s *scenarioCtx) receiveExactly(ctx context.Context, expected, timeoutSec i
 	if err != nil {
 		return fmt.Errorf("expected %d messages, last observed ~%d: %w", expected, actual, err)
 	}
-	return nil
+	return s.aws.DrainOutputQueue(ctx)
 }
 
 // noEventsWithin asserts that no messages appear in the output queue within the given window.
@@ -222,10 +222,23 @@ func (s *scenarioCtx) allEventsAreValidEnvelopes(_ context.Context) error {
 	if len(s.receivedMessages) == 0 {
 		return fmt.Errorf("no messages to validate — 'I receive exactly N events' must run first")
 	}
+	eventIDs := make(map[string]struct{}, len(s.receivedMessages))
+	sourceRecordIDs := make(map[string]struct{}, len(s.receivedMessages))
 	for i, env := range s.receivedMessages {
 		if env.Metadata.EventID == "" {
 			return fmt.Errorf("message[%d]: metadata.eventId is empty", i)
 		}
+		if env.Metadata.SourceRecordID == "" {
+			return fmt.Errorf("message[%d]: metadata.sourceRecordId is empty", i)
+		}
+		if _, exists := eventIDs[env.Metadata.EventID]; exists {
+			return fmt.Errorf("message[%d]: duplicate metadata.eventId %s", i, env.Metadata.EventID)
+		}
+		if _, exists := sourceRecordIDs[env.Metadata.SourceRecordID]; exists {
+			return fmt.Errorf("message[%d]: duplicate metadata.sourceRecordId %s", i, env.Metadata.SourceRecordID)
+		}
+		eventIDs[env.Metadata.EventID] = struct{}{}
+		sourceRecordIDs[env.Metadata.SourceRecordID] = struct{}{}
 		if env.Metadata.Schema.ID == "" {
 			return fmt.Errorf("message[%d]: metadata.schema.id is empty", i)
 		}

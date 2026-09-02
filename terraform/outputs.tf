@@ -22,6 +22,10 @@ output "worker_function_arn" {
   value = aws_lambda_function.worker.arn
 }
 
-output "lambda_role_arn" {
-  value = aws_iam_role.lambda.arn
+output "organizer_role_arn" {
+  value = aws_iam_role.organizer.arn
+}
+
+output "worker_role_arn" {
+  value = aws_iam_role.worker.arn
 }

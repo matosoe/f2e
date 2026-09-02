@@ -4,6 +4,9 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
+	"os"
+
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/f2e/f2e/internal/adapter/inbound/s3event"
@@ -11,32 +14,37 @@ import (
 	"github.com/f2e/f2e/internal/domain/f2e"
 	awsclient "github.com/f2e/f2e/internal/platform/aws"
 	"github.com/f2e/f2e/internal/platform/config"
-	"log"
 )
 
 var service organizer.Service
 
 func init() {
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 	ctx := context.Background()
 	c, e := config.Load()
 	if e != nil {
-		log.Fatal(e)
+		slog.Error("invalid configuration", "service", "organizer", "error", e)
+		os.Exit(1)
 	}
 	a, e := awsclient.New(ctx, c)
 	if e != nil {
-		log.Fatal(e)
+		slog.Error("aws initialization failed", "service", "organizer", "error", e)
+		os.Exit(1)
 	}
 	service = organizer.Service{Store: a, Queue: a, Config: c}
+	if c.LedgerTable != "" {
+		service.Ledger = a
+	}
 }
 func handler(ctx context.Context, e events.SQSEvent) (events.SQSEventResponse, error) {
 	out := events.SQSEventResponse{}
 	for _, r := range e.Records {
-		jobs, err := jobsFor(ctx, []byte(r.Body))
+		jobs, err := jobsFor(ctx, []byte(r.Body), r.MessageId)
 		if err == nil {
 			err = service.Publish(ctx, jobs)
 		}
 		if err != nil {
-			log.Printf("organizer message=%s error=%v", r.MessageId, err)
+			slog.Error("organizer message failed", "service", "organizer", "sqsMessageId", r.MessageId, "receiveCount", r.Attributes["ApproximateReceiveCount"], "error", err)
 			out.BatchItemFailures = append(out.BatchItemFailures, events.SQSBatchItemFailure{ItemIdentifier: r.MessageId})
 		}
 	}
@@ -45,9 +53,10 @@ func handler(ctx context.Context, e events.SQSEvent) (events.SQSEventResponse, e
 
 // jobsFor accepts the explicit OrganizerRequest. S3 event notifications remain
 // supported as the legacy fixed-width input format.
-func jobsFor(ctx context.Context, body []byte) ([]f2e.ChunkJob, error) {
+func jobsFor(ctx context.Context, body []byte, executionID string) ([]f2e.ChunkJob, error) {
 	var request f2e.OrganizerRequest
 	if err := json.Unmarshal(body, &request); err == nil && request.SchemaVersion != "" {
+		request.ExecutionID = executionID
 		execution, err := service.PlanWithSummary(ctx, request)
 		if err != nil {
 			return nil, err
@@ -62,22 +71,11 @@ func jobsFor(ctx context.Context, body []byte) ([]f2e.ChunkJob, error) {
 	if err != nil {
 		return nil, err
 	}
-	return service.Jobs(ctx, references)
+	return service.JobsWithExecutionID(ctx, references, executionID)
 }
 
 // logSummary logs the organizer summary to stdout
 func logSummary(summary *f2e.OrganizerSummary) {
-	log.Println("=== ORGANIZER SUMMARY ===")
-	log.Printf("Files Processed: %d", summary.FilesProcessed)
-	log.Printf("Total Chunks Generated: %d", summary.TotalChunksGenerated)
-	log.Printf("Processing Time: %s", f2e.FormatDuration(summary.ProcessingTimeMillis))
-	
-	for _, fileSummary := range summary.Files {
-		log.Printf("  File: %s/%s", fileSummary.Bucket, fileSummary.Key)
-		log.Printf("    Size: %d bytes", fileSummary.SizeBytes)
-		log.Printf("    Chunks: %d", fileSummary.ChunksGenerated)
-		log.Printf("    Time: %s", f2e.FormatDuration(fileSummary.ProcessingTimeMillis))
-	}
-	log.Println("========================")
+	slog.Info("organizer execution completed", "service", "organizer", "filesProcessed", summary.FilesProcessed, "chunksGenerated", summary.TotalChunksGenerated, "durationMs", summary.ProcessingTimeMillis)
 }
 func main() { lambda.Start(handler) }

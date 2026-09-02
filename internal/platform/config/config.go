@@ -9,12 +9,21 @@ import (
 
 type Config struct {
 	Endpoint, Region, InputBucket, IntakeQueueURL, ChunkQueueURL, OutputQueueURL string
-	RecordLength, RecordsPerChunk, BatchSize, WorkerConcurrency                  int
+	LedgerTable                                                                  string
+	Environment                                                                  string
+	RecordLength, RecordsPerChunk, BatchSize, MaxReceiveCount                    int
+	LedgerRetentionDays                                                          int
+	MaxEventBytes                                                                int
+	JSONArraySearchBytes                                                         int
+	MaxFileBytes, MaxChunkBytes                                                  int64
+	EnablePreviewFormats, EnableExperimentalFormats                              bool
 	EventSchemaID, EventSchemaVersion, EventFormat                               string
 }
 
 func Load() (Config, error) {
 	c := Config{Endpoint: os.Getenv("AWS_ENDPOINT_URL"), Region: value("AWS_REGION", "us-east-1"), InputBucket: value("F2E_INPUT_BUCKET", "f2e-input"), IntakeQueueURL: os.Getenv("F2E_INTAKE_QUEUE_URL"), ChunkQueueURL: os.Getenv("F2E_CHUNK_QUEUE_URL"), OutputQueueURL: os.Getenv("F2E_OUTPUT_QUEUE_URL")}
+	c.LedgerTable = os.Getenv("F2E_LEDGER_TABLE")
+	c.Environment = value("F2E_ENVIRONMENT", "local")
 	var err error
 	if c.RecordLength, err = integer("F2E_RECORD_LENGTH", 100); err != nil {
 		return c, err
@@ -25,16 +34,48 @@ func Load() (Config, error) {
 	if c.BatchSize, err = integer("F2E_BATCH_SIZE", 10); err != nil {
 		return c, err
 	}
-	if c.WorkerConcurrency, err = integer("F2E_WORKER_CONCURRENCY", 4); err != nil {
+	if c.MaxEventBytes, err = integer("F2E_MAX_EVENT_BYTES", 256*1024); err != nil {
 		return c, err
 	}
-	if c.RecordLength < 2 || c.RecordsPerChunk < 1 || c.BatchSize < 1 || c.BatchSize > 10 || c.WorkerConcurrency < 1 {
+	if c.MaxReceiveCount, err = integer("F2E_MAX_RECEIVE_COUNT", 3); err != nil {
+		return c, err
+	}
+	if c.JSONArraySearchBytes, err = integer("F2E_JSON_ARRAY_SEARCH_BYTES", 1024*1024); err != nil {
+		return c, err
+	}
+	if c.LedgerRetentionDays, err = integer("F2E_LEDGER_RETENTION_DAYS", 90); err != nil {
+		return c, err
+	}
+	if c.MaxFileBytes, err = integer64("F2E_MAX_FILE_BYTES", 10*1024*1024*1024); err != nil {
+		return c, err
+	}
+	if c.MaxChunkBytes, err = integer64("F2E_MAX_CHUNK_BYTES", 64*1024*1024); err != nil {
+		return c, err
+	}
+	if c.EnablePreviewFormats, err = boolean("F2E_ENABLE_PREVIEW_FORMATS", c.Environment != "production"); err != nil {
+		return c, err
+	}
+	if c.EnableExperimentalFormats, err = boolean("F2E_ENABLE_EXPERIMENTAL_FORMATS", c.Environment == "local"); err != nil {
+		return c, err
+	}
+	if c.RecordLength < 2 || c.RecordsPerChunk < 1 || c.BatchSize < 1 || c.BatchSize > 10 || c.MaxReceiveCount < 1 || c.LedgerRetentionDays < 1 || c.MaxEventBytes < 1024 || c.MaxEventBytes > 256*1024 || c.JSONArraySearchBytes < 1024 || c.JSONArraySearchBytes > 16*1024*1024 || c.MaxChunkBytes < 1024 || c.MaxFileBytes < c.MaxChunkBytes {
 		return c, fmt.Errorf("invalid F2E numeric configuration")
 	}
 	c.EventSchemaID = value("F2E_EVENT_SCHEMA_ID", "f2e-record")
 	c.EventSchemaVersion = value("F2E_EVENT_SCHEMA_VERSION", "1")
 	c.EventFormat = value("F2E_EVENT_FORMAT", "json")
 	return c, nil
+}
+func boolean(k string, d bool) (bool, error) {
+	v := os.Getenv(k)
+	if v == "" {
+		return d, nil
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		return false, fmt.Errorf("%s: %w", k, err)
+	}
+	return b, nil
 }
 func value(k, d string) string {
 	if v := os.Getenv(k); v != "" {
@@ -45,6 +86,15 @@ func value(k, d string) string {
 func integer(k string, d int) (int, error) {
 	v := value(k, strconv.Itoa(d))
 	n, e := strconv.Atoi(v)
+	if e != nil {
+		return 0, fmt.Errorf("%s: %w", k, e)
+	}
+	return n, nil
+}
+
+func integer64(k string, d int64) (int64, error) {
+	v := value(k, strconv.FormatInt(d, 10))
+	n, e := strconv.ParseInt(v, 10, 64)
 	if e != nil {
 		return 0, fmt.Errorf("%s: %w", k, e)
 	}

@@ -3,10 +3,13 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
 
+	"github.com/f2e/f2e/internal/application/organizer"
 	"github.com/f2e/f2e/internal/application/port"
 	"github.com/f2e/f2e/internal/domain/f2e"
 	"github.com/f2e/f2e/internal/platform/config"
@@ -18,11 +21,117 @@ func (s store) OpenChunkRange(_ context.Context, _ f2e.ChunkJob, _, _ int64) (io
 	return io.NopCloser(strings.NewReader(s.data)), nil
 }
 
+type closeErrorStore struct{ data string }
+
+type closeErrorReader struct{ io.Reader }
+
+func (closeErrorReader) Close() error { return errors.New("close failed") }
+func (s closeErrorStore) OpenChunkRange(_ context.Context, _ f2e.ChunkJob, _, _ int64) (io.ReadCloser, error) {
+	return closeErrorReader{Reader: strings.NewReader(s.data)}, nil
+}
+
 type queue struct{ batches [][]string }
 
-func (q *queue) Send(_ context.Context, _ string, b []string, _ map[string]port.MessageAttribute) ([]int, error) {
-	q.batches = append(q.batches, append([]string(nil), b...))
+func (q *queue) Send(_ context.Context, _ string, messages []port.OutboundMessage) ([]int, error) {
+	bodies := make([]string, len(messages))
+	for i := range messages {
+		bodies[i] = messages[i].Body
+	}
+	q.batches = append(q.batches, bodies)
 	return nil, nil
+}
+
+type partialQueue struct {
+	calls [][]string
+}
+
+type messageQueue struct{ messages []port.OutboundMessage }
+
+func (q *messageQueue) Send(_ context.Context, _ string, messages []port.OutboundMessage) ([]int, error) {
+	q.messages = append(q.messages, messages...)
+	return nil, nil
+}
+
+type processorFunc func(context.Context, f2e.Envelope[f2e.RecordPayload]) (*f2e.Envelope[f2e.RecordPayload], error)
+
+func (f processorFunc) Process(ctx context.Context, envelope f2e.Envelope[f2e.RecordPayload]) (*f2e.Envelope[f2e.RecordPayload], error) {
+	return f(ctx, envelope)
+}
+
+func (q *partialQueue) Send(_ context.Context, _ string, messages []port.OutboundMessage) ([]int, error) {
+	bodies := make([]string, len(messages))
+	for i := range messages {
+		bodies[i] = messages[i].Body
+	}
+	q.calls = append(q.calls, bodies)
+	if len(q.calls) == 1 {
+		return []int{1}, nil
+	}
+	return nil, nil
+}
+
+func TestPartialBatchRetriesOnlyFailedMessages(t *testing.T) {
+	q := &partialQueue{}
+	s := Service{Resolver: store{"aaa\nbbb\n"}, Queue: q, Config: config.Config{RecordLength: 4, BatchSize: 2, OutputQueueURL: "out", EventSchemaID: "test", EventSchemaVersion: "1", EventFormat: "json"}}
+	job := f2e.ChunkJob{SchemaVersion: f2e.SchemaVersion, FileID: "f", JobID: "j", ChunkID: "1", Bucket: "b", Key: "k", RecordCount: 2, RecordLengthBytes: 4, EndByteInclusive: 7}
+	body, _ := json.Marshal(job)
+	if err := s.Process(context.Background(), body); err != nil {
+		t.Fatal(err)
+	}
+	if len(q.calls) != 2 || len(q.calls[0]) != 2 || len(q.calls[1]) != 1 || q.calls[1][0] != q.calls[0][1] {
+		t.Fatalf("calls=%v", q.calls)
+	}
+}
+
+func TestProcessReportsSourceCloseFailure(t *testing.T) {
+	s := Service{Resolver: closeErrorStore{"aaa\n"}, Queue: &queue{}, Config: config.Config{RecordLength: 4, OutputQueueURL: "out", EventSchemaID: "test", EventSchemaVersion: "1", EventFormat: "json"}}
+	job := f2e.ChunkJob{SchemaVersion: f2e.SchemaVersion, FileID: "f", JobID: "j", ChunkID: "1", Bucket: "b", Key: "k", RecordCount: 1, RecordLengthBytes: 4, EndByteInclusive: 3}
+	body, _ := json.Marshal(job)
+	if err := s.Process(context.Background(), body); err == nil || !strings.Contains(err.Error(), "close source stream") {
+		t.Fatalf("expected close error, got %v", err)
+	}
+}
+
+func TestProcessHonorsCancelledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	s := Service{Resolver: store{"aaa\n"}, Queue: &queue{}, Config: config.Config{RecordLength: 4, OutputQueueURL: "out", EventSchemaID: "test", EventSchemaVersion: "1", EventFormat: "json"}}
+	job := f2e.ChunkJob{SchemaVersion: f2e.SchemaVersion, FileID: "f", JobID: "j", ChunkID: "1", Bucket: "b", Key: "k", RecordCount: 1, RecordLengthBytes: 4, EndByteInclusive: 3}
+	body, _ := json.Marshal(job)
+	if err := s.Process(ctx, body); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context cancellation, got %v", err)
+	}
+}
+
+func TestAttributesUseFinalEnvelopeAndCorporateContext(t *testing.T) {
+	q := &messageQueue{}
+	processor := processorFunc(func(_ context.Context, env f2e.Envelope[f2e.RecordPayload]) (*f2e.Envelope[f2e.RecordPayload], error) {
+		env.Metadata.Schema.Version = "2"
+		env.Metadata.Format = "application/json"
+		return &env, nil
+	})
+	s := Service{Resolver: store{"aaa\n"}, Queue: q, Processor: processor, Config: config.Config{RecordLength: 4, OutputQueueURL: "out", EventSchemaID: "test", EventSchemaVersion: "1", EventFormat: "json"}}
+	job := f2e.ChunkJob{SchemaVersion: f2e.SchemaVersion, FileID: "f", JobID: "j", ChunkID: "1", Bucket: "b", Key: "k", RecordCount: 1, RecordLengthBytes: 4, EndByteInclusive: 3, Context: f2e.CorporateContext{TransactionID: "tx", CorrelationID: "corr", TraceID: "trace", SourceSystem: "erp"}}
+	body, _ := json.Marshal(job)
+	if err := s.Process(context.Background(), body); err != nil {
+		t.Fatal(err)
+	}
+	if len(q.messages) != 1 || q.messages[0].Attributes["schema"].Value != "test:2" || q.messages[0].Attributes["format"].Value != "application/json" || q.messages[0].Attributes["transactionId"].Value != "tx" || q.messages[0].Attributes["sourceSystem"].Value != "erp" {
+		t.Fatalf("unexpected message attributes: %+v", q.messages)
+	}
+}
+
+func TestProcessorCannotRemoveTechnicalIdentity(t *testing.T) {
+	processor := processorFunc(func(_ context.Context, env f2e.Envelope[f2e.RecordPayload]) (*f2e.Envelope[f2e.RecordPayload], error) {
+		env.Metadata.SourceRecordID = ""
+		return &env, nil
+	})
+	s := Service{Resolver: store{"aaa\n"}, Queue: &queue{}, Processor: processor, Config: config.Config{RecordLength: 4, OutputQueueURL: "out", EventSchemaID: "test", EventSchemaVersion: "1", EventFormat: "json"}}
+	job := f2e.ChunkJob{SchemaVersion: f2e.SchemaVersion, FileID: "f", JobID: "j", ChunkID: "1", Bucket: "b", Key: "k", RecordCount: 1, RecordLengthBytes: 4, EndByteInclusive: 3}
+	body, _ := json.Marshal(job)
+	if err := s.Process(context.Background(), body); err == nil || !strings.Contains(err.Error(), "mandatory technical fields") {
+		t.Fatalf("expected processor invariant error, got %v", err)
+	}
 }
 func TestProcessBatchesAndStableIDs(t *testing.T) {
 	q := &queue{}
@@ -37,7 +146,7 @@ func TestProcessBatchesAndStableIDs(t *testing.T) {
 	}
 	var env f2e.Envelope[f2e.RecordPayload]
 	json.Unmarshal([]byte(q.batches[0][0]), &env)
-	if env.Processing.RecordNumber == nil || *env.Processing.RecordNumber != 1 || env.Metadata.EventID == "" {
+	if env.Processing.RecordNumber == nil || *env.Processing.RecordNumber != 1 || env.Metadata.EventID == "" || env.Metadata.SourceRecordID == "" {
 		t.Fatalf("env=%+v", env)
 	}
 	if env.Source.Bucket != "b" || env.Source.Key != "k" || env.Source.FileName != "k" {
@@ -48,6 +157,51 @@ func TestProcessBatchesAndStableIDs(t *testing.T) {
 	}
 	if env.Metadata.Schema.ID != "test" || env.Metadata.Schema.Version != "1" || env.Metadata.Format != "json" {
 		t.Fatalf("metadata=%+v", env.Metadata)
+	}
+}
+
+func TestRetryPreservesEventAndSourceRecordIDs(t *testing.T) {
+	q := &queue{}
+	s := Service{Resolver: store{"aaa\n"}, Queue: q, Config: config.Config{RecordLength: 4, OutputQueueURL: "out", EventSchemaID: "test", EventSchemaVersion: "1", EventFormat: "json"}}
+	job := f2e.ChunkJob{SchemaVersion: f2e.SchemaVersion, FileID: "f", JobID: "same-occurrence", ChunkID: "00000001", Bucket: "b", Key: "k", RecordCount: 1, RecordLengthBytes: 4, EndByteInclusive: 3}
+	body, _ := json.Marshal(job)
+	if err := s.Process(context.Background(), body); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ProcessAttempt(context.Background(), body, 2); err != nil {
+		t.Fatal(err)
+	}
+	var first, retry f2e.Envelope[f2e.RecordPayload]
+	_ = json.Unmarshal([]byte(q.batches[0][0]), &first)
+	_ = json.Unmarshal([]byte(q.batches[1][0]), &retry)
+	if first.Metadata.EventID != retry.Metadata.EventID || first.Metadata.SourceRecordID != retry.Metadata.SourceRecordID {
+		t.Fatalf("retry changed identities: first=%+v retry=%+v", first.Metadata, retry.Metadata)
+	}
+}
+
+func TestProcessUsesConfiguredBatchSize(t *testing.T) {
+	q := &queue{}
+	s := Service{Resolver: store{"aaa\nbbb\nccc\n"}, Queue: q, Config: config.Config{RecordLength: 4, BatchSize: 2, OutputQueueURL: "out", EventSchemaID: "test", EventSchemaVersion: "1", EventFormat: "json"}}
+	job := f2e.ChunkJob{SchemaVersion: f2e.SchemaVersion, FileID: "f", JobID: "j", ChunkID: "1", Bucket: "b", Key: "k", RecordCount: 3, RecordLengthBytes: 4, EndByteInclusive: 11}
+	body, _ := json.Marshal(job)
+	if err := s.Process(context.Background(), body); err != nil {
+		t.Fatal(err)
+	}
+	if len(q.batches) != 2 || len(q.batches[0]) != 2 || len(q.batches[1]) != 1 {
+		t.Fatalf("batches=%v", q.batches)
+	}
+}
+
+func TestProcessRejectsOversizedSerializedEvent(t *testing.T) {
+	q := &queue{}
+	s := Service{Resolver: store{strings.Repeat("x", 1100) + "\n"}, Queue: q, Config: config.Config{RecordLength: 1101, MaxEventBytes: 1024, OutputQueueURL: "out", EventSchemaID: "test", EventSchemaVersion: "1", EventFormat: "json"}}
+	job := f2e.ChunkJob{SchemaVersion: f2e.SchemaVersion, FileID: "f", JobID: "j", ChunkID: "1", Bucket: "b", Key: "k", RecordCount: 1, RecordLengthBytes: 1101, EndByteInclusive: 1100}
+	body, _ := json.Marshal(job)
+	if err := s.Process(context.Background(), body); err == nil {
+		t.Fatal("expected oversized event error")
+	}
+	if len(q.batches) != 0 {
+		t.Fatalf("oversized event was published: %v", q.batches)
 	}
 }
 
@@ -65,6 +219,27 @@ func TestJSONLValidationAndBypass(t *testing.T) {
 	}
 	if len(q.batches) != 1 || len(q.batches[0]) != 1 {
 		t.Fatalf("batches=%v", q.batches)
+	}
+}
+
+func TestJSONLBoundariesWithoutFinalLFAndWithCRLF(t *testing.T) {
+	for name, data := range map[string]string{"no-final-lf": "1234", "crlf": "{}\r\n"} {
+		t.Run(name, func(t *testing.T) {
+			q := &queue{}
+			job := f2e.ChunkJob{SchemaVersion: f2e.SchemaVersion, FileID: "f", JobID: "j", ChunkID: "00000001", Bucket: "b", Key: "k", StartByte: 0, EndByteInclusive: int64(len(data) - 1), MaxRecordLengthBytes: int64(len(data)), DataType: f2e.DataTypeJSONL}
+			body, _ := json.Marshal(job)
+			s := Service{Resolver: store{data}, Queue: q, Config: config.Config{OutputQueueURL: "out", EventSchemaID: "s", EventSchemaVersion: "1", EventFormat: "json"}}
+			if err := s.Process(context.Background(), body); err != nil || len(q.batches) != 1 {
+				t.Fatalf("err=%v batches=%v", err, q.batches)
+			}
+		})
+	}
+	data := "12345"
+	job := f2e.ChunkJob{SchemaVersion: f2e.SchemaVersion, FileID: "f", JobID: "j", ChunkID: "00000001", Bucket: "b", Key: "k", StartByte: 0, EndByteInclusive: 4, MaxRecordLengthBytes: 4, DataType: f2e.DataTypeJSONL}
+	body, _ := json.Marshal(job)
+	s := Service{Resolver: store{data}, Queue: &queue{}, Config: config.Config{OutputQueueURL: "out", EventSchemaID: "s", EventSchemaVersion: "1", EventFormat: "json"}}
+	if err := s.Process(context.Background(), body); err == nil || !strings.Contains(err.Error(), "record at byte 0") {
+		t.Fatalf("expected positioned record limit error, got %v", err)
 	}
 }
 
@@ -97,6 +272,14 @@ func TestVariableChunksDoNotDuplicateRecordsInPadding(t *testing.T) {
 type rangedStore struct{ data string }
 
 func (s rangedStore) OpenChunkRange(_ context.Context, _ f2e.ChunkJob, start, end int64) (io.ReadCloser, error) {
+	return io.NopCloser(strings.NewReader(s.data[start : end+1])), nil
+}
+
+func (s rangedStore) Head(_ context.Context, bucket, key string) (f2e.ObjectIdentity, error) {
+	return f2e.ObjectIdentity{Bucket: bucket, Key: key, Size: int64(len(s.data)), ETag: "etag"}, nil
+}
+
+func (s rangedStore) GetRange(_ context.Context, _ f2e.ObjectIdentity, start, end int64) (io.ReadCloser, error) {
 	return io.NopCloser(strings.NewReader(s.data[start : end+1])), nil
 }
 
@@ -272,5 +455,49 @@ func TestJSONArrayWorkerNestedAndMultiChunk(t *testing.T) {
 	}
 	if len(raws) != 4 {
 		t.Fatalf("expected 4 elements, got %d: %v", len(raws), raws)
+	}
+}
+
+func TestJSONArrayPlanningAndWorkersPreserveTenThousandElements(t *testing.T) {
+	var data strings.Builder
+	data.WriteByte('[')
+	for i := 1; i <= 10_000; i++ {
+		if i > 1 {
+			data.WriteByte(',')
+		}
+		fmt.Fprintf(&data, `{"id":%d,"value":"record-%d"}`, i, i)
+	}
+	data.WriteByte(']')
+
+	store := rangedStore{data: data.String()}
+	layout := f2e.JSONArrayLayout{MaxBytesPerElement: 256}
+	planner := organizer.Service{Store: store, Config: config.Config{RecordsPerChunk: 1_000}}
+	jobs, err := planner.Plan(context.Background(), f2e.OrganizerRequest{SchemaVersion: f2e.SchemaVersion, Files: []f2e.FileRequest{{Bucket: "b", Key: "k", DataType: f2e.DataTypeJSON, JSONArrayLayout: layout}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs) < 2 {
+		t.Fatalf("expected multiple chunks, got %d", len(jobs))
+	}
+	for i := 1; i < len(jobs); i++ {
+		if jobs[i].StartByte != jobs[i-1].EndByteInclusive+1 {
+			t.Fatalf("non-contiguous chunks %d and %d", i, i+1)
+		}
+	}
+
+	q := &queue{}
+	processor := Service{Resolver: store, Queue: q, Config: config.Config{OutputQueueURL: "out", EventSchemaID: "s", EventSchemaVersion: "1", EventFormat: "json", MaxChunkBytes: 64 * 1024 * 1024}}
+	for _, job := range jobs {
+		body, _ := json.Marshal(job)
+		if err := processor.Process(context.Background(), body); err != nil {
+			t.Fatal(err)
+		}
+	}
+	count := 0
+	for _, batch := range q.batches {
+		count += len(batch)
+	}
+	if count != 10_000 {
+		t.Fatalf("expected 10000 elements, got %d", count)
 	}
 }

@@ -4,12 +4,14 @@ package organizer
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/f2e/f2e/internal/application/port"
 	"github.com/f2e/f2e/internal/domain/f2e"
@@ -19,6 +21,7 @@ import (
 type Service struct {
 	Store  port.ObjectStore
 	Queue  port.Queue
+	Ledger port.JobLedger
 	Config config.Config
 }
 
@@ -29,12 +32,19 @@ type ExecutionSummary struct {
 }
 
 func hash(s string) string { x := sha256.Sum256([]byte(s)); return hex.EncodeToString(x[:]) }
+func fileID(bucket, key, versionID, etag string, size int64) string {
+	return hash(fmt.Sprintf("%s/%s/%s/%s/%d", bucket, key, versionID, etag, size))
+}
 func (s Service) Jobs(ctx context.Context, references []f2e.FileReference) ([]f2e.ChunkJob, error) {
+	return s.JobsWithExecutionID(ctx, references, "")
+}
+
+func (s Service) JobsWithExecutionID(ctx context.Context, references []f2e.FileReference, executionID string) ([]f2e.ChunkJob, error) {
 	files := make([]f2e.FileRequest, len(references))
 	for i, reference := range references {
 		files[i] = f2e.FileRequest{Bucket: reference.Bucket, Key: reference.Key, DataType: f2e.DataTypeFixedWidth}
 	}
-	return s.Plan(ctx, f2e.OrganizerRequest{SchemaVersion: f2e.SchemaVersion, Files: files})
+	return s.Plan(ctx, f2e.OrganizerRequest{SchemaVersion: f2e.SchemaVersion, ExecutionID: executionID, Files: files})
 }
 
 // Plan converts the explicit organizer contract into explicit worker jobs.
@@ -44,15 +54,27 @@ func (s Service) Plan(ctx context.Context, request f2e.OrganizerRequest) ([]f2e.
 	}
 	var jobs []f2e.ChunkJob
 	for _, file := range request.Files {
-		if file.Bucket == "" || file.Key == "" || !validType(file.DataType) || (file.Options.BypassJSONValidation && file.DataType != f2e.DataTypeJSONL && file.DataType != f2e.DataTypeNDJSON) {
+		if file.Bucket == "" || file.Key == "" || !s.validType(file.DataType) || (file.Options.BypassJSONValidation && file.DataType != f2e.DataTypeJSONL && file.DataType != f2e.DataTypeNDJSON) {
 			return nil, fmt.Errorf("invalid file request")
 		}
-		size, etag, versionID, e := s.Store.Head(ctx, file.Bucket, file.Key)
+		object, e := s.Store.Head(ctx, file.Bucket, file.Key)
 		if e != nil {
 			return nil, fmt.Errorf("head %s/%s: %w", file.Bucket, file.Key, e)
 		}
+		size, etag, versionID := object.Size, object.ETag, object.VersionID
+		maxFileBytes := s.Config.MaxFileBytes
+		if maxFileBytes == 0 {
+			maxFileBytes = 10 * 1024 * 1024 * 1024
+		}
+		if size > maxFileBytes {
+			return nil, fmt.Errorf("object size %d exceeds maximum %d bytes", size, maxFileBytes)
+		}
+		executionID := rand.Text()
+		if request.ExecutionID != "" {
+			executionID = hash(request.ExecutionID + "/" + file.Bucket + "/" + file.Key)
+		}
 		if file.DataType == f2e.DataTypeMultiLine {
-			planned, err := s.multiLineJobs(ctx, file, size, etag, versionID)
+			planned, err := s.multiLineJobs(ctx, file, size, etag, versionID, executionID)
 			if err != nil {
 				return nil, err
 			}
@@ -60,7 +82,7 @@ func (s Service) Plan(ctx context.Context, request f2e.OrganizerRequest) ([]f2e.
 			continue
 		}
 		if file.DataType == f2e.DataTypeJSON {
-			planned, err := s.jsonArrayJobs(ctx, file, size, etag, versionID)
+			planned, err := s.jsonArrayJobs(ctx, file, size, etag, versionID, executionID)
 			if err != nil {
 				return nil, err
 			}
@@ -68,7 +90,7 @@ func (s Service) Plan(ctx context.Context, request f2e.OrganizerRequest) ([]f2e.
 			continue
 		}
 		if file.MaxRecordLengthBytes > 0 && (file.DataType == f2e.DataTypeJSONL || file.DataType == f2e.DataTypeNDJSON || file.DataType == f2e.DataTypeText) {
-			planned, err := s.variableJobs(ctx, file, size, etag, versionID)
+			planned, err := s.variableJobs(ctx, file, size, etag, versionID, executionID)
 			if err != nil {
 				return nil, err
 			}
@@ -79,14 +101,20 @@ func (s Service) Plan(ctx context.Context, request f2e.OrganizerRequest) ([]f2e.
 			if size == 0 {
 				return nil, fmt.Errorf("empty object")
 			}
-			fileID := hash(file.Bucket + "/" + file.Key + "/" + etag)
-			jobs = append(jobs, f2e.ChunkJob{SchemaVersion: f2e.SchemaVersion, JobID: hash(fileID), FileID: fileID, ChunkID: "00000001", Bucket: file.Bucket, Key: file.Key, PresignedURL: file.PresignedURL, ETag: etag, VersionID: versionID, FileSize: size, RecordCount: 1, StartByte: 0, EndByteInclusive: size - 1, MaxRecordLengthBytes: file.MaxRecordLengthBytes, DataType: file.DataType, Options: file.Options})
+			if size > s.maxChunkBytes() {
+				return nil, fmt.Errorf("non-splittable %s object size %d exceeds chunk maximum %d", file.DataType, size, s.maxChunkBytes())
+			}
+			fileID := fileID(file.Bucket, file.Key, versionID, etag, size)
+			jobs = append(jobs, f2e.ChunkJob{SchemaVersion: f2e.SchemaVersion, JobID: executionID, FileID: fileID, ChunkID: "00000001", Bucket: file.Bucket, Key: file.Key, PresignedURL: file.PresignedURL, ETag: etag, VersionID: versionID, FileSize: size, RecordCount: 1, StartByte: 0, EndByteInclusive: size - 1, MaxRecordLengthBytes: file.MaxRecordLengthBytes, DataType: file.DataType, Options: file.Options, Context: file.Context})
 			continue
 		}
 		if size == 0 || size%s.safeLen() != 0 {
 			return nil, fmt.Errorf("invalid fixed-width object size %d", size)
 		}
-		fileID := hash(file.Bucket + "/" + file.Key + "/" + etag)
+		if int64(s.Config.RecordsPerChunk)*s.safeLen() > s.maxChunkBytes() {
+			return nil, fmt.Errorf("fixed-width chunk exceeds maximum %d bytes", s.maxChunkBytes())
+		}
+		fileID := fileID(file.Bucket, file.Key, versionID, etag, size)
 		total := size / s.safeLen()
 		for start, chunk := int64(0), int64(1); start < total; start, chunk = start+int64(s.Config.RecordsPerChunk), chunk+1 {
 			count := int64(s.Config.RecordsPerChunk)
@@ -94,7 +122,7 @@ func (s Service) Plan(ctx context.Context, request f2e.OrganizerRequest) ([]f2e.
 				count = total - start
 			}
 			startByte := start * s.safeLen()
-			jobs = append(jobs, f2e.ChunkJob{SchemaVersion: f2e.SchemaVersion, JobID: hash(fileID), FileID: fileID, ChunkID: fmt.Sprintf("%08d", chunk), Bucket: file.Bucket, Key: file.Key, PresignedURL: file.PresignedURL, ETag: etag, VersionID: versionID, FileSize: size, StartRecord: start, RecordCount: count, RecordLengthBytes: s.safeLen(), StartByte: startByte, EndByteInclusive: startByte + count*s.safeLen() - 1, DataType: file.DataType, Options: file.Options})
+			jobs = append(jobs, f2e.ChunkJob{SchemaVersion: f2e.SchemaVersion, JobID: executionID, FileID: fileID, ChunkID: fmt.Sprintf("%08d", chunk), Bucket: file.Bucket, Key: file.Key, PresignedURL: file.PresignedURL, ETag: etag, VersionID: versionID, FileSize: size, StartRecord: start, RecordCount: count, RecordLengthBytes: s.safeLen(), StartByte: startByte, EndByteInclusive: startByte + count*s.safeLen() - 1, DataType: file.DataType, Options: file.Options, Context: file.Context})
 		}
 	}
 	return jobs, nil
@@ -102,7 +130,7 @@ func (s Service) Plan(ctx context.Context, request f2e.OrganizerRequest) ([]f2e.
 
 // variableJobs divides a newline-delimited object into nominal ranges. Each
 // range is extended only far enough to finish the record crossing its end.
-func (s Service) variableJobs(ctx context.Context, file f2e.FileRequest, size int64, etag, versionID string) ([]f2e.ChunkJob, error) {
+func (s Service) variableJobs(ctx context.Context, file f2e.FileRequest, size int64, etag, versionID, executionID string) ([]f2e.ChunkJob, error) {
 	if size == 0 {
 		return nil, fmt.Errorf("empty object")
 	}
@@ -113,7 +141,10 @@ func (s Service) variableJobs(ctx context.Context, file f2e.FileRequest, size in
 	if nominalSize < file.MaxRecordLengthBytes {
 		return nil, fmt.Errorf("variable chunk size overflow")
 	}
-	fileID := hash(file.Bucket + "/" + file.Key + "/" + etag)
+	if nominalSize > s.maxChunkBytes() {
+		return nil, fmt.Errorf("variable chunk size %d exceeds maximum %d", nominalSize, s.maxChunkBytes())
+	}
+	fileID := fileID(file.Bucket, file.Key, versionID, etag, size)
 	var jobs []f2e.ChunkJob
 	for start, chunk := int64(0), int64(1); start < size; start, chunk = start+nominalSize, chunk+1 {
 		ownedEnd := start + nominalSize - 1
@@ -126,7 +157,7 @@ func (s Service) variableJobs(ctx context.Context, file f2e.FileRequest, size in
 			if lookEnd >= size {
 				lookEnd = size - 1
 			}
-			r, err := s.Store.GetRange(ctx, file.Bucket, file.Key, ownedEnd+1, lookEnd)
+			r, err := s.Store.GetRange(ctx, f2e.ObjectIdentity{Bucket: file.Bucket, Key: file.Key, VersionID: versionID, ETag: etag, Size: size}, ownedEnd+1, lookEnd)
 			if err != nil {
 				return nil, fmt.Errorf("read variable-record padding: %w", err)
 			}
@@ -144,14 +175,28 @@ func (s Service) variableJobs(ctx context.Context, file f2e.FileRequest, size in
 			}
 			padding = int64(at + 1)
 		}
-		jobs = append(jobs, f2e.ChunkJob{SchemaVersion: f2e.SchemaVersion, JobID: hash(fileID), FileID: fileID, ChunkID: fmt.Sprintf("%08d", chunk), Bucket: file.Bucket, Key: file.Key, PresignedURL: file.PresignedURL, ETag: etag, VersionID: versionID, FileSize: size, StartByte: start, EndByteInclusive: ownedEnd + padding, MaxRecordLengthBytes: file.MaxRecordLengthBytes, TrailingPaddingBytes: padding, DataType: file.DataType, Options: file.Options})
+		jobs = append(jobs, f2e.ChunkJob{SchemaVersion: f2e.SchemaVersion, JobID: executionID, FileID: fileID, ChunkID: fmt.Sprintf("%08d", chunk), Bucket: file.Bucket, Key: file.Key, PresignedURL: file.PresignedURL, ETag: etag, VersionID: versionID, FileSize: size, StartByte: start, EndByteInclusive: ownedEnd + padding, MaxRecordLengthBytes: file.MaxRecordLengthBytes, TrailingPaddingBytes: padding, DataType: file.DataType, Options: file.Options, Context: file.Context})
 	}
 	return jobs, nil
 }
-func validType(t f2e.DataType) bool {
-	return t == f2e.DataTypeFixedWidth || t == f2e.DataTypeJSONL || t == f2e.DataTypeNDJSON || t == f2e.DataTypeCSV || t == f2e.DataTypeBinary || t == f2e.DataTypeText || t == f2e.DataTypeMultiLine || t == f2e.DataTypeJSON
+func (s Service) validType(t f2e.DataType) bool {
+	if t == f2e.DataTypeFixedWidth || t == f2e.DataTypeJSONL || t == f2e.DataTypeNDJSON || t == f2e.DataTypeText {
+		return true
+	}
+	// Empty environment is used by library callers/tests that explicitly
+	// construct Config; preserve compatibility while loaded deployments opt in.
+	if (t == f2e.DataTypeCSV || t == f2e.DataTypeJSON) && (s.Config.Environment == "" || s.Config.EnablePreviewFormats) {
+		return true
+	}
+	return (t == f2e.DataTypeBinary || t == f2e.DataTypeMultiLine) && (s.Config.Environment == "" || s.Config.EnableExperimentalFormats)
 }
 func (s Service) safeLen() int64 { return int64(s.Config.RecordLength) }
+func (s Service) maxChunkBytes() int64 {
+	if s.Config.MaxChunkBytes > 0 {
+		return s.Config.MaxChunkBytes
+	}
+	return 64 * 1024 * 1024
+}
 
 // nextBreakOffset scans data line-by-line and returns the byte offset within data
 // of the first line whose content at breakPosition starts with breakMarker.
@@ -185,7 +230,7 @@ func nextBreakOffset(data []byte, breakPosition int, breakMarker string) int {
 
 // multiLineJobs divides a multi-line object into chunk ranges whose boundaries
 // always fall between logical records (never inside a record's constituent lines).
-func (s Service) multiLineJobs(ctx context.Context, file f2e.FileRequest, size int64, etag, versionID string) ([]f2e.ChunkJob, error) {
+func (s Service) multiLineJobs(ctx context.Context, file f2e.FileRequest, size int64, etag, versionID, executionID string) ([]f2e.ChunkJob, error) {
 	layout := file.MultiLineLayout
 	if layout.BreakMarker == "" {
 		return nil, fmt.Errorf("multi-line layout requires breakMarker")
@@ -200,7 +245,10 @@ func (s Service) multiLineJobs(ctx context.Context, file f2e.FileRequest, size i
 	if nominalSize < layout.MaxBytesPerRecord {
 		return nil, fmt.Errorf("multi-line chunk size overflow")
 	}
-	fileID := hash(file.Bucket + "/" + file.Key + "/" + etag)
+	if nominalSize > s.maxChunkBytes() {
+		return nil, fmt.Errorf("multi-line chunk size %d exceeds maximum %d", nominalSize, s.maxChunkBytes())
+	}
+	fileID := fileID(file.Bucket, file.Key, versionID, etag, size)
 	var jobs []f2e.ChunkJob
 	for start, chunk := int64(0), int64(1); start < size; start, chunk = start+nominalSize, chunk+1 {
 		ownedEnd := start + nominalSize - 1
@@ -213,7 +261,7 @@ func (s Service) multiLineJobs(ctx context.Context, file f2e.FileRequest, size i
 			if lookEnd >= size {
 				lookEnd = size - 1
 			}
-			r, err := s.Store.GetRange(ctx, file.Bucket, file.Key, ownedEnd+1, lookEnd)
+			r, err := s.Store.GetRange(ctx, f2e.ObjectIdentity{Bucket: file.Bucket, Key: file.Key, VersionID: versionID, ETag: etag, Size: size}, ownedEnd+1, lookEnd)
 			if err != nil {
 				return nil, fmt.Errorf("read multi-line padding: %w", err)
 			}
@@ -238,7 +286,7 @@ func (s Service) multiLineJobs(ctx context.Context, file f2e.FileRequest, size i
 		}
 		jobs = append(jobs, f2e.ChunkJob{
 			SchemaVersion:        f2e.SchemaVersion,
-			JobID:                hash(fileID),
+			JobID:                executionID,
 			FileID:               fileID,
 			ChunkID:              fmt.Sprintf("%08d", chunk),
 			Bucket:               file.Bucket,
@@ -254,6 +302,7 @@ func (s Service) multiLineJobs(ctx context.Context, file f2e.FileRequest, size i
 			DataType:             file.DataType,
 			MultiLineLayout:      layout,
 			Options:              file.Options,
+			Context:              file.Context,
 		})
 	}
 	return jobs, nil
@@ -284,7 +333,8 @@ func (s Service) PlanWithSummary(ctx context.Context, request f2e.OrganizerReque
 
 	// Create file summaries
 	for _, file := range request.Files {
-		size, _, _, err := s.Store.Head(ctx, file.Bucket, file.Key)
+		object, err := s.Store.Head(ctx, file.Bucket, file.Key)
+		size := object.Size
 		if err != nil {
 			// Log error but continue
 			fmt.Printf("organizer_summary: error getting file size for %s/%s: %v\n", file.Bucket, file.Key, err)
@@ -314,39 +364,106 @@ func (s Service) PlanWithSummary(ctx context.Context, request f2e.OrganizerReque
 }
 
 func (s Service) Publish(ctx context.Context, jobs []f2e.ChunkJob) error {
-	bodies := make([]string, 0, 10)
-	flush := func() error {
-		f, e := s.Queue.Send(ctx, s.Config.ChunkQueueURL, bodies, nil)
-		if e != nil {
-			return e
+	jobIDs := make([]string, 0)
+	if s.Ledger != nil {
+		groups := make(map[string][]f2e.ChunkJob)
+		for _, job := range jobs {
+			groups[job.JobID] = append(groups[job.JobID], job)
 		}
-		if len(f) > 0 {
-			return fmt.Errorf("chunk batch partial failure: %v", f)
+		for _, chunks := range groups {
+			first := chunks[0]
+			plan := f2e.JobPlan{JobID: first.JobID, FileID: first.FileID, Bucket: first.Bucket, Key: first.Key, VersionID: first.VersionID, ETag: first.ETag, ExpectedChunks: len(chunks), CreatedAt: time.Now().UTC()}
+			if err := s.Ledger.Plan(ctx, plan, chunks); err != nil {
+				return fmt.Errorf("persist job plan: %w", err)
+			}
+			jobIDs = append(jobIDs, first.JobID)
 		}
-		bodies = nil
+	}
+	finish := func(err error) error {
+		if s.Ledger == nil {
+			return err
+		}
+		if err != nil {
+			if ledgerErr := s.Ledger.MarkSchedulingFailed(ctx, jobIDs, err.Error()); ledgerErr != nil {
+				return fmt.Errorf("%v; mark scheduling failed: %w", err, ledgerErr)
+			}
+			return err
+		}
+		if ledgerErr := s.Ledger.MarkScheduled(ctx, jobIDs); ledgerErr != nil {
+			return fmt.Errorf("mark jobs scheduled: %w", ledgerErr)
+		}
 		return nil
+	}
+	messages := make([]port.OutboundMessage, 0, 10)
+	flush := func() error {
+		pending := append([]port.OutboundMessage(nil), messages...)
+		for attempt := 0; attempt < 3; attempt++ {
+			failed, err := s.Queue.Send(ctx, s.Config.ChunkQueueURL, pending)
+			if err == nil && len(failed) == 0 {
+				messages = nil
+				return nil
+			}
+			if err != nil {
+				if attempt == 2 {
+					return err
+				}
+			} else {
+				next := make([]port.OutboundMessage, 0, len(failed))
+				for _, index := range failed {
+					if index < 0 || index >= len(pending) {
+						return fmt.Errorf("chunk batch returned invalid failed index %d", index)
+					}
+					next = append(next, pending[index])
+				}
+				pending = next
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(time.Duration(50*(1<<attempt)) * time.Millisecond):
+			}
+		}
+		return fmt.Errorf("chunk batch partial failure after retries")
 	}
 	for _, j := range jobs {
 		b, e := json.Marshal(j)
 		if e != nil {
-			return e
+			return finish(e)
 		}
-		bodies = append(bodies, string(b))
-		if len(bodies) == 10 {
+		messages = append(messages, port.OutboundMessage{Body: string(b)})
+		if len(messages) == 10 {
 			if e := flush(); e != nil {
-				return e
+				return finish(e)
 			}
 		}
 	}
-	if len(bodies) > 0 {
-		return flush()
+	if len(messages) > 0 {
+		if err := flush(); err != nil {
+			return finish(err)
+		}
 	}
-	return nil
+	return finish(nil)
+}
+
+// Replay republishes the immutable chunk contracts retained by the ledger.
+// A new job ID creates a new event occurrence while file/source identities stay unchanged.
+func (s Service) Replay(ctx context.Context, sourceJobID string, chunkIDs []string) ([]f2e.ChunkJob, error) {
+	if s.Ledger == nil || sourceJobID == "" {
+		return nil, fmt.Errorf("replay requires a configured ledger and source job ID")
+	}
+	jobs, err := s.Ledger.Replay(ctx, sourceJobID, rand.Text(), chunkIDs)
+	if err != nil {
+		return nil, fmt.Errorf("load replay plan: %w", err)
+	}
+	if err := s.Publish(ctx, jobs); err != nil {
+		return nil, fmt.Errorf("publish replay: %w", err)
+	}
+	return jobs, nil
 }
 
 // jsonArrayJobs divides a JSON file's target array into chunk ranges whose boundaries
 // always fall between array elements (never inside an element's JSON structure).
-func (s Service) jsonArrayJobs(ctx context.Context, file f2e.FileRequest, size int64, etag, versionID string) ([]f2e.ChunkJob, error) {
+func (s Service) jsonArrayJobs(ctx context.Context, file f2e.FileRequest, size int64, etag, versionID, executionID string) ([]f2e.ChunkJob, error) {
 	layout := file.JSONArrayLayout
 	if layout.MaxBytesPerElement < 1 {
 		return nil, fmt.Errorf("json array layout requires maxBytesPerElement")
@@ -354,38 +471,43 @@ func (s Service) jsonArrayJobs(ctx context.Context, file f2e.FileRequest, size i
 	if size == 0 {
 		return nil, fmt.Errorf("empty object")
 	}
-	// Probe up to 64 KB to locate the array, regardless of element size.
-	probeEnd := int64(65535)
+	searchBytes := s.Config.JSONArraySearchBytes
+	if searchBytes == 0 {
+		searchBytes = 1024 * 1024
+	}
+	// The target path must be found within the explicit bounded search window.
+	probeEnd := int64(searchBytes - 1)
 	if probeEnd >= size {
 		probeEnd = size - 1
 	}
-	arrayOffset, err := s.findJSONArrayOffset(ctx, file.Bucket, file.Key, probeEnd, layout.ArrayPath)
+	arrayOffset, err := s.findJSONArrayOffset(ctx, f2e.ObjectIdentity{Bucket: file.Bucket, Key: file.Key, VersionID: versionID, ETag: etag, Size: size}, probeEnd, layout.ArrayPath)
 	if err != nil {
-		return nil, fmt.Errorf("find json array offset for %q: %w", layout.ArrayPath, err)
+		return nil, fmt.Errorf("find json array offset for %q within %d bytes: %w", layout.ArrayPath, searchBytes, err)
 	}
 	nominalSize := int64(s.Config.RecordsPerChunk) * layout.MaxBytesPerElement
 	if nominalSize < layout.MaxBytesPerElement {
 		return nil, fmt.Errorf("json array chunk size overflow")
 	}
-	fileID := hash(file.Bucket + "/" + file.Key + "/" + etag)
+	if nominalSize > s.maxChunkBytes()-layout.MaxBytesPerElement {
+		return nil, fmt.Errorf("json array chunk plus boundary padding exceeds maximum %d", s.maxChunkBytes())
+	}
+	fileID := fileID(file.Bucket, file.Key, versionID, etag, size)
 	var jobs []f2e.ChunkJob
-	for start, chunk := arrayOffset, int64(1); start < size; start, chunk = start+nominalSize, chunk+1 {
+	for start, chunk := arrayOffset, int64(1); start < size; chunk++ {
 		ownedEnd := start + nominalSize - 1
 		if ownedEnd >= size {
 			ownedEnd = size - 1
 		}
 		padding := int64(0)
 		if ownedEnd < size-1 {
-			// Read one element-width before ownedEnd so we never start mid-string.
-			contextStart := ownedEnd - layout.MaxBytesPerElement + 1
-			if contextStart < arrayOffset {
-				contextStart = arrayOffset
-			}
+			// start is an element boundary. Scanning from there preserves JSON
+			// string/escape state; beginning in the middle of an element can skip
+			// otherwise valid records at every chunk boundary.
 			lookEnd := ownedEnd + layout.MaxBytesPerElement
 			if lookEnd >= size {
 				lookEnd = size - 1
 			}
-			r, err := s.Store.GetRange(ctx, file.Bucket, file.Key, contextStart, lookEnd)
+			r, err := s.Store.GetRange(ctx, f2e.ObjectIdentity{Bucket: file.Bucket, Key: file.Key, VersionID: versionID, ETag: etag, Size: size}, start, lookEnd)
 			if err != nil {
 				return nil, fmt.Errorf("read json array padding: %w", err)
 			}
@@ -397,7 +519,7 @@ func (s Service) jsonArrayJobs(ctx context.Context, file f2e.FileRequest, size i
 			if closeErr != nil {
 				return nil, closeErr
 			}
-			relPos := int(ownedEnd - contextStart)
+			relPos := int(ownedEnd - start)
 			at := f2e.JSONElementEndAfter(data, relPos)
 			if at < 0 {
 				// ownedEnd already falls between elements — no padding needed.
@@ -406,12 +528,12 @@ func (s Service) jsonArrayJobs(ctx context.Context, file f2e.FileRequest, size i
 				// at is the exclusive end position within the window.
 				// file position of that end = contextStart + at - 1
 				// padding = that position - ownedEnd
-				padding = contextStart + int64(at) - 1 - ownedEnd
+				padding = start + int64(at) - 1 - ownedEnd
 			}
 		}
 		jobs = append(jobs, f2e.ChunkJob{
 			SchemaVersion:        f2e.SchemaVersion,
-			JobID:                hash(fileID),
+			JobID:                executionID,
 			FileID:               fileID,
 			ChunkID:              fmt.Sprintf("%08d", chunk),
 			Bucket:               file.Bucket,
@@ -428,15 +550,17 @@ func (s Service) jsonArrayJobs(ctx context.Context, file f2e.FileRequest, size i
 			JSONArrayLayout:      layout,
 			JSONArrayOffset:      arrayOffset,
 			Options:              file.Options,
+			Context:              file.Context,
 		})
+		start = ownedEnd + padding + 1
 	}
 	return jobs, nil
 }
 
 // findJSONArrayOffset reads the start of the file and returns the byte offset
 // immediately after the '[' of the target array.
-func (s Service) findJSONArrayOffset(ctx context.Context, bucket, key string, probeEnd int64, arrayPath string) (int64, error) {
-	r, err := s.Store.GetRange(ctx, bucket, key, 0, probeEnd)
+func (s Service) findJSONArrayOffset(ctx context.Context, object f2e.ObjectIdentity, probeEnd int64, arrayPath string) (int64, error) {
+	r, err := s.Store.GetRange(ctx, object, 0, probeEnd)
 	if err != nil {
 		return 0, err
 	}

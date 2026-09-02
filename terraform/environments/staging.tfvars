@@ -1,0 +1,15 @@
+localstack_endpoint     = ""
+lambda_aws_endpoint_url = ""
+environment             = "staging"
+aws_region              = "us-east-1"
+aws_account_id          = "111111111111" # replace before promotion
+resource_prefix         = "f2e"
+lambda_zip_dir          = "../.build"
+lambda_runtime          = "provided.al2023"
+lambda_timeout          = 300
+lambda_memory_mb        = 512
+f2e_input_bucket        = "replace-me-f2e-staging"
+sqs_visibility_timeout  = 1800
+sqs_max_receive_count   = 3
+worker_batch_size       = 1
+enable_preview_formats  = true
