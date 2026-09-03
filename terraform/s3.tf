@@ -34,6 +34,21 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "input" {
 
 resource "aws_s3_bucket_lifecycle_configuration" "input" {
   bucket = aws_s3_bucket.input.id
+
+  rule {
+    id     = "expire-input-objects"
+    status = "Enabled"
+    filter {}
+
+    expiration {
+      days = var.s3_object_retention_days
+    }
+
+    noncurrent_version_expiration {
+      noncurrent_days = var.s3_object_retention_days
+    }
+  }
+
   rule {
     id     = "abort-incomplete-multipart"
     status = "Enabled"

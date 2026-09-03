@@ -226,13 +226,15 @@ variable "worker_maximum_concurrency" {
 }
 
 variable "sqs_retention_seconds" {
-  type    = number
-  default = 345600
+  type        = number
+  default     = 1123200
+  description = "Main SQS queue retention in seconds. The PoC uses 13 days so the DLQ can retain messages longer within the SQS 14-day limit."
 }
 
 variable "sqs_dlq_retention_seconds" {
-  type    = number
-  default = 1209600
+  type        = number
+  default     = 1209600
+  description = "DLQ retention in seconds. SQS supports at most 14 days."
   validation {
     condition     = var.sqs_dlq_retention_seconds > var.sqs_retention_seconds
     error_message = "DLQ retention must be greater than main queue retention."
@@ -240,16 +242,28 @@ variable "sqs_dlq_retention_seconds" {
 }
 
 variable "log_retention_days" {
-  type    = number
-  default = 30
+  type        = number
+  default     = 30
+  description = "CloudWatch Logs retention in days. The PoC uses the smallest supported period above the requested 15 days."
 }
 
 variable "ledger_retention_days" {
-  type    = number
-  default = 90
+  type        = number
+  default     = 15
+  description = "Job ledger retention in days. The PoC default is 15 days."
   validation {
     condition     = var.ledger_retention_days >= 1
     error_message = "Ledger retention must be at least one day."
+  }
+}
+
+variable "s3_object_retention_days" {
+  type        = number
+  default     = 15
+  description = "Input bucket current and noncurrent object retention in days. The PoC default is 15 days."
+  validation {
+    condition     = var.s3_object_retention_days >= 1
+    error_message = "S3 object retention must be at least one day."
   }
 }
 
