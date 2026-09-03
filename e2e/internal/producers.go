@@ -96,6 +96,11 @@ func GenerateJSONArray(recordCount int) []byte {
 	return buf.Bytes()
 }
 
+// GenerateBinary produces a small binary payload containing non-text bytes.
+func GenerateBinary() []byte {
+	return []byte{0x00, 0x46, 0x32, 0x45, 0xff}
+}
+
 // MaxRecordLenFor returns the MaxRecordLengthBytes for variable-length formats.
 // Returns 0 for small files, which signals the organizer to use single-chunk mode.
 func MaxRecordLenFor(dataType string, recordCount int) int64 {

@@ -2,3 +2,8 @@
 lambdas/bin/
 automacao/dados/
 automacao/resultados/
+terraform/.terraform/
+terraform/*.tfstate
+terraform/*.tfstate.*
+terraform/*.tfplan
+terraform/environments/*.local.tfvars

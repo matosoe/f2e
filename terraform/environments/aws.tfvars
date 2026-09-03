@@ -30,4 +30,3 @@ sqs_visibility_timeout = 1800
 sqs_max_receive_count  = 3
 organizer_batch_size   = 1
 worker_batch_size      = 1
-enable_preview_formats = true

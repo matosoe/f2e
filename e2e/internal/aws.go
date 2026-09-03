@@ -6,13 +6,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	dynamodbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -22,11 +22,6 @@ import (
 
 const (
 	localStackEndpoint = "http://localhost:4566"
-	awsRegion          = "us-east-1"
-	inputBucket        = "f2e-input"
-	intakeQueueName    = "file-intake"
-	outputQueueName    = "output-events"
-	ledgerTableName    = "f2e-job-ledger"
 	schemaVersion      = "1"
 )
 
@@ -38,6 +33,9 @@ type AWSClient struct {
 	intakeQueueURL string
 	outputQueueURL string
 	bucket         string
+	ledgerTable    string
+	intakeDLQName  string
+	chunkDLQName   string
 }
 
 // LocalStackAvailable returns true when the LocalStack health endpoint responds.
@@ -51,22 +49,33 @@ func LocalStackAvailable() bool {
 	return resp.StatusCode == 200
 }
 
-// NewAWSClient creates S3 and SQS clients pointing to LocalStack and resolves queue URLs.
+// RealAWS reports whether the suite should use the active AWS SDK credentials.
+func RealAWS() bool { return os.Getenv("F2E_E2E_TARGET") == "aws" }
+
+func env(name, fallback string) string {
+	if value := os.Getenv(name); value != "" {
+		return value
+	}
+	return fallback
+}
+
+// NewAWSClient creates clients for LocalStack (default) or an isolated real-AWS environment.
 func NewAWSClient() *AWSClient {
 	ctx := context.Background()
-	cfg, err := awsconfig.LoadDefaultConfig(ctx,
-		awsconfig.WithRegion(awsRegion),
-		awsconfig.WithCredentialsProvider(
-			credentials.NewStaticCredentialsProvider("test", "test", ""),
-		),
-		awsconfig.WithBaseEndpoint(localStackEndpoint),
-	)
+	region := env("F2E_E2E_AWS_REGION", "us-east-1")
+	options := []func(*awsconfig.LoadOptions) error{awsconfig.WithRegion(region)}
+	if !RealAWS() {
+		options = append(options, awsconfig.WithBaseEndpoint(localStackEndpoint))
+	}
+	cfg, err := awsconfig.LoadDefaultConfig(ctx, options...)
 	if err != nil {
 		panic(fmt.Sprintf("aws config: %v", err))
 	}
 
-	s3c := s3.NewFromConfig(cfg, func(o *s3.Options) { o.UsePathStyle = true })
+	s3c := s3.NewFromConfig(cfg, func(o *s3.Options) { o.UsePathStyle = !RealAWS() })
 	sqsc := sqs.NewFromConfig(cfg)
+	intakeQueueName := env("F2E_E2E_INTAKE_QUEUE_NAME", "file-intake")
+	outputQueueName := env("F2E_E2E_OUTPUT_QUEUE_NAME", "output-events")
 
 	return &AWSClient{
 		s3Client:       s3c,
@@ -74,14 +83,17 @@ func NewAWSClient() *AWSClient {
 		dynamoClient:   dynamodb.NewFromConfig(cfg),
 		intakeQueueURL: mustQueueURL(ctx, sqsc, intakeQueueName),
 		outputQueueURL: mustQueueURL(ctx, sqsc, outputQueueName),
-		bucket:         inputBucket,
+		bucket:         env("F2E_E2E_INPUT_BUCKET", "f2e-input"),
+		ledgerTable:    env("F2E_E2E_LEDGER_TABLE", "f2e-job-ledger"),
+		intakeDLQName:  env("F2E_E2E_INTAKE_DLQ_NAME", "file-intake-dlq"),
+		chunkDLQName:   env("F2E_E2E_CHUNK_DLQ_NAME", "chunk-jobs-dlq"),
 	}
 }
 
 // AssertLedgerComplete proves that every planned E2E job and chunk reached a
 // reconciled terminal state, with no double-counted or missing chunk.
 func (c *AWSClient) AssertLedgerComplete(ctx context.Context, expectedJobs int) error {
-	input := &dynamodb.ScanInput{TableName: aws.String(ledgerTableName), ConsistentRead: aws.Bool(true)}
+	input := &dynamodb.ScanInput{TableName: aws.String(c.ledgerTable), ConsistentRead: aws.Bool(true)}
 	jobs, chunks := 0, 0
 	for {
 		out, err := c.dynamoClient.Scan(ctx, input)
@@ -211,13 +223,35 @@ func (c *AWSClient) approximateCount(ctx context.Context, queueURL string) (int,
 // DLQCounts returns visible poison messages after the suite has allowed all
 // redrive attempts to settle.
 func (c *AWSClient) DLQCounts(ctx context.Context) (intake, chunks int, err error) {
-	intakeURL := mustQueueURL(ctx, c.sqsClient, "file-intake-dlq")
-	chunkURL := mustQueueURL(ctx, c.sqsClient, "chunk-jobs-dlq")
+	intakeURL := mustQueueURL(ctx, c.sqsClient, c.intakeDLQName)
+	chunkURL := mustQueueURL(ctx, c.sqsClient, c.chunkDLQName)
 	if intake, err = c.approximateCount(ctx, intakeURL); err != nil {
 		return 0, 0, err
 	}
 	chunks, err = c.approximateCount(ctx, chunkURL)
 	return intake, chunks, err
+}
+
+// WaitForDLQCounts waits for asynchronous SQS redrive to settle.
+func (c *AWSClient) WaitForDLQCounts(ctx context.Context, expectedIntake, expectedChunks int, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		intake, chunks, err := c.DLQCounts(ctx)
+		if err != nil {
+			return err
+		}
+		if intake == expectedIntake && chunks == expectedChunks {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("DLQ counts did not settle: intake=%d (want %d), chunks=%d (want %d)", intake, expectedIntake, chunks, expectedChunks)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
+	}
 }
 
 // WaitForCount polls until at least expected messages appear in the output queue or timeout elapses.

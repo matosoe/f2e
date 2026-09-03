@@ -157,12 +157,6 @@ func (s Service) valid(j f2e.ChunkJob) error {
 	if j.DataType != f2e.DataTypeFixedWidth && j.DataType != f2e.DataTypeJSONL && j.DataType != f2e.DataTypeNDJSON && j.DataType != f2e.DataTypeCSV && j.DataType != f2e.DataTypeBinary && j.DataType != f2e.DataTypeText && j.DataType != f2e.DataTypeMultiLine && j.DataType != f2e.DataTypeJSON {
 		return fmt.Errorf("unsupported data type %q", j.DataType)
 	}
-	if (j.DataType == f2e.DataTypeCSV || j.DataType == f2e.DataTypeJSON) && s.Config.Environment != "" && !s.Config.EnablePreviewFormats {
-		return fmt.Errorf("preview data type %q is not enabled", j.DataType)
-	}
-	if (j.DataType == f2e.DataTypeBinary || j.DataType == f2e.DataTypeMultiLine) && s.Config.Environment != "" && !s.Config.EnableExperimentalFormats {
-		return fmt.Errorf("experimental data type %q is not enabled", j.DataType)
-	}
 	if j.Options.BypassJSONValidation && j.DataType != f2e.DataTypeJSONL && j.DataType != f2e.DataTypeNDJSON {
 		return fmt.Errorf("invalid JSON validation option")
 	}

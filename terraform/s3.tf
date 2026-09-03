@@ -1,6 +1,7 @@
 resource "aws_s3_bucket" "input" {
-  bucket = var.f2e_input_bucket
-  tags   = local.tags
+  bucket        = var.f2e_input_bucket
+  force_destroy = var.s3_force_destroy
+  tags          = local.tags
 }
 
 resource "aws_s3_bucket_public_access_block" "input" {
@@ -93,4 +94,18 @@ resource "aws_s3_bucket_notification" "input" {
 
   # Ensure the queue policy exists before S3 tries to verify it.
   depends_on = [aws_sqs_queue_policy.file_intake]
+}
+
+# S3 does not have real directories. This marker makes ingest/ visible in S3
+# consoles while uploads accepted by the notification stay under ingest/data/.
+resource "aws_s3_object" "intake_prefix_marker" {
+  bucket       = aws_s3_bucket.input.id
+  key          = "ingest/.keep"
+  content      = "Reserved prefix for F2E intake files."
+  content_type = "text/plain"
+  tags         = local.tags
+
+  # Configure the more specific notification filter before creating the
+  # marker, so the marker itself is never sent to the Organizer.
+  depends_on = [aws_s3_bucket_notification.input]
 }

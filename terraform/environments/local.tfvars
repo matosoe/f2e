@@ -24,9 +24,7 @@ f2e_record_length     = 100
 f2e_records_per_chunk = 1000
 f2e_batch_size        = 10
 
-sqs_visibility_timeout      = 1800
-sqs_max_receive_count       = 3
-organizer_batch_size        = 1
-worker_batch_size           = 1
-enable_preview_formats      = true
-enable_experimental_formats = true
+sqs_visibility_timeout = 1800
+sqs_max_receive_count  = 3
+organizer_batch_size   = 1
+worker_batch_size      = 1

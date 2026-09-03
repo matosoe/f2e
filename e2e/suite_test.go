@@ -15,13 +15,14 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/cucumber/godog"
 	"github.com/f2e/f2e/e2e/internal"
 )
 
 func TestE2E(t *testing.T) {
-	if !internal.LocalStackAvailable() {
+	if !internal.RealAWS() && !internal.LocalStackAvailable() {
 		t.Fatal("LocalStack not available at http://localhost:4566 — run automacao/subir-ambiente.sh before executing the E2E suite")
 	}
 
@@ -30,6 +31,9 @@ func TestE2E(t *testing.T) {
 	tags := "~@load"
 	if os.Getenv("E2E_LOAD_TESTS") == "true" {
 		tags = ""
+	}
+	if requestedTags := os.Getenv("E2E_TAGS"); requestedTags != "" {
+		tags = requestedTags
 	}
 
 	suite := godog.TestSuite{
@@ -48,17 +52,28 @@ func TestE2E(t *testing.T) {
 	if suite.Run() != 0 {
 		t.Fatal("E2E feature suite failed")
 	}
-	intakeDLQ, chunkDLQ, err := client.DLQCounts(t.Context())
-	if err != nil {
-		t.Fatalf("read DLQs: %v", err)
+	// A focused tag run is useful during development; its scenario count and
+	// expected DLQ state intentionally differ from the full regression suite.
+	if os.Getenv("E2E_TAGS") != "" {
+		return
 	}
 	// Six explicit empty-file scenarios are rejected by the organizer. They
 	// must be auditable in intake DLQ; no worker job is expected to be poison.
-	if intakeDLQ != 6 || chunkDLQ != 0 {
-		t.Fatalf("unexpected DLQ counts: intake=%d (want 6), chunks=%d (want 0)", intakeDLQ, chunkDLQ)
+	if internal.RealAWS() {
+		if err := client.WaitForDLQCounts(t.Context(), 6, 0, 8*time.Minute); err != nil {
+			t.Fatal(err)
+		}
+	} else {
+		intakeDLQ, chunkDLQ, err := client.DLQCounts(t.Context())
+		if err != nil {
+			t.Fatalf("read DLQs: %v", err)
+		}
+		if intakeDLQ != 6 || chunkDLQ != 0 {
+			t.Fatalf("unexpected DLQ counts: intake=%d (want 6), chunks=%d (want 0)", intakeDLQ, chunkDLQ)
+		}
 	}
-	// 29 valid scenarios (including the empty JSON array) create ledger jobs.
-	if err := client.AssertLedgerComplete(t.Context(), 29); err != nil {
+	// 30 valid scenarios (including the empty JSON array) create ledger jobs.
+	if err := client.AssertLedgerComplete(t.Context(), 30); err != nil {
 		t.Fatal(err)
 	}
 }

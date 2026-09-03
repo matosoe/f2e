@@ -1,4 +1,4 @@
-# Automação local
+# Automações
 
 Esta pasta é o destino obrigatório de todos os artefatos usados para criar, executar e validar o ambiente local do F2E.
 
@@ -12,4 +12,20 @@ Os scripts shell desta pasta implementam a operação local descrita em [`docume
 - validação da quantidade configurada de mensagens na fila de saída;
 - massas em `automacao/dados` e resultados locais em `automacao/resultados`.
 
-Terraform e scripts de implantação na AWS não pertencem a esta etapa.
+## AWS real
+
+As automações AWS usam o arquivo local e ignorado
+`terraform/environments/aws.local.tfvars`. Crie-o a partir de
+`terraform/environments/ALTERAR_aws.local.tfvars.example` e preencha todos os
+valores antes de executar.
+
+- `subir-ambiente-aws.sh` cria ou atualiza a infraestrutura e **a mantém em
+  execução** para upload, inspeção de filas, ledger e logs.
+- `parar-ambiente-aws.sh` é o único script que executa `terraform destroy`.
+- `executar-e2e-aws.sh` sobe o ambiente, executa a suíte E2E em AWS real e o
+  destrói ao terminar, inclusive se os testes falharem. Ele aceita somente
+  `environment = "development"`.
+
+Defina `F2E_AWS_TFVARS=/caminho/para/outro.tfvars` para usar outro arquivo de
+variáveis. Consulte [Operação na AWS](../documentacao/operacao_aws.md) para o
+procedimento completo.

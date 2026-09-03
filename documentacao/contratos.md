@@ -19,7 +19,7 @@ O Organizer recebe em SQS o contrato explícito abaixo. Cada arquivo declara o f
 }
 ```
 
-Os formatos de produção são `fixed-width`, `jsonl`, `ndjson` e `text`. `csv` e `json` array são preview e exigem `F2E_ENABLE_PREVIEW_FORMATS=true`; `binary` e `multi-line` são experimentais, exigem `F2E_ENABLE_EXPERIMENTAL_FORMATS=true` e são proibidos em produção. `bypassJsonValidation` só é aceito para `jsonl` e `ndjson`: quando `false` (padrão), cada linha é validada como um valor JSON; quando `true`, a linha é encaminhada como recebida, sem parse/validação. `text` é processado por linhas. CSV usa UTF-8, não remove header nem BOM, aceita quantidade variável de colunas e segue o parser RFC 4180 do Go, incluindo campos entre aspas, CRLF e quebras de linha internas.
+Os formatos de produção são `fixed-width`, `jsonl`, `ndjson`, `text`, `csv`, JSON array (`json`), `binary` e `multi-line`. `bypassJsonValidation` só é aceito para `jsonl` e `ndjson`: quando `false` (padrão), cada linha é validada como um valor JSON; quando `true`, a linha é encaminhada como recebida, sem parse/validação. `text` é processado por linhas. CSV usa UTF-8, não remove header nem BOM, aceita quantidade variável de colunas e segue o parser RFC 4180 do Go, incluindo campos entre aspas, CRLF e quebras de linha internas.
 
 JSON array aceita qualquer valor JSON válido (objeto, array, string, número,
 booleano ou `null`) e usa parser consciente de strings, escapes e nesting. A

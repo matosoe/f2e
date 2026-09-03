@@ -12,4 +12,3 @@ f2e_input_bucket        = "replace-me-f2e-staging"
 sqs_visibility_timeout  = 1800
 sqs_max_receive_count   = 3
 worker_batch_size       = 1
-enable_preview_formats  = true

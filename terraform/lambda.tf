@@ -22,7 +22,7 @@ resource "aws_lambda_function" "organizer" {
   timeout                        = var.lambda_timeout
   memory_size                    = var.lambda_memory_mb
   architectures                  = [var.lambda_architecture]
-  reserved_concurrent_executions = var.organizer_reserved_concurrency
+  reserved_concurrent_executions = var.organizer_reserved_concurrency > 0 ? var.organizer_reserved_concurrency : -1
   publish                        = true
 
   ephemeral_storage { size = var.lambda_ephemeral_storage_mb }
@@ -47,7 +47,7 @@ resource "aws_lambda_function" "worker" {
   timeout                        = var.lambda_timeout
   memory_size                    = var.lambda_memory_mb
   architectures                  = [var.lambda_architecture]
-  reserved_concurrent_executions = var.worker_reserved_concurrency
+  reserved_concurrent_executions = var.worker_reserved_concurrency > 0 ? var.worker_reserved_concurrency : -1
   publish                        = true
 
   ephemeral_storage { size = var.lambda_ephemeral_storage_mb }

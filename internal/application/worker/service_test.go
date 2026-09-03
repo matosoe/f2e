@@ -322,6 +322,27 @@ func TestMultiLineChunkEmitsJoinedRecords(t *testing.T) {
 	}
 }
 
+func TestBinaryProducesBase64EventInProduction(t *testing.T) {
+	data := "\x00F2E\xff"
+	q := &messageQueue{}
+	s := Service{Resolver: store{data}, Queue: q, Config: config.Config{Environment: "production", OutputQueueURL: "out", EventSchemaID: "s", EventSchemaVersion: "1", EventFormat: "json"}}
+	job := f2e.ChunkJob{SchemaVersion: f2e.SchemaVersion, FileID: "f", JobID: "j", ChunkID: "00000001", Bucket: "b", Key: "k", StartByte: 0, EndByteInclusive: int64(len(data) - 1), DataType: f2e.DataTypeBinary}
+	body, _ := json.Marshal(job)
+	if err := s.Process(context.Background(), body); err != nil {
+		t.Fatal(err)
+	}
+	if len(q.messages) != 1 {
+		t.Fatalf("messages=%d, want 1", len(q.messages))
+	}
+	var env f2e.Envelope[f2e.RecordPayload]
+	if err := json.Unmarshal([]byte(q.messages[0].Body), &env); err != nil {
+		t.Fatal(err)
+	}
+	if env.Data.Base64 != "AEYyRf8=" || env.Data.Raw != "" || env.Source.FileFormat != string(f2e.DataTypeBinary) {
+		t.Fatalf("unexpected binary envelope: %+v", env)
+	}
+}
+
 func TestMultiLineChunksDoNotDuplicateRecords(t *testing.T) {
 	// Two chunks; chunk 1 owns bytes [0,9] with trailing padding 3 (ends at byte 12).
 	// Chunk 2 starts at byte 10, re-reads from byte 0, but only owns bytes [10,19].

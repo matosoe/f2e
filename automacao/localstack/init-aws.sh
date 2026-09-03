@@ -23,7 +23,7 @@ awslocal dynamodb wait table-exists --table-name f2e-job-ledger
 # Do not also wire S3 notifications here: that would plan every object twice.
 role='arn:aws:iam::000000000000:role/f2e-lambda-role'
 for name in organizer worker; do
-  zip="/opt/f2e/$name.zip"; env="Variables={AWS_ENDPOINT_URL=http://localstack:4566,AWS_REGION=us-east-1,F2E_ENVIRONMENT=local,F2E_ENABLE_PREVIEW_FORMATS=true,F2E_ENABLE_EXPERIMENTAL_FORMATS=true,F2E_RECORD_LENGTH=100,F2E_RECORDS_PER_CHUNK=1000,F2E_BATCH_SIZE=10,F2E_MAX_RECEIVE_COUNT=1,F2E_LEDGER_TABLE=f2e-job-ledger,F2E_LEDGER_RETENTION_DAYS=90,F2E_CHUNK_QUEUE_URL=$(qurl chunk-jobs),F2E_OUTPUT_QUEUE_URL=$(qurl output-events)}"
+  zip="/opt/f2e/$name.zip"; env="Variables={AWS_ENDPOINT_URL=http://localstack:4566,AWS_REGION=us-east-1,F2E_ENVIRONMENT=local,F2E_RECORD_LENGTH=100,F2E_RECORDS_PER_CHUNK=1000,F2E_BATCH_SIZE=10,F2E_MAX_RECEIVE_COUNT=1,F2E_LEDGER_TABLE=f2e-job-ledger,F2E_LEDGER_RETENTION_DAYS=90,F2E_CHUNK_QUEUE_URL=$(qurl chunk-jobs),F2E_OUTPUT_QUEUE_URL=$(qurl output-events)}"
   awslocal lambda get-function --function-name "f2e-$name" >/dev/null 2>&1 && awslocal lambda update-function-code --function-name "f2e-$name" --zip-file "fileb://$zip" >/dev/null || awslocal lambda create-function --function-name "f2e-$name" --runtime provided.al2 --handler bootstrap --role "$role" --zip-file "fileb://$zip" --timeout 300 --environment "$env" >/dev/null
 done
 for name in organizer worker; do

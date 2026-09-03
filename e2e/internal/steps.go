@@ -62,6 +62,7 @@ func NewScenarioInitializer(client *AWSClient) func(*godog.ScenarioContext) {
 		sc.Step(`^I have a text file with (\d+) records$`, s.haveTextFile)
 		sc.Step(`^I have a multi-line file with header, (\d+) data records, and trailer$`, s.haveMultiLineFile)
 		sc.Step(`^I have a JSON array file with (\d+) elements$`, s.haveJSONArrayFile)
+		sc.Step(`^I have a binary file$`, s.haveBinaryFile)
 		sc.Step(`^I have an empty "([^"]*)" file$`, s.haveEmptyFile)
 
 		// ── Upload + trigger step ───────────────────────────────────────────────
@@ -141,6 +142,13 @@ func (s *scenarioCtx) haveJSONArrayFile(count int) error {
 	return nil
 }
 
+func (s *scenarioCtx) haveBinaryFile() error {
+	s.fileContent = GenerateBinary()
+	s.dataType = "binary"
+	s.expectedCount = 1
+	return nil
+}
+
 func (s *scenarioCtx) haveEmptyFile(format string) error {
 	s.fileContent = []byte{}
 	s.dataType = format
@@ -162,7 +170,7 @@ func (s *scenarioCtx) uploadAndProcess(ctx context.Context) error {
 		SchemaVersion: schemaVersion,
 		Files: []FileRequest{
 			{
-				Bucket:               inputBucket,
+				Bucket:               s.aws.bucket,
 				Key:                  s.s3Key,
 				DataType:             s.dataType,
 				MaxRecordLengthBytes: s.maxRecordLen,
@@ -245,8 +253,8 @@ func (s *scenarioCtx) allEventsAreValidEnvelopes(_ context.Context) error {
 		if env.Source.Type != "s3" {
 			return fmt.Errorf("message[%d]: source.type = %q, want \"s3\"", i, env.Source.Type)
 		}
-		if env.Source.Bucket != inputBucket {
-			return fmt.Errorf("message[%d]: source.bucket = %q, want %q", i, env.Source.Bucket, inputBucket)
+		if env.Source.Bucket != s.aws.bucket {
+			return fmt.Errorf("message[%d]: source.bucket = %q, want %q", i, env.Source.Bucket, s.aws.bucket)
 		}
 		if env.Source.Key != s.s3Key {
 			return fmt.Errorf("message[%d]: source.key = %q, want %q", i, env.Source.Key, s.s3Key)
@@ -275,6 +283,10 @@ func (s *scenarioCtx) allEventsAreValidEnvelopes(_ context.Context) error {
 		case "json":
 			if env.Data.Raw == "" {
 				return fmt.Errorf("message[%d]: data.raw is empty for json element", i)
+			}
+		case "binary":
+			if env.Data.Base64 == "" || env.Data.Raw != "" {
+				return fmt.Errorf("message[%d]: invalid binary payload", i)
 			}
 		}
 	}

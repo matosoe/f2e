@@ -60,6 +60,13 @@ enviar_arquivo() {
   aws s3 --endpoint-url http://localhost:4566 --region us-east-1 cp "$data" "s3://f2e-input/input/entrada-${QUANTIDADE_REGISTROS}.txt"
 }
 
+enviar_solicitacao_organizer() {
+  local intake body
+  intake="$(awsq get-queue-url --queue-name file-intake --query QueueUrl --output text)"
+  body="$(jq -cn --arg bucket f2e-input --arg key "input/entrada-${QUANTIDADE_REGISTROS}.txt" '{schemaVersion:"1",files:[{bucket:$bucket,key:$key,dataType:"fixed-width"}]}')"
+  awsq send-message --queue-url "$intake" --message-body "$body" >/dev/null
+}
+
 aguardar_processamento() {
   local out count
   out="$(awsq get-queue-url --queue-name output-events --query QueueUrl --output text)"
@@ -101,6 +108,7 @@ executar_etapa 'subida do ambiente' "$root/subir-ambiente.sh"
 executar_etapa 'preparação do arquivo de entrada' preparar_arquivo
 executar_etapa 'limpeza das filas' limpar_filas
 executar_etapa 'upload do arquivo para o S3' enviar_arquivo
+executar_etapa 'envio da solicitação ao Organizer' enviar_solicitacao_organizer
 executar_etapa 'processamento das mensagens' aguardar_processamento
 executar_etapa 'resumo das filas' exibir_resumo_filas
 executar_etapa 'validação do fluxo' "$root/validar-fluxo.sh"

@@ -84,8 +84,8 @@ variable "organizer_reserved_concurrency" {
   type    = number
   default = 2
   validation {
-    condition     = var.organizer_reserved_concurrency >= 1
-    error_message = "Organizer reserved concurrency must be at least 1."
+    condition     = var.organizer_reserved_concurrency >= 0
+    error_message = "Organizer reserved concurrency must be zero or greater. Zero disables the reservation."
   }
 }
 
@@ -93,8 +93,8 @@ variable "worker_reserved_concurrency" {
   type    = number
   default = 10
   validation {
-    condition     = var.worker_reserved_concurrency >= var.worker_maximum_concurrency
-    error_message = "Worker reserved concurrency must be at least the event-source maximum concurrency."
+    condition     = var.worker_reserved_concurrency == 0 || var.worker_reserved_concurrency >= var.worker_maximum_concurrency
+    error_message = "Worker reserved concurrency must be zero (disabled) or at least the event-source maximum concurrency."
   }
 }
 
@@ -133,8 +133,18 @@ variable "sqs_visibility_timeout" {
 
 variable "s3_notification_prefix" {
   type        = string
-  default     = ""
-  description = "Optional approved intake key prefix."
+  default     = "ingest/data/"
+  description = "Approved intake key prefix. The sibling ingest/.keep marker makes the prefix visible in S3 consoles without triggering processing."
+}
+
+variable "s3_force_destroy" {
+  type        = bool
+  default     = false
+  description = "Delete all current and versioned objects when Terraform destroys the bucket. Only enable for disposable development environments."
+  validation {
+    condition     = !var.s3_force_destroy || var.environment == "development"
+    error_message = "s3_force_destroy can be enabled only when environment is development."
+  }
 }
 
 variable "s3_notification_suffix" {
@@ -181,20 +191,6 @@ variable "f2e_json_array_search_bytes" {
   validation {
     condition     = var.f2e_json_array_search_bytes >= 1024 && var.f2e_json_array_search_bytes <= 16777216
     error_message = "JSON array path search must be between 1 KiB and 16 MiB."
-  }
-}
-
-variable "enable_preview_formats" {
-  type    = bool
-  default = false
-}
-
-variable "enable_experimental_formats" {
-  type    = bool
-  default = false
-  validation {
-    condition     = var.environment != "production" || !var.enable_experimental_formats
-    error_message = "Experimental formats cannot be enabled in production."
   }
 }
 

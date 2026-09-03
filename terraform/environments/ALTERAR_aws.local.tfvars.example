@@ -1,0 +1,42 @@
+# TEMPLATE — configuração local para uma implantação real na AWS
+#
+# Como usar:
+#   1. Copie este arquivo como `aws.local.tfvars` neste mesmo diretório.
+#   2. Substitua TODOS os valores entre <...> pelos valores da sua conta.
+#   3. Não versione `aws.local.tfvars`: ele já é ignorado pelo Git.
+#   4. Execute, a partir de `terraform/`:
+#      terraform apply -var-file=environments/aws.local.tfvars
+#
+# Este arquivo é versionado apenas como modelo. Os marcadores abaixo não formam
+# uma configuração válida até serem preenchidos.
+
+# Para AWS real, deixe ambos os campos como string vazia: "".
+localstack_endpoint     = "<DEIXE_VAZIO_PARA_AWS_REAL>"
+lambda_aws_endpoint_url = "<DEIXE_VAZIO_PARA_AWS_REAL>"
+
+# Identificação e nomes dos recursos.
+environment      = "<development|staging|production>"
+aws_region       = "<REGIAO_AWS_EX:_us-east-1>"
+aws_account_id   = "<ID_DA_CONTA_AWS_COM_12_DIGITOS>"
+resource_prefix  = "<PREFIXO_MINUSCULO_EX:_minhaempresa-f2e>"
+f2e_input_bucket = "<NOME_GLOBALMENTE_UNICO_DO_BUCKET_S3>"
+
+# Artefatos e configuração das Lambdas.
+lambda_zip_dir                   = "<CAMINHO_PARA_OS_ZIPS_EX:_../.build>"
+lambda_runtime                   = "<RUNTIME_EX:_provided.al2023>"
+lambda_timeout                   = <SEGUNDOS_DE_TIMEOUT>
+lambda_memory_mb                 = <MEMORIA_EM_MB>
+organizer_reserved_concurrency   = <0_PARA_DESABILITAR_OU_NUMERO>
+worker_reserved_concurrency      = <0_PARA_DESABILITAR_OU_NUMERO>
+worker_maximum_concurrency       = <NUMERO_ENTRE_2_E_1000>
+worker_batch_size                = <NUMERO_DE_MENSAGENS_POR_LOTE>
+
+# Parâmetros de filas, ingestão e retenção.
+# O visibility timeout deve ser ao menos seis vezes o timeout da Lambda.
+sqs_visibility_timeout    = <SEGUNDOS_DE_VISIBILIDADE>
+sqs_max_receive_count     = <TENTATIVAS_ANTES_DA_DLQ>
+s3_notification_prefix    = "<PREFIXO_DE_INGESTAO_EX:_ingest/data/>"
+s3_force_destroy          = <true_APENAS_PARA_DEVELOPMENT_DESCARTAVEL|false>
+s3_object_retention_days  = <DIAS_DE_RETENCAO_S3>
+ledger_retention_days     = <DIAS_DE_RETENCAO_DYNAMODB>
+log_retention_days        = <DIAS_DE_RETENCAO_CLOUDWATCH>

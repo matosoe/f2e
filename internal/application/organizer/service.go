@@ -104,6 +104,9 @@ func (s Service) Plan(ctx context.Context, request f2e.OrganizerRequest) ([]f2e.
 			if size > s.maxChunkBytes() {
 				return nil, fmt.Errorf("non-splittable %s object size %d exceeds chunk maximum %d", file.DataType, size, s.maxChunkBytes())
 			}
+			if file.DataType == f2e.DataTypeBinary && size > s.maxBinaryBytes() {
+				return nil, fmt.Errorf("binary object size %d exceeds maximum payload %d bytes", size, s.maxBinaryBytes())
+			}
 			fileID := fileID(file.Bucket, file.Key, versionID, etag, size)
 			jobs = append(jobs, f2e.ChunkJob{SchemaVersion: f2e.SchemaVersion, JobID: executionID, FileID: fileID, ChunkID: "00000001", Bucket: file.Bucket, Key: file.Key, PresignedURL: file.PresignedURL, ETag: etag, VersionID: versionID, FileSize: size, RecordCount: 1, StartByte: 0, EndByteInclusive: size - 1, MaxRecordLengthBytes: file.MaxRecordLengthBytes, DataType: file.DataType, Options: file.Options, Context: file.Context})
 			continue
@@ -180,15 +183,14 @@ func (s Service) variableJobs(ctx context.Context, file f2e.FileRequest, size in
 	return jobs, nil
 }
 func (s Service) validType(t f2e.DataType) bool {
-	if t == f2e.DataTypeFixedWidth || t == f2e.DataTypeJSONL || t == f2e.DataTypeNDJSON || t == f2e.DataTypeText {
+	switch t {
+	case f2e.DataTypeFixedWidth, f2e.DataTypeJSONL, f2e.DataTypeNDJSON,
+		f2e.DataTypeText, f2e.DataTypeCSV, f2e.DataTypeJSON,
+		f2e.DataTypeBinary, f2e.DataTypeMultiLine:
 		return true
+	default:
+		return false
 	}
-	// Empty environment is used by library callers/tests that explicitly
-	// construct Config; preserve compatibility while loaded deployments opt in.
-	if (t == f2e.DataTypeCSV || t == f2e.DataTypeJSON) && (s.Config.Environment == "" || s.Config.EnablePreviewFormats) {
-		return true
-	}
-	return (t == f2e.DataTypeBinary || t == f2e.DataTypeMultiLine) && (s.Config.Environment == "" || s.Config.EnableExperimentalFormats)
 }
 func (s Service) safeLen() int64 { return int64(s.Config.RecordLength) }
 func (s Service) maxChunkBytes() int64 {
@@ -196,6 +198,20 @@ func (s Service) maxChunkBytes() int64 {
 		return s.Config.MaxChunkBytes
 	}
 	return 64 * 1024 * 1024
+}
+
+// maxBinaryBytes reserves space for Base64 expansion and the mandatory envelope
+// metadata. The Worker performs the authoritative serialized-size validation.
+func (s Service) maxBinaryBytes() int64 {
+	maxEventBytes := int64(s.Config.MaxEventBytes)
+	if maxEventBytes == 0 {
+		maxEventBytes = 256 * 1024
+	}
+	const envelopeOverhead = 4096
+	if maxEventBytes <= envelopeOverhead {
+		return 0
+	}
+	return (maxEventBytes - envelopeOverhead) / 4 * 3
 }
 
 // nextBreakOffset scans data line-by-line and returns the byte offset within data

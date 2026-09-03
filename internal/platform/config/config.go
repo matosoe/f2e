@@ -16,7 +16,6 @@ type Config struct {
 	MaxEventBytes                                                                int
 	JSONArraySearchBytes                                                         int
 	MaxFileBytes, MaxChunkBytes                                                  int64
-	EnablePreviewFormats, EnableExperimentalFormats                              bool
 	EventSchemaID, EventSchemaVersion, EventFormat                               string
 }
 
@@ -52,12 +51,6 @@ func Load() (Config, error) {
 	if c.MaxChunkBytes, err = integer64("F2E_MAX_CHUNK_BYTES", 64*1024*1024); err != nil {
 		return c, err
 	}
-	if c.EnablePreviewFormats, err = boolean("F2E_ENABLE_PREVIEW_FORMATS", c.Environment != "production"); err != nil {
-		return c, err
-	}
-	if c.EnableExperimentalFormats, err = boolean("F2E_ENABLE_EXPERIMENTAL_FORMATS", c.Environment == "local"); err != nil {
-		return c, err
-	}
 	if c.RecordLength < 2 || c.RecordsPerChunk < 1 || c.BatchSize < 1 || c.BatchSize > 10 || c.MaxReceiveCount < 1 || c.LedgerRetentionDays < 1 || c.MaxEventBytes < 1024 || c.MaxEventBytes > 256*1024 || c.JSONArraySearchBytes < 1024 || c.JSONArraySearchBytes > 16*1024*1024 || c.MaxChunkBytes < 1024 || c.MaxFileBytes < c.MaxChunkBytes {
 		return c, fmt.Errorf("invalid F2E numeric configuration")
 	}
@@ -65,17 +58,6 @@ func Load() (Config, error) {
 	c.EventSchemaVersion = value("F2E_EVENT_SCHEMA_VERSION", "1")
 	c.EventFormat = value("F2E_EVENT_FORMAT", "json")
 	return c, nil
-}
-func boolean(k string, d bool) (bool, error) {
-	v := os.Getenv(k)
-	if v == "" {
-		return d, nil
-	}
-	b, err := strconv.ParseBool(v)
-	if err != nil {
-		return false, fmt.Errorf("%s: %w", k, err)
-	}
-	return b, nil
 }
 func value(k, d string) string {
 	if v := os.Getenv(k); v != "" {

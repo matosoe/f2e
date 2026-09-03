@@ -64,6 +64,31 @@ func TestPlanCarriesFormatAndOptionsToWorkerJob(t *testing.T) {
 	}
 }
 
+func TestAllFormatsAreAcceptedInProduction(t *testing.T) {
+	s := Service{Config: config.Config{Environment: "production"}}
+	for _, dataType := range []f2e.DataType{
+		f2e.DataTypeFixedWidth, f2e.DataTypeJSONL, f2e.DataTypeNDJSON,
+		f2e.DataTypeText, f2e.DataTypeCSV, f2e.DataTypeJSON,
+		f2e.DataTypeBinary, f2e.DataTypeMultiLine,
+	} {
+		if !s.validType(dataType) {
+			t.Errorf("%q must be accepted in production", dataType)
+		}
+	}
+}
+
+func TestPlanRejectsBinaryThatCannotFitAnEvent(t *testing.T) {
+	data := strings.Repeat("x", 800)
+	s := Service{Store: rangeStore{data}, Config: config.Config{Environment: "production", MaxEventBytes: 1024}}
+	_, err := s.Plan(context.Background(), f2e.OrganizerRequest{
+		SchemaVersion: f2e.SchemaVersion,
+		Files:         []f2e.FileRequest{{Bucket: "b", Key: "payload.bin", DataType: f2e.DataTypeBinary}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "binary object size") {
+		t.Fatalf("expected binary size error, got %v", err)
+	}
+}
+
 func TestVariableJobsCarryTrailingPadding(t *testing.T) {
 	s := Service{Store: rangeStore{"aa\nbbb\ncccc\nd\n"}, Config: config.Config{RecordsPerChunk: 2}}
 	jobs, err := s.Plan(context.Background(), f2e.OrganizerRequest{SchemaVersion: f2e.SchemaVersion, Files: []f2e.FileRequest{{Bucket: "b", Key: "records", DataType: f2e.DataTypeText, MaxRecordLengthBytes: 5}}})

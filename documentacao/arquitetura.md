@@ -105,10 +105,10 @@ Tabela `job-ledger` (chave composta `pk` + `sk`, billing PAY_PER_REQUEST):
 | `jsonl` | Produção | Uma linha = um objeto JSON |
 | `ndjson` | Produção | Equivalente ao `jsonl` |
 | `text` | Produção | Linhas de texto arbitrário |
-| `csv` | Preview | Requer `F2E_ENABLE_PREVIEW_FORMATS=true`; RFC 4180, sem remoção de header |
-| `json` (array) | Preview | Requer `F2E_ENABLE_PREVIEW_FORMATS=true`; parser ciente de nesting |
-| `binary` | Experimental | Requer `F2E_ENABLE_EXPERIMENTAL_FORMATS=true`; não divisível |
-| `multi-line` | Experimental | Requer `F2E_ENABLE_EXPERIMENTAL_FORMATS=true`; registros com múltiplas linhas físicas |
+| `csv` | Produção | RFC 4180, sem remoção de header |
+| `json` (array) | Produção | Parser ciente de nesting |
+| `binary` | Produção | Não divisível; publicado como Base64 dentro do limite de evento |
+| `multi-line` | Produção | Registros com múltiplas linhas físicas |
 
 Para formatos de registros variáveis delimitados por LF (`jsonl`, `ndjson`, `text`), o Organizer usa `MaxRecordLengthBytes` para calcular as faixas nominais. Cada chunk recebe uma "gordura" (`trailingPaddingBytes`) para cobrir registros que cruzam fronteiras; o Worker descarta fragmentos fora da sua faixa nominal, garantindo exatamente um evento por registro sem duplicação nem lacuna.
 
