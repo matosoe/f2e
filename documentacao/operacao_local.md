@@ -67,6 +67,11 @@ o LocalStack é encerrado ao fim do fluxo. O gerador cria registros de 100 bytes
 compatíveis com `F2E_RECORD_LENGTH=100`, e grava um manifesto com tamanho e
 SHA-256 em `automacao/dados/`.
 
+O LocalStack também provisiona configurações SSM sob
+`/f2e/local/file-config/f2e-input` e uma notificação S3 para os prefixos
+`example-*`. Por exemplo, um upload em `s3://f2e-input/example-text/arquivo.txt`
+é resolvido como `text` sem publicar manualmente um `OrganizerRequest`.
+
 ## Execução manual
 
 Use este caminho para inspecionar a saída antes da limpeza:

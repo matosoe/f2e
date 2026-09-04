@@ -44,6 +44,13 @@ data "aws_iam_policy_document" "organizer" {
     actions   = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:Query", "dynamodb:UpdateItem"]
     resources = [aws_dynamodb_table.job_ledger.arn]
   }
+  statement {
+    actions = ["ssm:GetParameter", "ssm:GetParametersByPath"]
+    resources = [
+      "arn:aws:ssm:${var.aws_region}:${var.aws_account_id}:parameter${local.global_limits_parameter}",
+      "arn:aws:ssm:${var.aws_region}:${var.aws_account_id}:parameter${local.file_config_path}/${var.f2e_input_bucket}/*"
+    ]
+  }
   dynamic "statement" {
     for_each = var.kms_key_arn == "" ? [] : [1]
     content {

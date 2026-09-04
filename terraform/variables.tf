@@ -134,7 +134,7 @@ variable "sqs_visibility_timeout" {
 variable "s3_notification_prefix" {
   type        = string
   default     = "ingest/data/"
-  description = "Approved intake key prefix. The sibling ingest/.keep marker makes the prefix visible in S3 consoles without triggering processing."
+  description = "Deprecated compatibility variable. S3 notification prefixes now come from the Terraform-managed SSM file configurations."
 }
 
 variable "s3_force_destroy" {

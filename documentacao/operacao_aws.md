@@ -64,18 +64,35 @@ tf='terraform -chdir=terraform'
 region="$($tf output -raw aws_region)"
 bucket="$($tf output -raw input_bucket)"
 
-aws s3 cp arquivo.txt "s3://${bucket}/ingest/data/arquivo.txt" --region "$region"
+aws s3 cp arquivo.txt "s3://${bucket}/example-text/arquivo.txt" --region "$region"
 ```
 
-O Terraform cria o marcador `ingest/.keep` para tornar o prefixo visível no
-console S3. O prefixo de processamento padrão é `ingest/data/`, que deve
-corresponder a `s3_notification_prefix` do seu tfvars. O upload cria a
-notificação S3 e inicia o processamento. Para arquivos
-de largura fixa, os registros devem respeitar
-`f2e_record_length` configurado no tfvars.
+O Terraform configura notificações para os prefixos `example-*` descritos no
+README e cria um parâmetro SSM por prefixo. O upload inicia o processamento com
+o formato e os limites do parâmetro correspondente. Não crie objetos vazios
+para simular pastas; envie diretamente a chave completa.
+
+Liste e leia as configurações com:
+
+```bash
+path="$($tf output -raw ssm_file_config_path)"
+aws ssm get-parameters-by-path --region "$region" \
+  --path "${path}/${bucket}" --recursive --with-decryption
+
+aws ssm get-parameter --region "$region" \
+  --name "$($tf output -raw ssm_global_limits_parameter)" --with-decryption
+```
+
+Para alterar uma configuração, preserve todas as propriedades do JSON e use
+`aws ssm put-parameter --overwrite`. A alteração afeta novos eventos. Uma nova
+execução de `terraform apply` restaura os valores declarados no Terraform.
+O Organizer lê os limites globais durante o cold start e valida cada parâmetro
+de prefixo contra eles. Depois de alterar limites globais, publique uma nova
+versão ou force uma nova inicialização da Lambda para encerrar ambientes de
+execução que ainda estejam com a versão anterior em memória.
 
 Também é possível publicar o contrato explícito no `file-intake`, porém use uma
-chave que não corresponda ao filtro da notificação S3. Nunca use a notificação
+chave que não corresponda aos prefixos configurados. Nunca use a notificação
 e a requisição explícita para o mesmo objeto: isso cria duas solicitações ao
 Organizer e duplica o processamento.
 

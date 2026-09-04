@@ -18,18 +18,22 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	sqsTypes "github.com/aws/aws-sdk-go-v2/service/sqs/types"
+	"github.com/aws/aws-sdk-go-v2/service/ssm"
 	"github.com/f2e/f2e/internal/application/port"
 	"github.com/f2e/f2e/internal/domain/f2e"
 	"github.com/f2e/f2e/internal/platform/config"
 )
 
 type AWS struct {
-	S3                  *s3.Client
-	SQS                 *sqs.Client
-	DynamoDB            *dynamodb.Client
-	LedgerTable         string
-	MaxReceiveCount     int
-	LedgerRetentionDays int
+	S3                    *s3.Client
+	SQS                   *sqs.Client
+	DynamoDB              *dynamodb.Client
+	SSM                   *ssm.Client
+	FileConfigPath        string
+	GlobalLimitsParameter string
+	LedgerTable           string
+	MaxReceiveCount       int
+	LedgerRetentionDays   int
 }
 
 type PresignedCredentialError struct{ StatusCode int }
@@ -43,6 +47,7 @@ func (PresignedCredentialError) Transient() bool { return true }
 var _ port.ObjectStore = (*AWS)(nil)
 var _ port.Queue = (*AWS)(nil)
 var _ port.SourceResolver = (*AWS)(nil)
+var _ port.PrefixConfigurationResolver = (*AWS)(nil)
 
 func New(ctx context.Context, c config.Config) (*AWS, error) {
 	opts := []func(*awscfg.LoadOptions) error{awscfg.WithRegion(c.Region)}
@@ -53,7 +58,7 @@ func New(ctx context.Context, c config.Config) (*AWS, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &AWS{S3: s3.NewFromConfig(cfg, func(o *s3.Options) { o.UsePathStyle = true }), SQS: sqs.NewFromConfig(cfg), DynamoDB: dynamodb.NewFromConfig(cfg), LedgerTable: c.LedgerTable, MaxReceiveCount: c.MaxReceiveCount, LedgerRetentionDays: c.LedgerRetentionDays}, nil
+	return &AWS{S3: s3.NewFromConfig(cfg, func(o *s3.Options) { o.UsePathStyle = true }), SQS: sqs.NewFromConfig(cfg), DynamoDB: dynamodb.NewFromConfig(cfg), SSM: ssm.NewFromConfig(cfg), FileConfigPath: c.FileConfigPath, GlobalLimitsParameter: c.GlobalLimitsParameter, LedgerTable: c.LedgerTable, MaxReceiveCount: c.MaxReceiveCount, LedgerRetentionDays: c.LedgerRetentionDays}, nil
 }
 func (a *AWS) Head(ctx context.Context, b, k string) (f2e.ObjectIdentity, error) {
 	out, e := a.S3.HeadObject(ctx, &s3.HeadObjectInput{Bucket: aws.String(b), Key: aws.String(k)})

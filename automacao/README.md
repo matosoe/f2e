@@ -20,7 +20,8 @@ As automações AWS usam o arquivo local e ignorado
 valores antes de executar.
 
 - `subir-ambiente-aws.sh` cria ou atualiza a infraestrutura e **a mantém em
-  execução** para upload, inspeção de filas, ledger e logs.
+  execução** para upload, inspeção de filas, ledger, parâmetros SSM e logs. Ao
+  terminar, ele lista todos os prefixos S3 configurados pelo Terraform.
 - `parar-ambiente-aws.sh` é o único script que executa `terraform destroy`.
 - `executar-e2e-aws.sh` sobe o ambiente, executa a suíte E2E em AWS real e o
   destrói ao terminar, inclusive se os testes falharem. Ele aceita somente

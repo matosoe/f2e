@@ -23,6 +23,6 @@ terraform -chdir="$terraform_dir" init -input=false
 terraform -chdir="$terraform_dir" apply -input=false -auto-approve -var-file="$tfvars"
 
 echo 'Ambiente AWS disponível. Ele foi mantido em execução para inspeção manual.'
-printf 'Envie arquivos para: s3://%s%s\n' \
-  "$(terraform -chdir="$terraform_dir" output -raw input_bucket)" \
-  "$(terraform -chdir="$terraform_dir" output -raw s3_notification_prefix)"
+bucket="$(terraform -chdir="$terraform_dir" output -raw input_bucket)"
+echo 'Envie arquivos para um dos prefixos configurados:'
+terraform -chdir="$terraform_dir" output -json s3_configured_prefixes | jq -r --arg bucket "$bucket" '.[] | "  s3://\($bucket)/\(.)"'

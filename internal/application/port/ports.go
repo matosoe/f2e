@@ -26,6 +26,11 @@ type ObjectStore interface {
 	GetRange(context.Context, f2e.ObjectIdentity, int64, int64) (io.ReadCloser, error)
 }
 
+type PrefixConfigurationResolver interface {
+	ResolvePrefixConfiguration(context.Context, string, string) (f2e.PrefixConfiguration, error)
+	LoadGlobalLimits(context.Context) (f2e.GlobalLimits, error)
+}
+
 type Queue interface {
 	Send(context.Context, string, []OutboundMessage) ([]int, error)
 }

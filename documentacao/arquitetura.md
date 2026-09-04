@@ -6,7 +6,7 @@ O **F2E (File-to-Events)** é um framework em Go para transformar arquivos poten
 
 Dois modos de entrada são suportados:
 
-- **Notificação S3**: o bucket dispara `ObjectCreated` → SQS; o Organizer trata como arquivo `fixed-width` com opções padrão.
+- **Notificação S3**: o bucket dispara `ObjectCreated` → SQS; o Organizer resolve a configuração de formato e limites por `bucket + prefixo` no SSM Parameter Store.
 - **`OrganizerRequest` explícito**: sistema externo publica contrato versionado na fila, declarando o formato e as opções do arquivo.
 
 ---

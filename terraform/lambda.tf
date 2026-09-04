@@ -34,7 +34,7 @@ resource "aws_lambda_function" "organizer" {
   }
 
   tags       = local.tags
-  depends_on = [aws_cloudwatch_log_group.organizer]
+  depends_on = [aws_cloudwatch_log_group.organizer, aws_ssm_parameter.global_limits]
 }
 
 resource "aws_lambda_function" "worker" {

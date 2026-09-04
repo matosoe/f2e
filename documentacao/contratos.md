@@ -33,7 +33,12 @@ Os limites padrão são 10 GiB por arquivo (`F2E_MAX_FILE_BYTES`), 64 MiB por ch
 
 Para arquivos de registros variáveis delimitados por LF (`jsonl`, `ndjson` e `text`), informe `maxRecordLengthBytes`. O organizer cria faixas nominais de `F2E_RECORDS_PER_CHUNK × maxRecordLengthBytes` e estende cada faixa até o LF que encerra o registro atravessando o fim nominal. O job informa o limite em `maxRecordLengthBytes` e a extensão exata em `trailingPaddingBytes` (a “gordura”). O worker lê até um tamanho máximo de registro antes do início nominal, descarta o primeiro fragmento/registo anterior e publica exclusivamente registros cujo byte inicial esteja na faixa nominal. Logo, registros completos da gordura inicial são desprezados e registros iniciados antes do fim nominal são processados pelo worker anterior, sem duplicação ou lacuna.
 
-O envelope padrão de notificação S3 em SQS continua aceito por compatibilidade, incluindo múltiplos `Records`; somente `ObjectCreated:*` é processado. Ele sempre gera jobs `fixed-width` com as opções padrão. A chave é decodificada conforme a codificação URL de eventos S3.
+O envelope padrão de notificação S3 em SQS aceita múltiplos `Records`; somente
+`ObjectCreated:*` é processado. Para cada objeto, o Organizer busca no SSM a
+configuração cuja combinação de bucket e prefixo seja a correspondência mais
+específica e gera os jobs com o `dataType`, layouts e limites encontrados. A
+chave é decodificada conforme a codificação URL de eventos S3. Eventos de teste
+do próprio S3, sem registros de objeto, são reconhecidos e ignorados.
 
 `ChunkJob` contém `bucket`, `key`, `versionId`, `etag`, `fileSize`, IDs SHA-256, `startRecord`, `recordCount`, `recordLengthBytes`, `startByte`, `endByteInclusive`, `maxRecordLengthBytes`, `trailingPaddingBytes`, `dataType`, contexto corporativo e opções. `VersionId` é usado quando presente; sem ele, toda leitura usa `If-Match` com o ETag. ETag multipart é tratado somente como token opaco de condição, nunca como MD5. Para `fixed-width`, a largura inclui o LF; a massa é ASCII/UTF-8 e sempre usa LF.
 

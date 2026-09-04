@@ -6,8 +6,8 @@ O F2E é um framework em Go que transforma arquivos armazenados no Amazon S3 em 
 
 ## Como funciona
 
-1. Um arquivo é enviado ao S3, que gera uma notificação, ou um sistema publica uma requisição explícita na fila de intake.
-2. A Lambda **Organizer** obtém os metadados do objeto, planeja faixas de bytes (*chunks*) e registra o plano no ledger DynamoDB.
+1. Um arquivo é enviado a um prefixo configurado do S3, que gera uma notificação, ou um sistema publica uma requisição explícita na fila de intake.
+2. Para notificações S3, a Lambda **Organizer** resolve no Parameter Store a configuração de `bucket + prefixo`, obtém os metadados do objeto, planeja faixas de bytes (*chunks*) e registra o plano no ledger DynamoDB.
 3. A Lambda **Worker** processa os chunks em paralelo, lê o objeto com S3 Range GET e publica um evento por registro na fila de saída.
 4. Os consumidores recebem eventos no formato Envelope v2; o ledger registra o resultado de cada chunk para apoiar auditoria, reconciliação e replay.
 
@@ -42,6 +42,121 @@ As falhas de processamento são tratadas por reprocessamento seletivo de mensage
 | `multi-line` | Produção | Registros com múltiplas linhas físicas, definidos por layout de marcadores. |
 
 Para `text`, `jsonl` e `ndjson`, informe `maxRecordLengthBytes`. Esse limite permite que o Organizer defina as fronteiras dos chunks e que os Workers tratem registros que cruzam uma fronteira sem gerar duplicatas ou lacunas.
+
+### Configuração por prefixo no SSM
+
+Cada prefixo de entrada possui um parâmetro `String` no AWS Systems Manager
+Parameter Store. O nome segue o padrão
+`/f2e/<ambiente>/file-config/<bucket>/<identificador-do-prefixo>`. O Organizer
+lista as configurações do bucket e usa a correspondência de prefixo mais longa.
+Alterações no valor passam a valer para novos eventos sem reconstruir as
+Lambdas.
+
+O Terraform cria estes exemplos no bucket do ambiente:
+
+| Prefixo S3 | Formato |
+|---|---|
+| `example-fixed-width/` | `fixed-width` |
+| `example-text/` | `text` |
+| `example-jsonl/` | `jsonl` |
+| `example-ndjson/` | `ndjson` |
+| `example-csv/` | `csv` |
+| `example-json/` | array JSON |
+| `example-binary/` | `binary` |
+| `example-multi-line/` | `multi-line` |
+
+O valor de cada parâmetro é um JSON completo. Exemplo para texto:
+
+```json
+{
+  "bucket": "<bucket-criado>",
+  "prefix": "example-text/",
+  "dataType": "text",
+  "recordLengthBytes": 100,
+  "recordsPerChunk": 1000,
+  "batchSize": 10,
+  "maxEventBytes": 262144,
+  "maxFileBytes": 10737418240,
+  "maxChunkBytes": 67108864,
+  "jsonArraySearchBytes": 1048576,
+  "maxRecordLengthBytes": 65536,
+  "eventSchemaId": "f2e-record",
+  "eventSchemaVersion": "1",
+  "eventFormat": "json",
+  "options": { "bypassJsonValidation": false }
+}
+```
+
+| Propriedade | Uso |
+|---|---|
+| `bucket` e `prefix` | Chave de seleção da configuração. O prefixo é relativo ao bucket e termina em `/`. |
+| `dataType` | `fixed-width`, `text`, `jsonl`, `ndjson`, `csv`, `json`, `binary` ou `multi-line`. |
+| `recordLengthBytes` | Largura do registro `fixed-width`, incluindo o LF. Mantido no documento de todos os formatos para que cada registro SSM seja completo. |
+| `recordsPerChunk` | Granularidade do planejamento; valores menores geram mais chunks e disponibilizam mais paralelismo. |
+| `batchSize` | Quantidade de eventos enviada por chamada `SendMessageBatch`, entre 1 e 10. |
+| `maxEventBytes` | Limite serializado de cada evento, entre 1 KiB e 256 KiB. |
+| `maxFileBytes` | Maior arquivo aceito pelo prefixo. |
+| `maxChunkBytes` | Maior faixa de bytes entregue a um Worker. |
+| `jsonArraySearchBytes` | Janela usada para localizar o array configurado em arquivos `json`. |
+| `maxRecordLengthBytes` | Limite de linha para `text`, `jsonl` e `ndjson`; use `0` nos formatos aos quais não se aplica. |
+| `eventSchemaId`, `eventSchemaVersion`, `eventFormat` | Identificação do contrato dos eventos de saída. |
+| `options.bypassJsonValidation` | Permite ignorar a validação de cada linha apenas em `jsonl` e `ndjson`. |
+| `jsonArrayLayout` | Para `json`: contém `arrayPath` e `maxBytesPerElement`. |
+| `multiLineLayout` | Para `multi-line`: contém marcadores, separador e `maxBytesPerRecord`. |
+
+`jsonArrayLayout` é obrigatório para `json`; `multiLineLayout` é obrigatório
+para `multi-line`. `recordsPerChunk` controla a granularidade e o paralelismo
+disponível para um arquivo. `worker_maximum_concurrency` permanece um limite
+global da infraestrutura, compartilhado por todos os prefixos.
+
+### Limites globais
+
+O Terraform também cria `/f2e/<ambiente>/global-limits`. O Organizer carrega
+esse parâmetro no cold start; se estiver ausente ou inválido, a Lambda falha na
+inicialização. Configurações de prefixo que excedam qualquer teto global são
+rejeitadas antes do planejamento.
+
+| Limite comum | Valor inicial |
+|---|---:|
+| Arquivo | 10 GiB |
+| Chunk | 64 MiB |
+| Evento SQS | 256 KiB |
+| Lote de publicação | 10 eventos |
+| Busca pelo array JSON | 16 MiB |
+
+| `dataType` | Arquivo máximo | Registro/elemento máximo |
+|---|---:|---:|
+| `fixed-width` | 10 GiB | 258.048 bytes |
+| `text` | 10 GiB | 258.048 bytes |
+| `jsonl` | 10 GiB | 258.048 bytes |
+| `ndjson` | 10 GiB | 258.048 bytes |
+| `csv` | 64 MiB | 258.048 bytes |
+| `json` | 10 GiB | 258.048 bytes |
+| `binary` | 193.536 bytes | 193.536 bytes |
+| `multi-line` | 10 GiB | 258.048 bytes |
+
+O teto de registro reserva aproximadamente 4 KiB para o envelope. Binário usa
+um teto menor para acomodar a expansão Base64. A validação final considera o
+evento serializado e seus atributos; por isso, conteúdo com muito escape JSON
+pode atingir o limite de 256 KiB antes do tamanho nominal acima.
+
+```json
+{
+  "maxFileBytes": 10737418240,
+  "maxChunkBytes": 67108864,
+  "maxEventBytes": 262144,
+  "maxBatchSize": 10,
+  "maxJsonArraySearchBytes": 16777216,
+  "inputTypes": {
+    "text": { "maxFileBytes": 10737418240, "maxRecordBytes": 258048 },
+    "csv": { "maxFileBytes": 67108864, "maxRecordBytes": 258048 },
+    "binary": { "maxFileBytes": 193536, "maxRecordBytes": 193536 }
+  }
+}
+```
+
+O documento real contém os oito tipos; o trecho acima foi reduzido apenas para
+facilitar a leitura.
 
 A decisão formal e os limites de cada formato estão no [ADR 0004](documentacao/adr/0004-formatos-suportados.md) e nos [contratos](documentacao/contratos.md).
 
@@ -128,7 +243,9 @@ O repositório possui dois módulos Go coordenados por `go.work`: o framework na
 
 ## Configuração e limites
 
-Os parâmetros são definidos por variáveis de ambiente. Os principais são:
+As variáveis de ambiente abaixo fornecem os padrões da infraestrutura e o
+fallback do contrato explícito. Eventos S3 usam os valores do parâmetro SSM do
+prefixo e carregam a configuração selecionada em cada `ChunkJob`.
 
 | Variável | Padrão | Finalidade |
 |---|---:|---|
@@ -138,6 +255,7 @@ Os parâmetros são definidos por variáveis de ambiente. Os principais são:
 | `F2E_MAX_FILE_BYTES` | `10 GiB` | Tamanho máximo aceito por arquivo. |
 | `F2E_MAX_CHUNK_BYTES` | `64 MiB` | Tamanho máximo de um chunk. |
 | `F2E_MAX_EVENT_BYTES` | `256 KiB` | Limite do body e atributos da mensagem SQS. |
+| `F2E_FILE_CONFIG_PATH` | `/f2e/<ambiente>/file-config` | Raiz das configurações de prefixos no SSM. |
 
 Todos os limites e opções por arquivo estão documentados em [Contratos versionados](documentacao/contratos.md).
 

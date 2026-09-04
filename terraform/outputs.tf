@@ -14,6 +14,18 @@ output "s3_notification_prefix" {
   value = var.s3_notification_prefix
 }
 
+output "s3_configured_prefixes" {
+  value = sort([for configuration in local.file_configurations : configuration.prefix])
+}
+
+output "ssm_file_config_path" {
+  value = local.file_config_path
+}
+
+output "ssm_global_limits_parameter" {
+  value = local.global_limits_parameter
+}
+
 output "file_intake_queue_url" {
   value = aws_sqs_queue.file_intake.url
 }

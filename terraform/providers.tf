@@ -29,6 +29,7 @@ provider "aws" {
       logs       = endpoints.value
       dynamodb   = endpoints.value
       cloudwatch = endpoints.value
+      ssm        = endpoints.value
     }
   }
 }

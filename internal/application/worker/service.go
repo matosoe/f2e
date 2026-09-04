@@ -83,6 +83,27 @@ func (s Service) processWithMetrics(ctx context.Context, body []byte, attempt in
 	if j.DataType == "" {
 		j.DataType = f2e.DataTypeFixedWidth
 	}
+	if j.Configuration.RecordLengthBytes > 0 {
+		s.Config.RecordLength = j.Configuration.RecordLengthBytes
+	}
+	if j.Configuration.BatchSize > 0 {
+		s.Config.BatchSize = j.Configuration.BatchSize
+	}
+	if j.Configuration.MaxEventBytes > 0 {
+		s.Config.MaxEventBytes = j.Configuration.MaxEventBytes
+	}
+	if j.Configuration.MaxChunkBytes > 0 {
+		s.Config.MaxChunkBytes = j.Configuration.MaxChunkBytes
+	}
+	if j.Configuration.EventSchemaID != "" {
+		s.Config.EventSchemaID = j.Configuration.EventSchemaID
+	}
+	if j.Configuration.EventSchemaVersion != "" {
+		s.Config.EventSchemaVersion = j.Configuration.EventSchemaVersion
+	}
+	if j.Configuration.EventFormat != "" {
+		s.Config.EventFormat = j.Configuration.EventFormat
+	}
 	if e := s.valid(j); e != nil {
 		return nil, e
 	}

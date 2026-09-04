@@ -34,4 +34,4 @@ export F2E_E2E_LEDGER_TABLE="$(terraform -chdir="$terraform_dir" output -raw led
 export F2E_E2E_INTAKE_DLQ_NAME="$(terraform -chdir="$terraform_dir" output -raw file_intake_dlq_name)"
 export F2E_E2E_CHUNK_DLQ_NAME="$(terraform -chdir="$terraform_dir" output -raw chunk_jobs_dlq_name)"
 
-(cd "$root/../e2e" && go test -count=1 -v -timeout 30m ./...)
+(cd "$root/../e2e" && go test -count=1 -v -timeout 60m ./...)

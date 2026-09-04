@@ -82,6 +82,56 @@ type FileRequest struct {
 	Context              CorporateContext  `json:"context,omitempty"`
 }
 
+// PrefixConfiguration is the JSON document stored in SSM for an S3 bucket/key
+// prefix. It combines the file contract with the tunable limits that used to
+// be defined only at Lambda startup.
+type PrefixConfiguration struct {
+	Bucket               string            `json:"bucket"`
+	Prefix               string            `json:"prefix"`
+	DataType             DataType          `json:"dataType"`
+	RecordLengthBytes    int               `json:"recordLengthBytes"`
+	RecordsPerChunk      int               `json:"recordsPerChunk"`
+	BatchSize            int               `json:"batchSize"`
+	MaxEventBytes        int               `json:"maxEventBytes"`
+	MaxFileBytes         int64             `json:"maxFileBytes"`
+	MaxChunkBytes        int64             `json:"maxChunkBytes"`
+	JSONArraySearchBytes int               `json:"jsonArraySearchBytes"`
+	MaxRecordLengthBytes int64             `json:"maxRecordLengthBytes,omitempty"`
+	MultiLineLayout      MultiLineLayout   `json:"multiLineLayout,omitempty"`
+	JSONArrayLayout      JSONArrayLayout   `json:"jsonArrayLayout,omitempty"`
+	Options              ProcessingOptions `json:"options,omitempty"`
+	EventSchemaID        string            `json:"eventSchemaId"`
+	EventSchemaVersion   string            `json:"eventSchemaVersion"`
+	EventFormat          string            `json:"eventFormat"`
+}
+
+type InputTypeLimits struct {
+	MaxFileBytes   int64 `json:"maxFileBytes"`
+	MaxRecordBytes int64 `json:"maxRecordBytes"`
+}
+
+// GlobalLimits defines the ceilings that no per-prefix configuration may
+// exceed. The Organizer loads this document from SSM during cold start.
+type GlobalLimits struct {
+	MaxFileBytes            int64                        `json:"maxFileBytes"`
+	MaxChunkBytes           int64                        `json:"maxChunkBytes"`
+	MaxEventBytes           int                          `json:"maxEventBytes"`
+	MaxBatchSize            int                          `json:"maxBatchSize"`
+	MaxJSONArraySearchBytes int                          `json:"maxJsonArraySearchBytes"`
+	InputTypes              map[DataType]InputTypeLimits `json:"inputTypes"`
+}
+
+// JobConfiguration carries the selected prefix configuration to the Worker.
+type JobConfiguration struct {
+	RecordLengthBytes  int    `json:"recordLengthBytes"`
+	BatchSize          int    `json:"batchSize"`
+	MaxEventBytes      int    `json:"maxEventBytes"`
+	MaxChunkBytes      int64  `json:"maxChunkBytes"`
+	EventSchemaID      string `json:"eventSchemaId"`
+	EventSchemaVersion string `json:"eventSchemaVersion"`
+	EventFormat        string `json:"eventFormat"`
+}
+
 // OrganizerRequest is the explicit input contract accepted by the organizer.
 type OrganizerRequest struct {
 	SchemaVersion string `json:"schemaVersion"`
@@ -115,6 +165,7 @@ type ChunkJob struct {
 	Context              CorporateContext  `json:"context,omitempty"`
 	VersionID            string            `json:"versionId,omitempty"`
 	FileSize             int64             `json:"fileSize,omitempty"`
+	Configuration        JobConfiguration  `json:"configuration,omitempty"`
 }
 
 // RecordPayload carries the raw parsed content of a single record.

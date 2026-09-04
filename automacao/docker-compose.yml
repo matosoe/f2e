@@ -6,7 +6,7 @@ services:
     ports:
       - "4566:4566"
     environment:
-      - SERVICES=s3,sqs,lambda,logs,iam,dynamodb
+      - SERVICES=s3,sqs,lambda,logs,iam,dynamodb,ssm
       - SQS_ENDPOINT_STRATEGY=path
       - DOCKER_HOST=unix:///var/run/docker.sock
       - LAMBDA_DOCKER_NETWORK=automacao_default

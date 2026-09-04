@@ -11,6 +11,8 @@ type Config struct {
 	Endpoint, Region, InputBucket, IntakeQueueURL, ChunkQueueURL, OutputQueueURL string
 	LedgerTable                                                                  string
 	Environment                                                                  string
+	FileConfigPath                                                               string
+	GlobalLimitsParameter                                                        string
 	RecordLength, RecordsPerChunk, BatchSize, MaxReceiveCount                    int
 	LedgerRetentionDays                                                          int
 	MaxEventBytes                                                                int
@@ -23,6 +25,8 @@ func Load() (Config, error) {
 	c := Config{Endpoint: os.Getenv("AWS_ENDPOINT_URL"), Region: value("AWS_REGION", "us-east-1"), InputBucket: value("F2E_INPUT_BUCKET", "f2e-input"), IntakeQueueURL: os.Getenv("F2E_INTAKE_QUEUE_URL"), ChunkQueueURL: os.Getenv("F2E_CHUNK_QUEUE_URL"), OutputQueueURL: os.Getenv("F2E_OUTPUT_QUEUE_URL")}
 	c.LedgerTable = os.Getenv("F2E_LEDGER_TABLE")
 	c.Environment = value("F2E_ENVIRONMENT", "local")
+	c.FileConfigPath = value("F2E_FILE_CONFIG_PATH", "/f2e/"+c.Environment+"/file-config")
+	c.GlobalLimitsParameter = value("F2E_GLOBAL_LIMITS_PARAMETER", "/f2e/"+c.Environment+"/global-limits")
 	var err error
 	if c.RecordLength, err = integer("F2E_RECORD_LENGTH", 100); err != nil {
 		return c, err

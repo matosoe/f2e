@@ -67,6 +67,7 @@ func NewScenarioInitializer(client *AWSClient) func(*godog.ScenarioContext) {
 
 		// ── Upload + trigger step ───────────────────────────────────────────────
 		sc.Step(`^I upload and process the file$`, s.uploadAndProcess)
+		sc.Step(`^I upload the file through its configured S3 prefix$`, s.uploadThroughConfiguredS3Prefix)
 
 		// ── Assertion steps ─────────────────────────────────────────────────────
 		sc.Step(`^I receive exactly (\d+) events within (\d+) seconds$`, s.receiveExactly)
@@ -180,6 +181,20 @@ func (s *scenarioCtx) uploadAndProcess(ctx context.Context) error {
 		},
 	}
 	return s.aws.SendOrganizerRequest(ctx, req)
+}
+
+// uploadThroughConfiguredS3Prefix exercises the S3 → Organizer path. The
+// Organizer must resolve dataType and limits from SSM; no explicit request is
+// published to file-intake.
+func (s *scenarioCtx) uploadThroughConfiguredS3Prefix(ctx context.Context) error {
+	if len(s.fileContent) == 0 {
+		return fmt.Errorf("file content not set — call a 'I have a ... file' step first")
+	}
+	s.s3Key = fmt.Sprintf("example-%s/%d.dat", s.dataType, time.Now().UnixNano())
+	if err := s.aws.UploadFile(ctx, s.s3Key, s.fileContent); err != nil {
+		return fmt.Errorf("upload %s: %w", s.s3Key, err)
+	}
+	return nil
 }
 
 // receiveExactly is the core assertion step.

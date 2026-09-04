@@ -84,28 +84,17 @@ resource "aws_s3_bucket_policy" "input_tls" {
 resource "aws_s3_bucket_notification" "input" {
   bucket = aws_s3_bucket.input.id
 
-  queue {
-    id            = "s3-to-file-intake"
-    queue_arn     = aws_sqs_queue.file_intake.arn
-    events        = ["s3:ObjectCreated:*"]
-    filter_prefix = var.s3_notification_prefix != "" ? var.s3_notification_prefix : null
-    filter_suffix = var.s3_notification_suffix != "" ? var.s3_notification_suffix : null
+  dynamic "queue" {
+    for_each = local.file_configurations
+    content {
+      id            = "s3-to-file-intake-${queue.key}"
+      queue_arn     = aws_sqs_queue.file_intake.arn
+      events        = ["s3:ObjectCreated:*"]
+      filter_prefix = queue.value.prefix
+      filter_suffix = var.s3_notification_suffix != "" ? var.s3_notification_suffix : null
+    }
   }
 
   # Ensure the queue policy exists before S3 tries to verify it.
   depends_on = [aws_sqs_queue_policy.file_intake]
-}
-
-# S3 does not have real directories. This marker makes ingest/ visible in S3
-# consoles while uploads accepted by the notification stay under ingest/data/.
-resource "aws_s3_object" "intake_prefix_marker" {
-  bucket       = aws_s3_bucket.input.id
-  key          = "ingest/.keep"
-  content      = "Reserved prefix for F2E intake files."
-  content_type = "text/plain"
-  tags         = local.tags
-
-  # Configure the more specific notification filter before creating the
-  # marker, so the marker itself is never sent to the Organizer.
-  depends_on = [aws_s3_bucket_notification.input]
 }
