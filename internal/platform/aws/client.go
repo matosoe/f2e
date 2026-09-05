@@ -61,11 +61,25 @@ func New(ctx context.Context, c config.Config) (*AWS, error) {
 	return &AWS{S3: s3.NewFromConfig(cfg, func(o *s3.Options) { o.UsePathStyle = true }), SQS: sqs.NewFromConfig(cfg), DynamoDB: dynamodb.NewFromConfig(cfg), SSM: ssm.NewFromConfig(cfg), FileConfigPath: c.FileConfigPath, GlobalLimitsParameter: c.GlobalLimitsParameter, LedgerTable: c.LedgerTable, MaxReceiveCount: c.MaxReceiveCount, LedgerRetentionDays: c.LedgerRetentionDays}, nil
 }
 func (a *AWS) Head(ctx context.Context, b, k string) (f2e.ObjectIdentity, error) {
-	out, e := a.S3.HeadObject(ctx, &s3.HeadObjectInput{Bucket: aws.String(b), Key: aws.String(k)})
+	return a.HeadObject(ctx, f2e.ObjectIdentity{Bucket: b, Key: k})
+}
+func (a *AWS) HeadObject(ctx context.Context, object f2e.ObjectIdentity) (f2e.ObjectIdentity, error) {
+	in := &s3.HeadObjectInput{Bucket: aws.String(object.Bucket), Key: aws.String(object.Key)}
+	if object.VersionID != "" {
+		in.VersionId = aws.String(object.VersionID)
+	}
+	out, e := a.S3.HeadObject(ctx, in)
 	if e != nil {
 		return f2e.ObjectIdentity{}, e
 	}
-	return f2e.ObjectIdentity{Bucket: b, Key: k, Size: aws.ToInt64(out.ContentLength), ETag: aws.ToString(out.ETag), VersionID: aws.ToString(out.VersionId)}, nil
+	versionID := aws.ToString(out.VersionId)
+	if object.VersionID != "" && versionID != "" && object.VersionID != versionID {
+		return f2e.ObjectIdentity{}, fmt.Errorf("head returned version %q, requested %q", versionID, object.VersionID)
+	}
+	if versionID == "" {
+		versionID = object.VersionID
+	}
+	return f2e.ObjectIdentity{Bucket: object.Bucket, Key: object.Key, Size: aws.ToInt64(out.ContentLength), ETag: aws.ToString(out.ETag), VersionID: versionID}, nil
 }
 func (a *AWS) GetRange(ctx context.Context, object f2e.ObjectIdentity, start, end int64) (io.ReadCloser, error) {
 	if start < 0 || end < start || object.Size < 1 || end >= object.Size {

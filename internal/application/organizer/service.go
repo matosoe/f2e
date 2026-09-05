@@ -49,7 +49,7 @@ func (s Service) Plan(ctx context.Context, request f2e.OrganizerRequest) ([]f2e.
 		if !s.validType(file.DataType) {
 			return nil, fmt.Errorf("unsupported data type %q", file.DataType)
 		}
-		object, e := s.Store.Head(ctx, file.Bucket, file.Key)
+		object, e := s.head(ctx, f2e.ObjectIdentity{Bucket: file.Bucket, Key: file.Key, VersionID: file.VersionID})
 		if e != nil {
 			return nil, fmt.Errorf("head %s/%s: %w", file.Bucket, file.Key, e)
 		}
@@ -63,7 +63,9 @@ func (s Service) Plan(ctx context.Context, request f2e.OrganizerRequest) ([]f2e.
 		}
 		executionID := rand.Text()
 		if request.ExecutionID != "" {
-			executionID = hash(request.ExecutionID + "/" + file.Bucket + "/" + file.Key)
+			// Admission supplies the deterministic job identity for a normal
+			// physical file version. Do not derive it from the SQS receipt.
+			executionID = request.ExecutionID
 		}
 		if file.DataType == f2e.DataTypeMultiLine {
 			planned, err := s.multiLineJobs(ctx, file, size, etag, versionID, executionID)
@@ -175,6 +177,16 @@ func (s Service) validType(t f2e.DataType) bool {
 	default:
 		return false
 	}
+}
+
+func (s Service) head(ctx context.Context, object f2e.ObjectIdentity) (f2e.ObjectIdentity, error) {
+	if store, ok := s.Store.(port.VersionedObjectStore); ok {
+		return store.HeadObject(ctx, object)
+	}
+	if object.VersionID != "" {
+		return f2e.ObjectIdentity{}, fmt.Errorf("object store does not support requested version %q", object.VersionID)
+	}
+	return s.Store.Head(ctx, object.Bucket, object.Key)
 }
 func (s Service) maxChunkBytes() int64 {
 	if s.Config.MaxChunkBytes > 0 {
@@ -328,7 +340,7 @@ func (s Service) PlanWithSummary(ctx context.Context, request f2e.OrganizerReque
 
 	// Create file summaries
 	for _, file := range request.Files {
-		object, err := s.Store.Head(ctx, file.Bucket, file.Key)
+		object, err := s.head(ctx, f2e.ObjectIdentity{Bucket: file.Bucket, Key: file.Key, VersionID: file.VersionID})
 		size := object.Size
 		if err != nil {
 			// Log error but continue
@@ -360,7 +372,9 @@ func (s Service) PlanWithSummary(ctx context.Context, request f2e.OrganizerReque
 
 func (s Service) Publish(ctx context.Context, jobs []f2e.ChunkJob) error {
 	jobIDs := make([]string, 0)
+	jobsToPublish := jobs
 	if s.Ledger != nil {
+		jobsToPublish = nil
 		groups := make(map[string][]f2e.ChunkJob)
 		for _, job := range jobs {
 			groups[job.JobID] = append(groups[job.JobID], job)
@@ -371,6 +385,11 @@ func (s Service) Publish(ctx context.Context, jobs []f2e.ChunkJob) error {
 			if err := s.Ledger.Plan(ctx, plan, chunks); err != nil {
 				return fmt.Errorf("persist job plan: %w", err)
 			}
+			unscheduled, err := s.Ledger.UnscheduledChunks(ctx, first.JobID)
+			if err != nil {
+				return fmt.Errorf("load unscheduled chunks: %w", err)
+			}
+			jobsToPublish = append(jobsToPublish, unscheduled...)
 			jobIDs = append(jobIDs, first.JobID)
 		}
 	}
@@ -390,12 +409,20 @@ func (s Service) Publish(ctx context.Context, jobs []f2e.ChunkJob) error {
 		return nil
 	}
 	messages := make([]port.OutboundMessage, 0, 10)
+	messageJobs := make([]f2e.ChunkJob, 0, 10)
 	flush := func() error {
 		pending := append([]port.OutboundMessage(nil), messages...)
+		pendingJobs := append([]f2e.ChunkJob(nil), messageJobs...)
 		for attempt := 0; attempt < 3; attempt++ {
 			failed, err := s.Queue.Send(ctx, s.Config.ChunkQueueURL, pending)
 			if err == nil && len(failed) == 0 {
+				if s.Ledger != nil {
+					if err := s.Ledger.MarkChunksScheduled(ctx, pendingJobs); err != nil {
+						return fmt.Errorf("checkpoint scheduled chunks: %w", err)
+					}
+				}
 				messages = nil
+				messageJobs = nil
 				return nil
 			}
 			if err != nil {
@@ -404,13 +431,29 @@ func (s Service) Publish(ctx context.Context, jobs []f2e.ChunkJob) error {
 				}
 			} else {
 				next := make([]port.OutboundMessage, 0, len(failed))
+				nextJobs := make([]f2e.ChunkJob, 0, len(failed))
+				failedSet := make(map[int]struct{}, len(failed))
 				for _, index := range failed {
 					if index < 0 || index >= len(pending) {
 						return fmt.Errorf("chunk batch returned invalid failed index %d", index)
 					}
 					next = append(next, pending[index])
+					nextJobs = append(nextJobs, pendingJobs[index])
+					failedSet[index] = struct{}{}
+				}
+				if s.Ledger != nil {
+					confirmed := make([]f2e.ChunkJob, 0, len(pending)-len(failed))
+					for index, job := range pendingJobs {
+						if _, failed := failedSet[index]; !failed {
+							confirmed = append(confirmed, job)
+						}
+					}
+					if err := s.Ledger.MarkChunksScheduled(ctx, confirmed); err != nil {
+						return fmt.Errorf("checkpoint partially scheduled chunks: %w", err)
+					}
 				}
 				pending = next
+				pendingJobs = nextJobs
 			}
 			select {
 			case <-ctx.Done():
@@ -420,12 +463,13 @@ func (s Service) Publish(ctx context.Context, jobs []f2e.ChunkJob) error {
 		}
 		return fmt.Errorf("chunk batch partial failure after retries")
 	}
-	for _, j := range jobs {
+	for _, j := range jobsToPublish {
 		b, e := json.Marshal(j)
 		if e != nil {
 			return finish(e)
 		}
 		messages = append(messages, port.OutboundMessage{Body: string(b)})
+		messageJobs = append(messageJobs, j)
 		if len(messages) == 10 {
 			if e := flush(); e != nil {
 				return finish(e)

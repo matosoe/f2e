@@ -50,6 +50,7 @@ func (a *AWS) ResolvePrefixConfiguration(ctx context.Context, bucket, key string
 	raw, _ := json.Marshal(selected)
 	configHash := sha256Hex(raw)
 	snapshot := f2e.ConfigurationSnapshot{
+		Configuration:    selected,
 		ConfigHash:       configHash,
 		ParameterName:    selectedParamName,
 		ParameterVersion: selectedParamVersion,

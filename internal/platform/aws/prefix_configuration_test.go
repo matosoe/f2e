@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 
 	awsSDK "github.com/aws/aws-sdk-go-v2/aws"
@@ -33,6 +34,9 @@ func TestResolvePrefixConfigurationSelectsMostSpecificPrefix(t *testing.T) {
 	}
 	if snapshot.Responsible != "ops-team" {
 		t.Fatalf("expected responsible 'ops-team', got %q", snapshot.Responsible)
+	}
+	if !reflect.DeepEqual(snapshot.Configuration, specific) {
+		t.Fatalf("snapshot must retain the resolved configuration: got %+v want %+v", snapshot.Configuration, specific)
 	}
 	if snapshot.LoadedAt == "" {
 		t.Fatal("expected non-empty loadedAt in snapshot")
@@ -86,6 +90,12 @@ func TestConfigurationSnapshotIsImmutableAfterAdmission(t *testing.T) {
 	}
 	if snapshot1.ConfigHash != snapshot2.ConfigHash {
 		t.Fatal("config hash must be deterministic for the same SSM content")
+	}
+	// The retained value is an admission-time copy, not a pointer back to the
+	// configuration later changed by the caller or in SSM.
+	cfg.Responsible = "v2"
+	if snapshot1.Configuration.Responsible != "v1" {
+		t.Fatalf("admitted snapshot changed after configuration mutation: %+v", snapshot1.Configuration)
 	}
 }
 

@@ -2,10 +2,13 @@ package aws
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -20,6 +23,62 @@ var _ port.JobLedger = (*AWS)(nil)
 func text(v string) types.AttributeValue { return &types.AttributeValueMemberS{Value: v} }
 func number(v int64) types.AttributeValue {
 	return &types.AttributeValueMemberN{Value: strconv.FormatInt(v, 10)}
+}
+
+// boolAttr wraps a Go bool for use in an UpdateItem value map.
+func boolAttr(v bool) types.AttributeValue {
+	return &types.AttributeValueMemberBOOL{Value: v}
+}
+
+// emptyList returns an empty DynamoDB list, used with if_not_exists before
+// list_append so transition history can be appended on the first transition.
+func emptyList() types.AttributeValue {
+	return &types.AttributeValueMemberL{Value: []types.AttributeValue{}}
+}
+
+// singleList wraps a single transition entry so it can be appended to the
+// history list via list_append(if_not_exists(history, :empty), :entry).
+func singleList(v types.AttributeValue) types.AttributeValue {
+	return &types.AttributeValueMemberL{Value: []types.AttributeValue{v}}
+}
+
+// transitionEntry encodes a Transition into a DynamoDB map for the history list.
+func transitionEntry(from, to, at, reason string) types.AttributeValue {
+	m := map[string]types.AttributeValue{
+		"from": text(from),
+		"to":   text(to),
+		"at":   text(at),
+	}
+	if reason != "" {
+		m["reason"] = text(reason)
+	}
+	return &types.AttributeValueMemberM{Value: m}
+}
+
+// countsMap encodes Counts into a nested DynamoDB map written to the job item.
+func countsMap(c f2e.Counts) types.AttributeValue {
+	values := map[string]types.AttributeValue{
+		"recordsRead":          number(c.RecordsRead),
+		"recordsPublished":     number(c.RecordsPublished),
+		"recordsRejected":      number(c.RecordsRejected),
+		"recordsIgnored":       number(c.RecordsIgnored),
+		"messagesPublished":    number(c.MessagesPublished),
+		"physicalLinesIgnored": number(c.PhysicalLinesIgnored),
+		"countsComplete":       boolAttr(c.CountsComplete),
+	}
+	reasons := map[string]types.AttributeValue{}
+	for reason, count := range c.Reasons {
+		reasons[string(reason)] = number(count)
+	}
+	values["reasonCounts"] = &types.AttributeValueMemberM{Value: reasons}
+	return &types.AttributeValueMemberM{Value: values}
+}
+
+// conditionalConflict reports whether err is a DynamoDB conditional-check
+// failure, which is the signal that a state-guarded write did not win.
+func conditionalConflict(err error) bool {
+	var ccf *types.ConditionalCheckFailedException
+	return errors.As(err, &ccf)
 }
 
 func (a *AWS) Replay(ctx context.Context, sourceJobID, newJobID string, chunkIDs []string) ([]f2e.ChunkJob, error) {
@@ -99,9 +158,9 @@ func (a *AWS) Plan(ctx context.Context, plan f2e.JobPlan, chunks []f2e.ChunkJob)
 	values[":expiresAt"] = expiresAt
 	if _, err := a.DynamoDB.UpdateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName: aws.String(a.LedgerTable), Key: ledgerKey(plan.JobID, "JOB"),
-		ConditionExpression:      aws.String("attribute_not_exists(pk) OR (fileId = :fileId AND expectedChunks = :expected)"),
-		UpdateExpression:         aws.String("SET jobId = :jobId, fileId = :fileId, #bucket = :bucket, #key = :key, versionId = :versionId, etag = :etag, #s = if_not_exists(#s, :pending), expectedChunks = :expected, completedChunks = if_not_exists(completedChunks, :zero), failedChunks = if_not_exists(failedChunks, :zero), recordsProduced = if_not_exists(recordsProduced, :zero), createdAt = if_not_exists(createdAt, :created), expiresAt = if_not_exists(expiresAt, :expiresAt), configSnapshot = if_not_exists(configSnapshot, :configSnapshot)"),
-		ExpressionAttributeNames: map[string]string{"#s": "status", "#bucket": "bucket", "#key": "key"}, ExpressionAttributeValues: values,
+		ConditionExpression:      aws.String("attribute_not_exists(pk) OR (fileId = :fileId AND (attribute_not_exists(expectedChunks) OR expectedChunks = :expected))"),
+		UpdateExpression:         aws.String("SET jobId = :jobId, fileId = :fileId, #bucket = :bucket, #key = :key, versionId = :versionId, etag = :etag, #s = if_not_exists(#s, :pending), expectedChunks = :expected, completedChunks = if_not_exists(completedChunks, :zero), failedChunks = if_not_exists(failedChunks, :zero), recordsProduced = if_not_exists(recordsProduced, :zero), createdAt = if_not_exists(createdAt, :created), expiresAt = if_not_exists(expiresAt, :expiresAt), configSnapshot = if_not_exists(configSnapshot, :configSnapshot), manifestSealed = if_not_exists(manifestSealed, :false)"),
+		ExpressionAttributeNames: map[string]string{"#s": "status", "#bucket": "bucket", "#key": "key"}, ExpressionAttributeValues: func() map[string]types.AttributeValue { values[":false"] = boolAttr(false); return values }(),
 	}); err != nil {
 		return err
 	}
@@ -124,7 +183,65 @@ func (a *AWS) Plan(ctx context.Context, plan f2e.JobPlan, chunks []f2e.ChunkJob)
 			return err
 		}
 	}
+	// Seal only after every individual chunk write succeeded. This intentionally
+	// avoids a DynamoDB transaction sized by the number of chunks; a crash before
+	// this point is resumed by repeating the idempotent Plan call.
+	sealedStatus := f2e.JobPending
+	if len(chunks) == 0 {
+		sealedStatus = f2e.JobCompleted
+	}
+	_, err := a.DynamoDB.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: aws.String(a.LedgerTable), Key: ledgerKey(plan.JobID, "JOB"),
+		ConditionExpression:       aws.String("fileId = :fileId AND expectedChunks = :expected AND (attribute_not_exists(manifestSealed) OR manifestSealed = :false)"),
+		UpdateExpression:          aws.String("SET manifestSealed = :true, sealedAt = :now, #s = :status, pendingChunks = :expected, updatedAt = :now"),
+		ExpressionAttributeNames:  map[string]string{"#s": "status"},
+		ExpressionAttributeValues: map[string]types.AttributeValue{":fileId": text(plan.FileID), ":expected": number(int64(plan.ExpectedChunks)), ":false": boolAttr(false), ":true": boolAttr(true), ":now": text(time.Now().UTC().Format(time.RFC3339Nano)), ":status": text(string(sealedStatus))},
+	})
+	if err != nil && !conditionalConflict(err) {
+		return err
+	}
 	return nil
+}
+
+// MarkChunksScheduled saves one durable checkpoint per confirmed SQS message.
+// It deliberately does not change chunk status: a Worker still owns the
+// PENDING -> RUNNING transition.
+func (a *AWS) MarkChunksScheduled(ctx context.Context, chunks []f2e.ChunkJob) error {
+	for _, chunk := range chunks {
+		_, err := a.DynamoDB.UpdateItem(ctx, &dynamodb.UpdateItemInput{TableName: aws.String(a.LedgerTable), Key: ledgerKey(chunk.JobID, "CHUNK#"+chunk.ChunkID), ConditionExpression: aws.String("#s = :pending"), UpdateExpression: aws.String("SET scheduledAt = if_not_exists(scheduledAt, :now)"), ExpressionAttributeNames: map[string]string{"#s": "status"}, ExpressionAttributeValues: map[string]types.AttributeValue{":pending": text(string(f2e.ChunkStatePending)), ":now": text(time.Now().UTC().Format(time.RFC3339Nano))}})
+		if err != nil && !conditionalConflict(err) {
+			return err
+		}
+	}
+	return nil
+}
+
+func (a *AWS) UnscheduledChunks(ctx context.Context, jobID string) ([]f2e.ChunkJob, error) {
+	query := &dynamodb.QueryInput{TableName: aws.String(a.LedgerTable), KeyConditionExpression: aws.String("pk = :pk AND begins_with(sk, :chunk)"), FilterExpression: aws.String("attribute_not_exists(scheduledAt)"), ExpressionAttributeValues: map[string]types.AttributeValue{":pk": text("JOB#" + jobID), ":chunk": text("CHUNK#")}, ConsistentRead: aws.Bool(true)}
+	var jobs []f2e.ChunkJob
+	for {
+		out, err := a.DynamoDB.Query(ctx, query)
+		if err != nil {
+			return nil, err
+		}
+		for _, item := range out.Items {
+			payload, ok := item["payload"].(*types.AttributeValueMemberS)
+			if !ok {
+				return nil, fmt.Errorf("chunk %s has no resumable payload", jobID)
+			}
+			var chunk f2e.ChunkJob
+			if err := json.Unmarshal([]byte(payload.Value), &chunk); err != nil {
+				return nil, fmt.Errorf("decode resumable chunk: %w", err)
+			}
+			jobs = append(jobs, chunk)
+		}
+		if len(out.LastEvaluatedKey) == 0 {
+			break
+		}
+		query.ExclusiveStartKey = out.LastEvaluatedKey
+	}
+	sort.Slice(jobs, func(i, j int) bool { return jobs[i].ChunkID < jobs[j].ChunkID })
+	return jobs, nil
 }
 
 func (a *AWS) MarkScheduled(ctx context.Context, jobIDs []string) error {
@@ -137,13 +254,19 @@ func (a *AWS) MarkSchedulingFailed(ctx context.Context, jobIDs []string, message
 
 func (a *AWS) markJobs(ctx context.Context, jobIDs []string, status f2e.JobStatus, message string) error {
 	for _, jobID := range jobIDs {
-		values := map[string]types.AttributeValue{":status": text(string(status)), ":now": text(time.Now().UTC().Format(time.RFC3339Nano))}
+		values := map[string]types.AttributeValue{":status": text(string(status)), ":now": text(time.Now().UTC().Format(time.RFC3339Nano)), ":pending": text(string(f2e.JobPending)), ":planning": text(string(f2e.JobStatePlanning)), ":scheduled": text(string(f2e.JobScheduled))}
 		update := "SET #s = :status, updatedAt = :now"
+		condition := "attribute_exists(pk) AND manifestSealed = :sealed AND (#s = :pending OR #s = :planning OR #s = :scheduled)"
+		if status == f2e.JobSchedulingFailed {
+			values[":schedulingFailed"] = text(string(f2e.JobSchedulingFailed))
+			condition = "attribute_exists(pk) AND manifestSealed = :sealed AND (#s = :pending OR #s = :planning OR #s = :schedulingFailed)"
+		}
 		if message != "" {
 			values[":error"] = text(message)
 			update += ", lastError = :error"
 		}
-		if _, err := a.DynamoDB.UpdateItem(ctx, &dynamodb.UpdateItemInput{TableName: aws.String(a.LedgerTable), Key: ledgerKey(jobID, "JOB"), ConditionExpression: aws.String("attribute_exists(pk)"), UpdateExpression: aws.String(update), ExpressionAttributeNames: map[string]string{"#s": "status"}, ExpressionAttributeValues: values}); err != nil {
+		values[":sealed"] = boolAttr(true)
+		if _, err := a.DynamoDB.UpdateItem(ctx, &dynamodb.UpdateItemInput{TableName: aws.String(a.LedgerTable), Key: ledgerKey(jobID, "JOB"), ConditionExpression: aws.String(condition), UpdateExpression: aws.String(update), ExpressionAttributeNames: map[string]string{"#s": "status"}, ExpressionAttributeValues: values}); err != nil {
 			return err
 		}
 	}
@@ -151,31 +274,51 @@ func (a *AWS) markJobs(ctx context.Context, jobIDs []string, status f2e.JobStatu
 }
 
 func (a *AWS) StartChunk(ctx context.Context, jobID, chunkID string, attempt int) error {
-	_, err := a.DynamoDB.UpdateItem(ctx, &dynamodb.UpdateItemInput{TableName: aws.String(a.LedgerTable), Key: ledgerKey(jobID, "CHUNK#"+chunkID), ConditionExpression: aws.String("attribute_exists(pk) AND #s <> :completed"), UpdateExpression: aws.String("SET #s = :running, attempt = :attempt, startedAt = if_not_exists(startedAt, :now)"), ExpressionAttributeNames: map[string]string{"#s": "status"}, ExpressionAttributeValues: map[string]types.AttributeValue{":running": text(string(f2e.JobRunning)), ":completed": text(string(f2e.JobCompleted)), ":attempt": number(int64(attempt)), ":now": text(time.Now().UTC().Format(time.RFC3339Nano))}})
+	// A worker may only start an unclaimed pending attempt. In particular, a
+	// delayed delivery cannot move a completed/failed chunk back to RUNNING.
+	_, err := a.DynamoDB.UpdateItem(ctx, &dynamodb.UpdateItemInput{TableName: aws.String(a.LedgerTable), Key: ledgerKey(jobID, "CHUNK#"+chunkID), ConditionExpression: aws.String("attribute_exists(pk) AND (#s = :pending OR #s = :retryPending)"), UpdateExpression: aws.String("SET #s = :running, attempt = :attempt, startedAt = if_not_exists(startedAt, :now), revision = if_not_exists(revision, :zero) + :one"), ExpressionAttributeNames: map[string]string{"#s": "status"}, ExpressionAttributeValues: map[string]types.AttributeValue{":running": text(string(f2e.ChunkStateRunning)), ":pending": text(string(f2e.ChunkStatePending)), ":retryPending": text(string(f2e.ChunkStateRetryPending)), ":attempt": number(int64(attempt)), ":now": text(time.Now().UTC().Format(time.RFC3339Nano)), ":zero": number(0), ":one": number(1)}})
 	if err != nil {
 		status, readErr := a.chunkStatus(ctx, jobID, chunkID)
-		if readErr == nil && status == string(f2e.JobCompleted) {
-			return nil
+		if readErr == nil && status == string(f2e.ChunkStateCompleted) {
+			return port.ErrAlreadyCompleted
 		}
 	}
 	return err
 }
 
 func (a *AWS) CompleteChunk(ctx context.Context, result f2e.ChunkResult) error {
+	counts := result.Counts
+	if counts.RecordsRead == 0 && counts.RecordsPublished == 0 && counts.RecordsRejected == 0 && counts.RecordsIgnored == 0 && result.RecordsProduced > 0 {
+		counts = f2e.Counts{RecordsRead: result.RecordsProduced, RecordsPublished: result.RecordsProduced, MessagesPublished: result.RecordsProduced, CountsComplete: true}
+	}
 	status, err := a.chunkStatus(ctx, result.JobID, result.ChunkID)
 	if err != nil {
 		return err
 	}
-	if status == string(f2e.JobCompleted) {
+	if status == string(f2e.ChunkStateCompleted) {
 		return nil
 	}
+	jobUpdate := "SET #s = :running ADD completedChunks :one, recordsProduced :records, recordsRead :read, recordsPublished :published, recordsRejected :rejected, recordsIgnored :ignored, messagesPublished :messages, physicalLinesIgnored :physicalIgnored"
+	jobNames := map[string]string{"#s": "status"}
+	jobValues := map[string]types.AttributeValue{":one": number(1), ":records": number(counts.RecordsPublished), ":read": number(counts.RecordsRead), ":published": number(counts.RecordsPublished), ":rejected": number(counts.RecordsRejected), ":ignored": number(counts.RecordsIgnored), ":messages": number(counts.MessagesPublished), ":physicalIgnored": number(counts.PhysicalLinesIgnored), ":pending": text(string(f2e.JobPending)), ":scheduled": text(string(f2e.JobScheduled)), ":running": text(string(f2e.JobRunning))}
+	i := 0
+	for reason, count := range counts.Reasons {
+		if count == 0 {
+			continue
+		}
+		name, value := fmt.Sprintf("#reason%d", i), fmt.Sprintf(":reason%d", i)
+		jobUpdate += ", " + name + " " + value
+		jobNames[name] = "reasonCount_" + string(reason)
+		jobValues[value] = number(count)
+		i++
+	}
 	_, err = a.DynamoDB.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{TransactItems: []types.TransactWriteItem{
-		{Update: &types.Update{TableName: aws.String(a.LedgerTable), Key: ledgerKey(result.JobID, "CHUNK#"+result.ChunkID), ConditionExpression: aws.String("#s <> :completed"), UpdateExpression: aws.String("SET #s = :completed, recordsProduced = :records, bytesProcessed = :bytes, completedAt = :now"), ExpressionAttributeNames: map[string]string{"#s": "status"}, ExpressionAttributeValues: map[string]types.AttributeValue{":completed": text(string(f2e.JobCompleted)), ":records": number(result.RecordsProduced), ":bytes": number(result.BytesProcessed), ":now": text(result.OccurredAt.Format(time.RFC3339Nano))}}},
-		{Update: &types.Update{TableName: aws.String(a.LedgerTable), Key: ledgerKey(result.JobID, "JOB"), UpdateExpression: aws.String("SET #s = :running ADD completedChunks :one, recordsProduced :records"), ExpressionAttributeNames: map[string]string{"#s": "status"}, ExpressionAttributeValues: map[string]types.AttributeValue{":one": number(1), ":records": number(result.RecordsProduced), ":running": text(string(f2e.JobRunning))}}},
+		{Update: &types.Update{TableName: aws.String(a.LedgerTable), Key: ledgerKey(result.JobID, "CHUNK#"+result.ChunkID), ConditionExpression: aws.String("#s = :running AND attempt = :attempt"), UpdateExpression: aws.String("SET #s = :completed, recordsProduced = :records, bytesProcessed = :bytes, counts = :counts, completedAt = :now, revision = if_not_exists(revision, :zero) + :one"), ExpressionAttributeNames: map[string]string{"#s": "status"}, ExpressionAttributeValues: map[string]types.AttributeValue{":completed": text(string(f2e.ChunkStateCompleted)), ":running": text(string(f2e.ChunkStateRunning)), ":attempt": number(int64(result.Attempt)), ":records": number(counts.RecordsPublished), ":counts": countsMap(counts), ":bytes": number(result.BytesProcessed), ":now": text(result.OccurredAt.Format(time.RFC3339Nano)), ":zero": number(0), ":one": number(1)}}},
+		{Update: &types.Update{TableName: aws.String(a.LedgerTable), Key: ledgerKey(result.JobID, "JOB"), ConditionExpression: aws.String("#s = :pending OR #s = :scheduled OR #s = :running"), UpdateExpression: aws.String(jobUpdate), ExpressionAttributeNames: jobNames, ExpressionAttributeValues: jobValues}},
 	}})
 	if err != nil {
 		status, readErr := a.chunkStatus(ctx, result.JobID, result.ChunkID)
-		if readErr != nil || status != string(f2e.JobCompleted) {
+		if readErr != nil || status != string(f2e.ChunkStateCompleted) {
 			return err
 		}
 		return nil
@@ -191,28 +334,35 @@ func (a *AWS) FailChunk(ctx context.Context, result f2e.ChunkResult) error {
 	if result.Attempt < maxReceiveCount {
 		_, err := a.DynamoDB.UpdateItem(ctx, &dynamodb.UpdateItemInput{
 			TableName: aws.String(a.LedgerTable), Key: ledgerKey(result.JobID, "CHUNK#"+result.ChunkID),
-			UpdateExpression:         aws.String("SET #s = :pending, attempt = :attempt, lastError = :error, lastAttemptAt = :now"),
+			ConditionExpression:      aws.String("#s = :running AND attempt = :attempt"),
+			UpdateExpression:         aws.String("SET #s = :retryPending, lastError = :error, lastAttemptAt = :now, revision = if_not_exists(revision, :zero) + :one"),
 			ExpressionAttributeNames: map[string]string{"#s": "status"},
 			ExpressionAttributeValues: map[string]types.AttributeValue{
-				":pending": text(string(f2e.JobPending)), ":attempt": number(int64(result.Attempt)), ":error": text(result.Error), ":now": text(result.OccurredAt.Format(time.RFC3339Nano)),
+				":retryPending": text(string(f2e.ChunkStateRetryPending)), ":running": text(string(f2e.ChunkStateRunning)), ":attempt": number(int64(result.Attempt)), ":error": text(result.Error), ":now": text(result.OccurredAt.Format(time.RFC3339Nano)), ":zero": number(0), ":one": number(1),
 			},
 		})
+		if conditionalConflict(err) {
+			status, readErr := a.chunkStatus(ctx, result.JobID, result.ChunkID)
+			if readErr == nil && (status == string(f2e.ChunkStateCompleted) || status == string(f2e.ChunkStateFailed)) {
+				return nil // explicit idempotent skip; never revive a terminal chunk.
+			}
+		}
 		return err
 	}
 	status, err := a.chunkStatus(ctx, result.JobID, result.ChunkID)
 	if err != nil {
 		return err
 	}
-	if status == string(f2e.JobFailed) || status == string(f2e.JobCompleted) {
+	if status == string(f2e.ChunkStateFailed) || status == string(f2e.ChunkStateCompleted) {
 		return nil
 	}
 	_, err = a.DynamoDB.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{TransactItems: []types.TransactWriteItem{
-		{Update: &types.Update{TableName: aws.String(a.LedgerTable), Key: ledgerKey(result.JobID, "CHUNK#"+result.ChunkID), ConditionExpression: aws.String("#s <> :failed AND #s <> :completed"), UpdateExpression: aws.String("SET #s = :failed, lastError = :error, completedAt = :now"), ExpressionAttributeNames: map[string]string{"#s": "status"}, ExpressionAttributeValues: map[string]types.AttributeValue{":failed": text(string(f2e.JobFailed)), ":completed": text(string(f2e.JobCompleted)), ":error": text(result.Error), ":now": text(result.OccurredAt.Format(time.RFC3339Nano))}}},
-		{Update: &types.Update{TableName: aws.String(a.LedgerTable), Key: ledgerKey(result.JobID, "JOB"), UpdateExpression: aws.String("SET #s = :running ADD failedChunks :one"), ExpressionAttributeNames: map[string]string{"#s": "status"}, ExpressionAttributeValues: map[string]types.AttributeValue{":one": number(1), ":running": text(string(f2e.JobRunning))}}},
+		{Update: &types.Update{TableName: aws.String(a.LedgerTable), Key: ledgerKey(result.JobID, "CHUNK#"+result.ChunkID), ConditionExpression: aws.String("#s = :running AND attempt = :attempt"), UpdateExpression: aws.String("SET #s = :failed, lastError = :error, completedAt = :now, revision = if_not_exists(revision, :zero) + :one"), ExpressionAttributeNames: map[string]string{"#s": "status"}, ExpressionAttributeValues: map[string]types.AttributeValue{":failed": text(string(f2e.ChunkStateFailed)), ":running": text(string(f2e.ChunkStateRunning)), ":attempt": number(int64(result.Attempt)), ":error": text(result.Error), ":now": text(result.OccurredAt.Format(time.RFC3339Nano)), ":zero": number(0), ":one": number(1)}}},
+		{Update: &types.Update{TableName: aws.String(a.LedgerTable), Key: ledgerKey(result.JobID, "JOB"), ConditionExpression: aws.String("#s = :pending OR #s = :scheduled OR #s = :running"), UpdateExpression: aws.String("SET #s = :running ADD failedChunks :one"), ExpressionAttributeNames: map[string]string{"#s": "status"}, ExpressionAttributeValues: map[string]types.AttributeValue{":one": number(1), ":pending": text(string(f2e.JobPending)), ":scheduled": text(string(f2e.JobScheduled)), ":running": text(string(f2e.JobRunning))}}},
 	}})
 	if err != nil {
 		status, readErr := a.chunkStatus(ctx, result.JobID, result.ChunkID)
-		if readErr != nil || (status != string(f2e.JobFailed) && status != string(f2e.JobCompleted)) {
+		if readErr != nil || (status != string(f2e.ChunkStateFailed) && status != string(f2e.ChunkStateCompleted)) {
 			return err
 		}
 		return nil
@@ -244,7 +394,8 @@ func (a *AWS) reconcileJob(ctx context.Context, jobID string) error {
 		return 0
 	}
 	expected, completed, failed := read("expectedChunks"), read("completedChunks"), read("failedChunks")
-	if expected == 0 || completed+failed < expected {
+	sealed, _ := out.Item["manifestSealed"].(*types.AttributeValueMemberBOOL)
+	if sealed == nil || !sealed.Value || expected == 0 || completed+failed < expected {
 		return nil
 	}
 	status := f2e.JobCompleted
@@ -257,4 +408,299 @@ func (a *AWS) reconcileJob(ctx context.Context, jobID string) error {
 
 func ledgerKey(jobID, sortKey string) map[string]types.AttributeValue {
 	return map[string]types.AttributeValue{"pk": text("JOB#" + jobID), "sk": text(sortKey)}
+}
+
+// ---------------------------------------------------------------------------
+// T08 — conditional persistence for the phased lifecycle
+// ---------------------------------------------------------------------------
+//
+// The methods below implement the ADR 0006 state machine with conditional
+// writes so terminals never regress, an old attempt never overwrites a new one,
+// and late planning/scheduling never overwrites completion. Every job and chunk
+// item carries a revision counter, an ownership token (random lease) and a
+// transition history list whose retention is bounded by the item TTL
+// (expiresAt), following the LedgerRetentionDays setting.
+
+// jobToken generates a random ownership/lease token for a newly admitted job.
+func jobToken() string { return rand.Text() }
+
+func (a *AWS) jobRetention() int64 {
+	retentionDays := a.LedgerRetentionDays
+	if retentionDays < 1 {
+		retentionDays = 90
+	}
+	return time.Now().UTC().Add(time.Duration(retentionDays) * 24 * time.Hour).Unix()
+}
+
+func admissionLeaseExpiry() int64 { return time.Now().UTC().Add(15 * time.Minute).Unix() }
+
+// jobStatus reads the current status of a job aggregate item.
+func (a *AWS) jobStatus(ctx context.Context, jobID string) (string, error) {
+	out, err := a.DynamoDB.GetItem(ctx, &dynamodb.GetItemInput{TableName: aws.String(a.LedgerTable), Key: ledgerKey(jobID, "JOB"), ConsistentRead: aws.Bool(true)})
+	if err != nil {
+		return "", err
+	}
+	if value, ok := out.Item["status"].(*types.AttributeValueMemberS); ok {
+		return value.Value, nil
+	}
+	return "", nil
+}
+
+// advanceJob conditionally moves a job from one of `from` states into `to`,
+// recording the transition in the history list and bumping the revision. It is
+// the single writer for job state changes, guaranteeing no terminal regresses.
+func (a *AWS) advanceJob(ctx context.Context, jobID string, from []f2e.JobStatus, to f2e.JobStatus, reason string, extraSet string, extraValues map[string]types.AttributeValue) error {
+	names := map[string]string{"#s": "status"}
+	values := map[string]types.AttributeValue{
+		":to":    text(string(to)),
+		":now":   text(time.Now().UTC().Format(time.RFC3339Nano)),
+		":one":   number(1),
+		":zero":  number(0),
+		":empty": emptyList(),
+	}
+	condition := ""
+	for i, f := range from {
+		key := ":from" + strconv.Itoa(i)
+		values[key] = text(string(f))
+		if i > 0 {
+			condition += " OR "
+		}
+		condition += "#s = " + key
+	}
+	entry := transitionEntry(string(from[0]), string(to), values[":now"].(*types.AttributeValueMemberS).Value, reason)
+	values[":entry"] = singleList(entry)
+	set := "SET #s = :to, updatedAt = :now, revision = if_not_exists(revision, :zero) + :one, history = list_append(if_not_exists(history, :empty), :entry)"
+	if reason != "" {
+		values[":reason"] = text(reason)
+		set += ", lastReason = :reason"
+	}
+	if extraSet != "" {
+		set += ", " + extraSet
+	}
+	if extraSet != "" && strings.Contains(extraSet, "#result") {
+		names["#result"] = "result"
+	}
+	for k, v := range extraValues {
+		values[k] = v
+	}
+	_, err := a.DynamoDB.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName:                 aws.String(a.LedgerTable),
+		Key:                       ledgerKey(jobID, "JOB"),
+		ConditionExpression:       aws.String(condition),
+		UpdateExpression:          aws.String(set),
+		ExpressionAttributeNames:  names,
+		ExpressionAttributeValues: values,
+	})
+	return err
+}
+
+// Admit binds a receipt to a job item in the RECEIVED state. jobId is the
+// immutable fileId, so a different SQS receipt for the same physical version
+// links to the existing normal execution rather than creating a duplicate.
+// rather than creating a duplicate. It returns Acquired on first write,
+// AlreadyCompleted if the job is terminal, or Busy if another execution owns it.
+func (a *AWS) Admit(ctx context.Context, receipt f2e.Receipt) (f2e.AcquisitionResult, error) {
+	if a.LedgerTable == "" {
+		return f2e.Busy, fmt.Errorf("ledger table is not configured")
+	}
+	if receipt.ReceiptID == "" || receipt.FileID == "" || receipt.Source.VersionID == "" {
+		return f2e.Busy, fmt.Errorf("receiptId, fileId and source versionId are required for admission")
+	}
+	jobID := receipt.FileID
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	snapshot, err := json.Marshal(receipt.ConfigSnapshot)
+	if err != nil {
+		return f2e.Busy, fmt.Errorf("encode admission configuration snapshot: %w", err)
+	}
+	item := map[string]types.AttributeValue{
+		"pk":             text("JOB#" + jobID),
+		"sk":             text("JOB"),
+		"jobId":          text(jobID),
+		"fileId":         text(receipt.FileID),
+		"receiptId":      text(receipt.ReceiptID),
+		"status":         text(string(f2e.JobStateReceived)),
+		"bucket":         text(receipt.Source.Bucket),
+		"key":            text(receipt.Source.Key),
+		"versionId":      text(receipt.Source.VersionID),
+		"etag":           text(receipt.Source.ETag),
+		"size":           number(receipt.Source.Size),
+		"environment":    text(receipt.Environment),
+		"token":          text(jobToken()),
+		"revision":       number(0),
+		"receivedAt":     text(receipt.ReceivedAt.UTC().Format(time.RFC3339Nano)),
+		"createdAt":      text(now),
+		"updatedAt":      text(now),
+		"expiresAt":      number(a.jobRetention()),
+		"leaseExpiresAt": number(admissionLeaseExpiry()),
+		"configSnapshot": text(string(snapshot)),
+	}
+	// The RECEIVED state is the initial state, so no transition entry is
+	// appended on admission (history is seeded empty).
+	item["history"] = &types.AttributeValueMemberL{Value: []types.AttributeValue{}}
+	_, err = a.DynamoDB.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName:           aws.String(a.LedgerTable),
+		Item:                item,
+		ConditionExpression: aws.String("attribute_not_exists(pk)"),
+	})
+	if err == nil {
+		return f2e.Acquired, nil
+	}
+	if !conditionalConflict(err) {
+		return f2e.Busy, err
+	}
+	status, readErr := a.jobStatus(ctx, jobID)
+	if readErr != nil {
+		return f2e.Busy, readErr
+	}
+	switch f2e.JobStatus(status) {
+	case f2e.JobStateCompleted, f2e.JobStateFailed, f2e.JobStateRejected:
+		return f2e.AlreadyCompleted, nil
+	case f2e.JobStateReceived, f2e.JobStateValidating, f2e.JobStatePlanning:
+		// A crashed organizer leaves a renewable lease rather than a permanent
+		// lock. Only one later delivery can reclaim it after expiry.
+		nowUnix := time.Now().UTC().Unix()
+		_, reclaimErr := a.DynamoDB.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+			TableName: aws.String(a.LedgerTable), Key: ledgerKey(jobID, "JOB"),
+			ConditionExpression:       aws.String("leaseExpiresAt <= :now AND (#s = :received OR #s = :validating OR #s = :planning)"),
+			UpdateExpression:          aws.String("SET #token = :token, leaseExpiresAt = :lease, updatedAt = :updated, revision = if_not_exists(revision, :zero) + :one"),
+			ExpressionAttributeNames:  map[string]string{"#s": "status", "#token": "token"},
+			ExpressionAttributeValues: map[string]types.AttributeValue{":now": number(nowUnix), ":lease": number(admissionLeaseExpiry()), ":token": text(jobToken()), ":updated": text(time.Now().UTC().Format(time.RFC3339Nano)), ":zero": number(0), ":one": number(1), ":received": text(string(f2e.JobStateReceived)), ":validating": text(string(f2e.JobStateValidating)), ":planning": text(string(f2e.JobStatePlanning))},
+		})
+		if reclaimErr == nil {
+			return f2e.Acquired, nil
+		}
+		if !conditionalConflict(reclaimErr) {
+			return f2e.Busy, reclaimErr
+		}
+		return f2e.Busy, nil
+	default:
+		return f2e.Busy, nil
+	}
+}
+
+// BeginValidation moves a RECEIVED job into VALIDATING.
+func (a *AWS) BeginValidation(ctx context.Context, jobID string) error {
+	err := a.advanceJob(ctx, jobID, []f2e.JobStatus{f2e.JobStateReceived}, f2e.JobStateValidating, "", "", nil)
+	if err == nil {
+		return nil
+	}
+	if !conditionalConflict(err) {
+		return err
+	}
+	// Idempotent: if already past VALIDATING, this is a no-op rather than a
+	// regression. A terminal state must not be overwritten.
+	status, readErr := a.jobStatus(ctx, jobID)
+	if readErr != nil {
+		return readErr
+	}
+	if f2e.JobStatus(status) == f2e.JobStateValidating || f2e.JobStatus(status) == f2e.JobStatePlanning {
+		return nil
+	}
+	return err
+}
+
+// RejectJob moves a RECEIVED or VALIDATING job into REJECTED with a reason.
+func (a *AWS) RejectJob(ctx context.Context, jobID string, rejection f2e.Rejection) error {
+	reason := string(rejection.Reason)
+	if rejection.Detail != "" {
+		reason += ": " + rejection.Detail
+	}
+	rejectionJSON, _ := json.Marshal(rejection)
+	extraValues := map[string]types.AttributeValue{":rejection": text(string(rejectionJSON))}
+	err := a.advanceJob(ctx, jobID, []f2e.JobStatus{f2e.JobStateReceived, f2e.JobStateValidating}, f2e.JobStateRejected, reason, "rejection = :rejection", extraValues)
+	if err == nil {
+		return nil
+	}
+	if !conditionalConflict(err) {
+		return err
+	}
+	status, readErr := a.jobStatus(ctx, jobID)
+	if readErr != nil {
+		return readErr
+	}
+	if f2e.JobStatus(status) == f2e.JobStateRejected {
+		return nil
+	}
+	return err
+}
+
+// BeginPlanning moves a VALIDATING job into PLANNING.
+func (a *AWS) BeginPlanning(ctx context.Context, jobID string) error {
+	err := a.advanceJob(ctx, jobID, []f2e.JobStatus{f2e.JobStateValidating}, f2e.JobStatePlanning, "", "", nil)
+	if err == nil {
+		return nil
+	}
+	if !conditionalConflict(err) {
+		return err
+	}
+	status, readErr := a.jobStatus(ctx, jobID)
+	if readErr != nil {
+		return readErr
+	}
+	if f2e.JobStatus(status) == f2e.JobStatePlanning {
+		return nil
+	}
+	return err
+}
+
+// AcquireChunk claims a PENDING chunk for execution, writing a fresh ownership
+// token and bumping the attempt counter. It returns Acquired on a successful
+// claim, AlreadyCompleted if the chunk is terminal, or Busy if another worker
+// already holds it.
+func (a *AWS) AcquireChunk(ctx context.Context, jobID, chunkID string) (f2e.AcquisitionResult, error) {
+	now := text(time.Now().UTC().Format(time.RFC3339Nano))
+	_, err := a.DynamoDB.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName:                aws.String(a.LedgerTable),
+		Key:                      ledgerKey(jobID, "CHUNK#"+chunkID),
+		ConditionExpression:      aws.String("attribute_exists(pk) AND #s = :pending"),
+		UpdateExpression:         aws.String("SET #s = :running, #token = :token, acquiredAt = :now, revision = if_not_exists(revision, :zero) + :one ADD attempt :one"),
+		ExpressionAttributeNames: map[string]string{"#s": "status", "#token": "token"},
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":running": text(string(f2e.ChunkStateRunning)),
+			":pending": text(string(f2e.ChunkStatePending)),
+			":token":   text(jobToken()),
+			":now":     now,
+			":zero":    number(0),
+			":one":     number(1),
+		},
+	})
+	if err == nil {
+		return f2e.Acquired, nil
+	}
+	if !conditionalConflict(err) {
+		return f2e.Busy, err
+	}
+	status, readErr := a.chunkStatus(ctx, jobID, chunkID)
+	if readErr != nil {
+		return f2e.Busy, readErr
+	}
+	switch f2e.ChunkStatus(status) {
+	case f2e.ChunkStateCompleted, f2e.ChunkStateFailed:
+		return f2e.AlreadyCompleted, nil
+	default:
+		return f2e.Busy, nil
+	}
+}
+
+// FinalizeJob records the terminal result and counts of a PROCESSING job. It
+// moves the job to COMPLETED (never regressing a terminal) and stores the
+// aggregate counts with the countsComplete flag.
+func (a *AWS) FinalizeJob(ctx context.Context, jobID string, result f2e.JobResult, counts f2e.Counts) error {
+	reason := string(result)
+	extraValues := map[string]types.AttributeValue{":result": text(string(result)), ":counts": countsMap(counts)}
+	err := a.advanceJob(ctx, jobID, []f2e.JobStatus{f2e.JobStateProcessing}, f2e.JobStateCompleted, reason, "#result = :result, counts = :counts, completedAt = :now", extraValues)
+	if err == nil {
+		return nil
+	}
+	if !conditionalConflict(err) {
+		return err
+	}
+	status, readErr := a.jobStatus(ctx, jobID)
+	if readErr != nil {
+		return readErr
+	}
+	if f2e.JobStatus(status) == f2e.JobStateCompleted {
+		return nil
+	}
+	return err
 }

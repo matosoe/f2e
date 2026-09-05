@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"time"
 
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
@@ -101,6 +102,9 @@ func jobsFor(ctx context.Context, body []byte, executionID string) ([]f2e.ChunkJ
 	}
 	var jobs []f2e.ChunkJob
 	for _, reference := range references {
+		if reference.VersionID == "" {
+			return nil, fmt.Errorf("S3 notification for s3://%s/%s has no VersionId; immutable admission is required", reference.Bucket, reference.Key)
+		}
 		prefixConfig, configSnapshot, err := configurationResolver.ResolvePrefixConfiguration(ctx, reference.Bucket, reference.Key)
 		if err != nil {
 			return nil, err
@@ -108,6 +112,7 @@ func jobsFor(ctx context.Context, body []byte, executionID string) ([]f2e.ChunkJ
 		// Enrich snapshot with global limits provenance captured at cold start.
 		configSnapshot.GlobalLimitsParameter = globalLimitsParameter
 		configSnapshot.GlobalLimitsVersion = globalLimitsVersion
+		configSnapshot.GlobalLimits = globalLimits
 		if err := validatePrefixConfiguration(prefixConfig, globalLimits); err != nil {
 			return nil, err
 		}
@@ -121,14 +126,49 @@ func jobsFor(ctx context.Context, body []byte, executionID string) ([]f2e.ChunkJ
 		configured.Config.EventSchemaID = prefixConfig.EventSchemaID
 		configured.Config.EventSchemaVersion = prefixConfig.EventSchemaVersion
 		configured.Config.EventFormat = prefixConfig.EventFormat
-		request := f2e.OrganizerRequest{SchemaVersion: f2e.SchemaVersion, ExecutionID: executionID, Files: []f2e.FileRequest{{
+		versionedStore, ok := configured.Store.(port.VersionedObjectStore)
+		if !ok {
+			return nil, fmt.Errorf("configured object store does not support immutable version reads")
+		}
+		object, err := versionedStore.HeadObject(ctx, f2e.ObjectIdentity{Bucket: reference.Bucket, Key: reference.Key, VersionID: reference.VersionID})
+		if err != nil {
+			return nil, fmt.Errorf("head immutable S3 object %s/%s@%s: %w", reference.Bucket, reference.Key, reference.VersionID, err)
+		}
+		fileID := f2e.FileID(object)
+		if configured.Ledger != nil {
+			outcome, admitErr := configured.Ledger.Admit(ctx, f2e.Receipt{ReceiptID: executionID, FileID: fileID, Source: object, Environment: configured.Config.Environment, ReceivedAt: time.Now().UTC(), ConfigSnapshot: configSnapshot})
+			if admitErr != nil {
+				return nil, fmt.Errorf("admit immutable S3 object: %w", admitErr)
+			}
+			if outcome == f2e.AlreadyCompleted {
+				continue
+			}
+			if outcome == f2e.Busy {
+				return nil, fmt.Errorf("admission for fileId %s is busy", fileID)
+			}
+			if err := configured.Ledger.BeginValidation(ctx, fileID); err != nil {
+				return nil, fmt.Errorf("begin admission validation: %w", err)
+			}
+			if err := configured.Ledger.BeginPlanning(ctx, fileID); err != nil {
+				return nil, fmt.Errorf("begin admission planning: %w", err)
+			}
+		}
+		request := f2e.OrganizerRequest{SchemaVersion: f2e.SchemaVersion, ExecutionID: fileID, Files: []f2e.FileRequest{{
 			Bucket: reference.Bucket, Key: reference.Key, DataType: prefixConfig.DataType,
+			VersionID:            reference.VersionID,
 			MaxRecordLengthBytes: prefixConfig.MaxRecordLengthBytes, MultiLineLayout: prefixConfig.MultiLineLayout,
 			JSONArrayLayout: prefixConfig.JSONArrayLayout,
 		}}}
 		execution, err := configured.PlanWithSummary(ctx, request)
 		if err != nil {
 			return nil, err
+		}
+		// A selected empty JSON array has no Worker message. Seal and complete
+		// its zero-chunk manifest directly so admission never remains PLANNING.
+		if len(execution.Jobs) == 0 && configured.Ledger != nil {
+			if err := configured.Ledger.Plan(ctx, f2e.JobPlan{JobID: fileID, FileID: fileID, Bucket: object.Bucket, Key: object.Key, VersionID: object.VersionID, ETag: object.ETag, ExpectedChunks: 0, CreatedAt: time.Now().UTC(), ConfigSnapshot: configSnapshot}, nil); err != nil {
+				return nil, fmt.Errorf("seal empty manifest: %w", err)
+			}
 		}
 		for i := range execution.Jobs {
 			execution.Jobs[i].Configuration = f2e.JobConfiguration{

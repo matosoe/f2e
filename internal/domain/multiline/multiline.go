@@ -11,12 +11,21 @@ import (
 // DefaultLineSeparator is the ASCII File Separator (0x1C) used to join record lines by default.
 const DefaultLineSeparator = "\x1C"
 
+// Stats distinguishes ignored physical lines from logical record decisions.
+type Stats struct{ HeaderLinesIgnored, TrailerLinesIgnored int64 }
+
 // ReadMultiLine reads physical lines from r using CR/LF/CRLF terminators and groups
 // them into logical multi-line records. A new record begins when a line at breakPosition
 // has breakMarker as a prefix. Lines matching acceptedPrefixes are appended to the current
 // record; lines matching neither are silently skipped. maxLineBytes is the per-physical-line
 // limit (content without terminator); use MaxBytesPerRecord or a large default if unknown.
 func ReadMultiLine(ctx context.Context, r io.Reader, breakPosition int, breakMarker string, acceptedPrefixes []string, lineSeparator string, maxLineBytes int64, fn func(number, offset int64, raw string) error) error {
+	_, err := ReadMultiLineWithStats(ctx, r, breakPosition, breakMarker, acceptedPrefixes, lineSeparator, maxLineBytes, fn)
+	return err
+}
+
+func ReadMultiLineWithStats(ctx context.Context, r io.Reader, breakPosition int, breakMarker string, acceptedPrefixes []string, lineSeparator string, maxLineBytes int64, fn func(number, offset int64, raw string) error) (Stats, error) {
+	var stats Stats
 	if lineSeparator == "" {
 		lineSeparator = DefaultLineSeparator
 	}
@@ -58,17 +67,24 @@ func ReadMultiLine(ctx context.Context, r io.Reader, breakPosition int, breakMar
 				recLines = append(recLines, line)
 				return nil
 			}
+			accepted := false
 			for _, ap := range acceptedPrefixes {
 				if strings.HasPrefix(sub, ap) {
 					recLines = append(recLines, line)
+					accepted = true
 					break
 				}
 			}
+			if !accepted {
+				stats.TrailerLinesIgnored++
+			}
+		default:
+			stats.HeaderLinesIgnored++
 		}
 		return nil
 	}); err != nil {
-		return err
+		return stats, err
 	}
 
-	return emit()
+	return stats, emit()
 }

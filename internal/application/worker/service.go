@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -99,6 +100,9 @@ func (s Service) processWithMetrics(ctx context.Context, body []byte, attempt in
 	}
 	if s.Ledger != nil {
 		if err := s.Ledger.StartChunk(ctx, j.JobID, j.ChunkID, attempt); err != nil {
+			if errors.Is(err, port.ErrAlreadyCompleted) {
+				return nil, nil
+			}
 			return nil, fmt.Errorf("start chunk ledger: %w", err)
 		}
 	}
@@ -113,7 +117,7 @@ func (s Service) processWithMetrics(ctx context.Context, body []byte, attempt in
 	if e != nil {
 		return nil, e
 	}
-	recordCount, err := s.streamWithMetrics(ctx, j, r, readStart)
+	counts, err := s.streamWithMetrics(ctx, j, r, readStart)
 	closeErr := r.Close()
 	if err != nil {
 		return nil, fmt.Errorf("process job %s chunk %s: %w", j.JobID, j.ChunkID, err)
@@ -135,12 +139,12 @@ func (s Service) processWithMetrics(ctx context.Context, body []byte, attempt in
 		EndByte:              j.EndByteInclusive,
 		Attempt:              attempt,
 		BytesProcessed:       j.EndByteInclusive - readStart + 1,
-		RecordsProcessed:     recordCount,
+		RecordsProcessed:     counts.RecordsRead,
 		ProcessingTimeMillis: duration,
-		TPS:                  f2e.CalculateTPS(recordCount, duration),
+		TPS:                  f2e.CalculateTPS(counts.RecordsRead, duration),
 	}
 	if s.Ledger != nil {
-		if err := s.Ledger.CompleteChunk(ctx, f2e.ChunkResult{JobID: j.JobID, ChunkID: j.ChunkID, Attempt: attempt, RecordsProduced: recordCount, BytesProcessed: j.EndByteInclusive - readStart + 1, OccurredAt: time.Now().UTC()}); err != nil {
+		if err := s.Ledger.CompleteChunk(ctx, f2e.ChunkResult{JobID: j.JobID, ChunkID: j.ChunkID, Attempt: attempt, RecordsProduced: counts.RecordsPublished, BytesProcessed: j.EndByteInclusive - readStart + 1, OccurredAt: time.Now().UTC(), Counts: counts}); err != nil {
 			return nil, fmt.Errorf("complete chunk ledger: %w", err)
 		}
 	}
@@ -182,13 +186,13 @@ func (s Service) stream(ctx context.Context, j f2e.ChunkJob, r io.Reader, readSt
 }
 
 // streamWithMetrics processes a chunk and returns the number of records processed
-func (s Service) streamWithMetrics(ctx context.Context, j f2e.ChunkJob, r io.Reader, readStart int64) (int64, error) {
+func (s Service) streamWithMetrics(ctx context.Context, j f2e.ChunkJob, r io.Reader, readStart int64) (f2e.Counts, error) {
 	batchSize := s.Config.BatchSize
 	if batchSize == 0 { // keeps direct callers that omit Config.BatchSize compatible.
 		batchSize = 10
 	}
 	batch := make([]port.OutboundMessage, 0, batchSize)
-	var recordsProcessed int64 = 0
+	counts := f2e.Counts{CountsComplete: true}
 
 	flush := func() error {
 		pending := append([]port.OutboundMessage(nil), batch...)
@@ -221,14 +225,17 @@ func (s Service) streamWithMetrics(ctx context.Context, j f2e.ChunkJob, r io.Rea
 	}
 
 	publish := func(n, off int64, raw string, physicalLength int64) error {
+		// Every callback is one logical record; rejected and ignored records are
+		// reconciled separately from messages actually published.
+		counts.RecordsRead++
 		byteOffset := j.StartByte + off
 		if j.MaxRecordLengthBytes > 0 {
 			byteOffset = readStart + off
 		}
-		sourceRecordID := hash(j.FileID + "/" + j.ChunkID + "/" + fmt.Sprint(j.StartRecord+n+1) + "/" + s.Config.EventSchemaID + "/" + s.Config.EventSchemaVersion)
-		if j.MaxRecordLengthBytes > 0 {
-			sourceRecordID = hash(j.FileID + "/" + fmt.Sprint(byteOffset) + "/" + s.Config.EventSchemaID + "/" + s.Config.EventSchemaVersion)
-		}
+		// sourceRecordId (v2) is derived solely from the immutable physical source
+		// and the record's starting byte offset, independent of chunking, bundle
+		// grouping and schema/configuration version (kept as separate metadata).
+		sourceRecordID := f2e.SourceRecordID(j.FileID, byteOffset)
 		eventID := hash(j.JobID + "/" + sourceRecordID)
 		recNum := j.StartRecord + n + 1
 		var recordNumber *int64
@@ -281,14 +288,33 @@ func (s Service) streamWithMetrics(ctx context.Context, j f2e.ChunkJob, r io.Rea
 		}
 		if s.Processor != nil {
 			original := env
-			processed, er := s.Processor.Process(ctx, env)
+			decision, er := s.Processor.Process(ctx, env)
 			if er != nil {
 				return er
 			}
-			if processed == nil {
+			switch decision.Kind {
+			case f2e.RecordReject, f2e.RecordIgnore:
+				if decision.Reason == "" {
+					return fmt.Errorf("record processor returned %s without reasonCode", decision.Kind)
+				}
+				if decision.Kind == f2e.RecordReject {
+					counts.RecordsRejected++
+				} else {
+					counts.RecordsIgnored++
+				}
+				if counts.Reasons == nil {
+					counts.Reasons = make(map[f2e.RejectionReason]int64)
+				}
+				counts.Reasons[decision.Reason]++
 				return nil
+			case f2e.RecordPublish:
+				if decision.Envelope == nil {
+					return fmt.Errorf("record processor returned publish without envelope")
+				}
+				env = *decision.Envelope
+			default:
+				return fmt.Errorf("record processor returned invalid decision %q", decision.Kind)
 			}
-			env = *processed
 			if env.Metadata.EventID != original.Metadata.EventID || env.Metadata.SourceRecordID != original.Metadata.SourceRecordID || env.Metadata.Schema.ID == "" || env.Metadata.Schema.Version == "" || env.Metadata.Format == "" || env.Processing.JobID != original.Processing.JobID || env.Processing.ChunkID != original.Processing.ChunkID || env.Source.Bucket != original.Source.Bucket || env.Source.Key != original.Source.Key {
 				return fmt.Errorf("record processor changed or removed mandatory technical fields")
 			}
@@ -322,7 +348,7 @@ func (s Service) streamWithMetrics(ctx context.Context, j f2e.ChunkJob, r io.Rea
 			return fmt.Errorf("message attribute count exceeds SQS limit")
 		}
 		batch = append(batch, port.OutboundMessage{Body: string(b), Attributes: attrs})
-		recordsProcessed++
+		counts.RecordsPublished++
 		if len(batch) == batchSize {
 			return flush()
 		}
@@ -347,26 +373,35 @@ func (s Service) streamWithMetrics(ctx context.Context, j f2e.ChunkJob, r io.Rea
 		})
 	case f2e.DataTypeMultiLine:
 		layout := j.MultiLineLayout
-		err = multiline.ReadMultiLine(ctx, r, layout.BreakPosition, layout.BreakMarker, layout.AcceptedPrefixes, layout.LineSeparator, layout.MaxBytesPerRecord, func(n, off int64, raw string) error {
+		stats, multiErr := multiline.ReadMultiLineWithStats(ctx, r, layout.BreakPosition, layout.BreakMarker, layout.AcceptedPrefixes, layout.LineSeparator, layout.MaxBytesPerRecord, func(n, off int64, raw string) error {
 			if readStart+off < j.StartByte || readStart+off > j.EndByteInclusive-j.TrailingPaddingBytes {
 				return nil
 			}
 			return publish(n, off, raw, 0)
 		})
+		counts.PhysicalLinesIgnored += stats.HeaderLinesIgnored + stats.TrailerLinesIgnored
+		if stats.HeaderLinesIgnored > 0 || stats.TrailerLinesIgnored > 0 {
+			if counts.Reasons == nil {
+				counts.Reasons = make(map[f2e.RejectionReason]int64)
+			}
+			counts.Reasons[f2e.IgnoreMultiLineHeader] += stats.HeaderLinesIgnored
+			counts.Reasons[f2e.IgnoreMultiLineTrailer] += stats.TrailerLinesIgnored
+		}
+		err = multiErr
 	case f2e.DataTypeJSON:
 		err = readJSONArray(ctx, r, j, readStart, func(n, off int64, raw string) error {
 			return publish(n, off, raw, int64(len(raw)))
 		})
 	}
 	if err != nil {
-		return 0, err
+		return f2e.Counts{}, err
 	}
 	if len(batch) > 0 {
 		if err := flush(); err != nil {
-			return 0, err
+			return f2e.Counts{}, err
 		}
 	}
-	return recordsProcessed, nil
+	return counts, nil
 }
 
 // readJSONArray streams elements from a JSON array within the chunk's owned byte range.

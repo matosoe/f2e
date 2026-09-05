@@ -52,9 +52,9 @@ func (q *messageQueue) Send(_ context.Context, _ string, messages []port.Outboun
 	return nil, nil
 }
 
-type processorFunc func(context.Context, f2e.Envelope[f2e.RecordPayload]) (*f2e.Envelope[f2e.RecordPayload], error)
+type processorFunc func(context.Context, f2e.Envelope[f2e.RecordPayload]) (f2e.RecordDecision, error)
 
-func (f processorFunc) Process(ctx context.Context, envelope f2e.Envelope[f2e.RecordPayload]) (*f2e.Envelope[f2e.RecordPayload], error) {
+func (f processorFunc) Process(ctx context.Context, envelope f2e.Envelope[f2e.RecordPayload]) (f2e.RecordDecision, error) {
 	return f(ctx, envelope)
 }
 
@@ -105,10 +105,10 @@ func TestProcessHonorsCancelledContext(t *testing.T) {
 
 func TestAttributesUseFinalEnvelopeAndCorporateContext(t *testing.T) {
 	q := &messageQueue{}
-	processor := processorFunc(func(_ context.Context, env f2e.Envelope[f2e.RecordPayload]) (*f2e.Envelope[f2e.RecordPayload], error) {
+	processor := processorFunc(func(_ context.Context, env f2e.Envelope[f2e.RecordPayload]) (f2e.RecordDecision, error) {
 		env.Metadata.Schema.Version = "2"
 		env.Metadata.Format = "application/json"
-		return &env, nil
+		return f2e.PublishRecord(env), nil
 	})
 	s := Service{Resolver: store{"aaa\n"}, Queue: q, Processor: processor, Config: config.Config{OutputQueueURL: "out", EventSchemaID: "test", EventSchemaVersion: "1", EventFormat: "json"}}
 	job := f2e.ChunkJob{SchemaVersion: f2e.SchemaVersion, FileID: "f", JobID: "j", ChunkID: "1", Bucket: "b", Key: "k", EndByteInclusive: 3, DataType: f2e.DataTypeText, MaxRecordLengthBytes: 4, Context: f2e.CorporateContext{TransactionID: "tx", CorrelationID: "corr", TraceID: "trace", SourceSystem: "erp"}}
@@ -122,15 +122,38 @@ func TestAttributesUseFinalEnvelopeAndCorporateContext(t *testing.T) {
 }
 
 func TestProcessorCannotRemoveTechnicalIdentity(t *testing.T) {
-	processor := processorFunc(func(_ context.Context, env f2e.Envelope[f2e.RecordPayload]) (*f2e.Envelope[f2e.RecordPayload], error) {
+	processor := processorFunc(func(_ context.Context, env f2e.Envelope[f2e.RecordPayload]) (f2e.RecordDecision, error) {
 		env.Metadata.SourceRecordID = ""
-		return &env, nil
+		return f2e.PublishRecord(env), nil
 	})
 	s := Service{Resolver: store{"aaa\n"}, Queue: &queue{}, Processor: processor, Config: config.Config{OutputQueueURL: "out", EventSchemaID: "test", EventSchemaVersion: "1", EventFormat: "json"}}
 	job := f2e.ChunkJob{SchemaVersion: f2e.SchemaVersion, FileID: "f", JobID: "j", ChunkID: "1", Bucket: "b", Key: "k", EndByteInclusive: 3, DataType: f2e.DataTypeText, MaxRecordLengthBytes: 4}
 	body, _ := json.Marshal(job)
 	if err := s.Process(context.Background(), body); err == nil || !strings.Contains(err.Error(), "mandatory technical fields") {
 		t.Fatalf("expected processor invariant error, got %v", err)
+	}
+}
+
+func TestProcessorDecisionsCountPublishRejectAndIgnore(t *testing.T) {
+	q := &messageQueue{}
+	processor := processorFunc(func(_ context.Context, env f2e.Envelope[f2e.RecordPayload]) (f2e.RecordDecision, error) {
+		switch env.Data.Raw {
+		case "reject":
+			return f2e.RecordDecision{Kind: f2e.RecordReject, Reason: f2e.RejectionProcessorRejected}, nil
+		case "ignore":
+			return f2e.RecordDecision{Kind: f2e.RecordIgnore, Reason: f2e.IgnoreProcessorFiltered}, nil
+		default:
+			return f2e.PublishRecord(env), nil
+		}
+	})
+	s := Service{Queue: q, Processor: processor, Config: config.Config{OutputQueueURL: "out", EventSchemaID: "test", EventSchemaVersion: "1", EventFormat: "json"}}
+	job := f2e.ChunkJob{SchemaVersion: f2e.SchemaVersion, FileID: "f", JobID: "j", ChunkID: "1", Bucket: "b", Key: "k", EndByteInclusive: 20, DataType: f2e.DataTypeText, MaxRecordLengthBytes: 7}
+	counts, err := s.streamWithMetrics(context.Background(), job, strings.NewReader("publish\nreject\nignore\n"), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if counts.RecordsRead != 3 || counts.RecordsPublished != 1 || counts.RecordsRejected != 1 || counts.RecordsIgnored != 1 || len(q.messages) != 1 {
+		t.Fatalf("counts=%+v messages=%d", counts, len(q.messages))
 	}
 }
 func TestProcessBatchesAndStableIDs(t *testing.T) {

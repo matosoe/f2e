@@ -4,6 +4,19 @@ import "time"
 
 type JobStatus string
 
+// Legacy job status constants. These predate the canonical state machine in
+// states.go (ADR 0006) and are retained only so the current DynamoDB ledger and
+// its callers keep compiling without semantic change. They are superseded by
+// JobStateReceived/Validating/Planning/Processing/Completed/Failed/Rejected.
+//
+// Mapping for reference (compatibility is explicit, not accidental):
+//
+//	JobPending          -> JobStatePlanning   (plan sealed, chunks pending)
+//	JobScheduled        -> JobStateProcessing (chunks queued for execution)
+//	JobSchedulingFailed -> JobStateFailed
+//	JobRunning          -> JobStateProcessing
+//	JobCompleted        -> JobStateCompleted
+//	JobFailed           -> JobStateFailed
 const (
 	JobPending          JobStatus = "PENDING"
 	JobScheduled        JobStatus = "SCHEDULED"
@@ -33,4 +46,6 @@ type ChunkResult struct {
 	BytesProcessed  int64
 	Error           string
 	OccurredAt      time.Time
+	Counts          Counts
+	Reasons         map[RejectionReason]int64
 }

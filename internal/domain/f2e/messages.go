@@ -1,11 +1,18 @@
 // Package f2e defines the messages exchanged by the F2E pipeline.
 package f2e
 
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"strconv"
+)
+
 const SchemaVersion = "1"
 
 type FileReference struct {
-	Bucket string
-	Key    string
+	Bucket    string
+	Key       string
+	VersionID string
 }
 
 type ObjectIdentity struct {
@@ -62,12 +69,21 @@ type CorporateContext struct {
 type FileRequest struct {
 	Bucket               string           `json:"bucket"`
 	Key                  string           `json:"key"`
+	VersionID            string           `json:"versionId,omitempty"`
 	PresignedURL         string           `json:"presignedUrl,omitempty"`
 	DataType             DataType         `json:"dataType"`
 	MaxRecordLengthBytes int64            `json:"maxRecordLengthBytes,omitempty"`
 	MultiLineLayout      MultiLineLayout  `json:"multiLineLayout,omitempty"`
 	JSONArrayLayout      JSONArrayLayout  `json:"jsonArrayLayout,omitempty"`
 	Context              CorporateContext `json:"context,omitempty"`
+}
+
+// FileID identifies one immutable physical object version. Configuration and
+// receipt identity are intentionally excluded so retries cannot create a
+// second normal execution for the same source.
+func FileID(object ObjectIdentity) string {
+	sum := sha256.Sum256([]byte(object.Bucket + "/" + object.Key + "/" + object.VersionID + "/" + object.ETag + "/" + strconv.FormatInt(object.Size, 10)))
+	return hex.EncodeToString(sum[:])
 }
 
 // PrefixConfiguration is the JSON document stored in SSM for an S3 bucket/key
@@ -99,6 +115,10 @@ type PrefixConfiguration struct {
 // configuration as loaded from SSM at admission time. Once attached to a job,
 // subsequent SSM changes do not affect that job.
 type ConfigurationSnapshot struct {
+	// Configuration is the exact prefix configuration used at admission. It is
+	// persisted with the job/chunks so replay never needs SSM history to
+	// reconstruct the behavior selected for this execution.
+	Configuration PrefixConfiguration `json:"configuration"`
 	// ConfigHash is the SHA-256 hex digest of the canonical JSON content.
 	ConfigHash string `json:"configHash"`
 	// ParameterName is the SSM parameter name (or ARN) that supplied the configuration.
@@ -113,6 +133,9 @@ type ConfigurationSnapshot struct {
 	GlobalLimitsParameter string `json:"globalLimitsParameter"`
 	// GlobalLimitsVersion is the SSM parameter version of the global limits.
 	GlobalLimitsVersion int64 `json:"globalLimitsVersion"`
+	// GlobalLimits is the exact limits document used when validating this
+	// configuration; it must not be reloaded for an admitted job.
+	GlobalLimits GlobalLimits `json:"globalLimits"`
 }
 
 type InputTypeLimits struct {

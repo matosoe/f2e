@@ -114,6 +114,16 @@ func TestReadMultiLineHeaderAndTrailerSkipped(t *testing.T) {
 	}
 }
 
+func TestReadMultiLineReportsIgnoredPhysicalLines(t *testing.T) {
+	stats, err := multiline.ReadMultiLineWithStats(context.Background(), strings.NewReader("HEADER\n[R]one\n[A]two\nTRAILER\n"), 0, "[R]", []string{"[A]"}, "", 1024, func(_, _ int64, _ string) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.HeaderLinesIgnored != 1 || stats.TrailerLinesIgnored != 1 {
+		t.Fatalf("stats=%+v, want one header and one trailer", stats)
+	}
+}
+
 func TestReadMultiLineSupportsCRLFAndCR(t *testing.T) {
 	input := "1abc\r\n2def\r1xyz\n2uvw\r\n"
 	var got []string

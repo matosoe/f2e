@@ -22,6 +22,7 @@ type Record struct {
 		} `json:"bucket"`
 		Object struct {
 			Key       string `json:"key"`
+			VersionID string `json:"versionId"`
 			Size      int64  `json:"size"`
 			ETag      string `json:"eTag"`
 			Sequencer string `json:"sequencer"`
@@ -44,7 +45,7 @@ func Parse(body []byte) ([]f2e.FileReference, error) {
 		if err != nil {
 			return nil, fmt.Errorf("decode key: %w", err)
 		}
-		references = append(references, f2e.FileReference{Bucket: record.S3.Bucket.Name, Key: key})
+		references = append(references, f2e.FileReference{Bucket: record.S3.Bucket.Name, Key: key, VersionID: record.S3.Object.VersionID})
 	}
 
 	return references, nil
