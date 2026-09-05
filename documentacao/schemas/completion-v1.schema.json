@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://f2e.local/schemas/completion-v1.schema.json",
+  "title": "F2E Completion Event v1",
+  "description": "Technical conclusion event published to the completion queue when a job reaches a terminal state. Consumers must not treat arrival of this event as a barrier between record envelopes in the record queue.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "eventId", "jobId", "fileId", "source", "config", "status", "counts", "timestamps"],
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "const": "f2e-completion/1",
+      "description": "Schema version identifier. Consumers must check this and reject unknown versions."
+    },
+    "eventId": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$",
+      "description": "Deterministic SHA-256 hex identifier derived from jobId and completion version. Duplicate deliveries share the same eventId."
+    },
+    "jobId": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Stable job identifier (equals fileId for normal executions)."
+    },
+    "fileId": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Immutable physical-file identity."
+    },
+    "prefixId": {
+      "type": "string",
+      "description": "Configuration prefix that governed this job. Optional for environments without prefix isolation."
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bucket", "key"],
+      "description": "Immutable S3 coordinates used during processing.",
+      "properties": {
+        "bucket": { "type": "string", "minLength": 1 },
+        "key":    { "type": "string", "minLength": 1 },
+        "versionId": { "type": "string" },
+        "etag":      { "type": "string" },
+        "fileSize":  { "type": "integer", "minimum": 0 }
+      }
+    },
+    "config": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Minimum provenance to correlate with the SSM configuration version used.",
+      "properties": {
+        "configId": {
+          "type": "string",
+          "description": "SHA-256 hash of the SSM configuration content (configHash from ConfigurationSnapshot)."
+        },
+        "parameterName": {
+          "type": "string",
+          "description": "SSM parameter name that supplied the configuration."
+        },
+        "parameterVersion": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "SSM parameter version."
+        }
+      }
+    },
+    "status": {
+      "type": "string",
+      "enum": ["COMPLETED", "FAILED", "REJECTED"],
+      "description": "Terminal job status."
+    },
+    "result": {
+      "type": "string",
+      "enum": ["SUCCESS", "WITH_REJECTIONS"],
+      "description": "Qualifies a COMPLETED job. Absent for FAILED and REJECTED."
+    },
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["recordsRead", "recordsPublished", "recordsRejected", "recordsIgnored", "countsComplete"],
+      "description": "Aggregated record counters. When countsComplete is true: recordsRead = recordsPublished + recordsRejected + recordsIgnored.",
+      "properties": {
+        "recordsRead":      { "type": "integer", "minimum": 0 },
+        "recordsPublished": { "type": "integer", "minimum": 0 },
+        "recordsRejected":  { "type": "integer", "minimum": 0 },
+        "recordsIgnored":   { "type": "integer", "minimum": 0 },
+        "countsComplete": {
+          "type": "boolean",
+          "description": "False when the job failed partway and a proven final total cannot be guaranteed."
+        }
+      }
+    },
+    "rejectionReason": {
+      "type": "string",
+      "description": "Primary rejection reason for REJECTED jobs. Selected from the bounded catalog (INVALID_CONFIG, UNSUPPORTED_TYPE, EMPTY_FILE, INVALID_UTF8, etc.)."
+    },
+    "timestamps": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["completedAt"],
+      "properties": {
+        "receivedAt":  { "type": "string", "format": "date-time" },
+        "completedAt": { "type": "string", "format": "date-time" }
+      }
+    }
+  }
+}

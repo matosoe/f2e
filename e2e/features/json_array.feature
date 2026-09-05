@@ -4,11 +4,13 @@ Feature: JSON array file processing
   with data.raw set to the element JSON.  MaxBytesPerElement=256 is always required by
   the organizer for planning; it also controls the chunk size for large files.
 
+  @smoke @regression
   Scenario: Empty JSON array file produces no events
     Given I have a JSON array file with 0 elements
     When I upload and process the file
     Then no events are produced within 15 seconds
 
+  @smoke @regression
   Scenario Outline: JSON array file with <count> elements — full validation
     Given I have a JSON array file with <count> elements
     When I upload and process the file
@@ -22,6 +24,7 @@ Feature: JSON array file processing
       | 2     | 30      |
       | 1000  | 90      |
 
+  @regression
   Scenario Outline: JSON array file with <count> elements — count validation only
     Given I have a JSON array file with <count> elements
     When I upload and process the file

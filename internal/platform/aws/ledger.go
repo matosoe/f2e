@@ -469,7 +469,10 @@ func (a *AWS) advanceJob(ctx context.Context, jobID string, from []f2e.JobStatus
 	}
 	entry := transitionEntry(string(from[0]), string(to), values[":now"].(*types.AttributeValueMemberS).Value, reason)
 	values[":entry"] = singleList(entry)
-	set := "SET #s = :to, updatedAt = :now, revision = if_not_exists(revision, :zero) + :one, history = list_append(if_not_exists(history, :empty), :entry)"
+	// statusIndex mirrors the status value so the status-time-index GSI (T14)
+	// can range-query by updatedAt without needing a table Scan.
+	values[":statusIndex"] = text(string(to))
+	set := "SET #s = :to, statusIndex = :statusIndex, updatedAt = :now, revision = if_not_exists(revision, :zero) + :one, history = list_append(if_not_exists(history, :empty), :entry)"
 	if reason != "" {
 		values[":reason"] = text(reason)
 		set += ", lastReason = :reason"
@@ -519,6 +522,7 @@ func (a *AWS) Admit(ctx context.Context, receipt f2e.Receipt) (f2e.AcquisitionRe
 		"fileId":         text(receipt.FileID),
 		"receiptId":      text(receipt.ReceiptID),
 		"status":         text(string(f2e.JobStateReceived)),
+		"statusIndex":    text(string(f2e.JobStateReceived)),
 		"bucket":         text(receipt.Source.Bucket),
 		"key":            text(receipt.Source.Key),
 		"versionId":      text(receipt.Source.VersionID),
@@ -533,6 +537,10 @@ func (a *AWS) Admit(ctx context.Context, receipt f2e.Receipt) (f2e.AcquisitionRe
 		"expiresAt":      number(a.jobRetention()),
 		"leaseExpiresAt": number(admissionLeaseExpiry()),
 		"configSnapshot": text(string(snapshot)),
+	}
+	// T22: persist prefixId so FinalizeJob/RejectJob can release the quota slot.
+	if receipt.PrefixID != "" {
+		item["prefixId"] = text(receipt.PrefixID)
 	}
 	// The RECEIVED state is the initial state, so no transition entry is
 	// appended on admission (history is seeded empty).
@@ -599,6 +607,25 @@ func (a *AWS) BeginValidation(ctx context.Context, jobID string) error {
 	return err
 }
 
+// releaseQuotaIfNeeded reads the prefixId from the job item and, if set,
+// decrements the per-prefix active-job counter. It is called by RejectJob and
+// FinalizeJob after a successful terminal transition so the freed slot becomes
+// immediately available to new admissions.
+func (a *AWS) releaseQuotaIfNeeded(ctx context.Context, jobID string) {
+	out, err := a.DynamoDB.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName:            aws.String(a.LedgerTable),
+		Key:                  ledgerKey(jobID, "JOB"),
+		ConsistentRead:       aws.Bool(true),
+		ProjectionExpression: aws.String("prefixId"),
+	})
+	if err != nil || out.Item == nil {
+		return
+	}
+	if v, ok := out.Item["prefixId"].(*types.AttributeValueMemberS); ok && v.Value != "" {
+		_ = a.ReleaseSlot(ctx, v.Value)
+	}
+}
+
 // RejectJob moves a RECEIVED or VALIDATING job into REJECTED with a reason.
 func (a *AWS) RejectJob(ctx context.Context, jobID string, rejection f2e.Rejection) error {
 	reason := string(rejection.Reason)
@@ -609,6 +636,7 @@ func (a *AWS) RejectJob(ctx context.Context, jobID string, rejection f2e.Rejecti
 	extraValues := map[string]types.AttributeValue{":rejection": text(string(rejectionJSON))}
 	err := a.advanceJob(ctx, jobID, []f2e.JobStatus{f2e.JobStateReceived, f2e.JobStateValidating}, f2e.JobStateRejected, reason, "rejection = :rejection", extraValues)
 	if err == nil {
+		a.releaseQuotaIfNeeded(ctx, jobID)
 		return nil
 	}
 	if !conditionalConflict(err) {
@@ -690,6 +718,7 @@ func (a *AWS) FinalizeJob(ctx context.Context, jobID string, result f2e.JobResul
 	extraValues := map[string]types.AttributeValue{":result": text(string(result)), ":counts": countsMap(counts)}
 	err := a.advanceJob(ctx, jobID, []f2e.JobStatus{f2e.JobStateProcessing}, f2e.JobStateCompleted, reason, "#result = :result, counts = :counts, completedAt = :now", extraValues)
 	if err == nil {
+		a.releaseQuotaIfNeeded(ctx, jobID)
 		return nil
 	}
 	if !conditionalConflict(err) {
@@ -703,4 +732,208 @@ func (a *AWS) FinalizeJob(ctx context.Context, jobID string, result f2e.JobResul
 		return nil
 	}
 	return err
+}
+
+// ---------------------------------------------------------------------------
+// T12 — completion outbox
+// ---------------------------------------------------------------------------
+//
+// The completion intent pattern ensures that every terminal job transition
+// produces exactly one logical delivery record. The intent is written to a
+// dedicated sort-key COMPLETION_INTENT#<version> under the same partition as
+// the job. A sparse GSI (pending-intents-index) on the intentPending attribute
+// allows the publisher (T13) to query pending intents without a full Scan.
+//
+// Item layout:
+//   pk: JOB#<jobId>
+//   sk: COMPLETION_INTENT#<paddedVersion>
+//   intentPending: "1"  (removed on delivery to drop the item from the GSI)
+//   payload: <JSON-encoded CompletionIntent>
+//   expiresAt: <job retention TTL>
+
+const intentPendingMarker = "1"
+const intentSortKeyPrefix = "COMPLETION_INTENT#"
+
+func intentSortKey(version int64) string {
+	return fmt.Sprintf("%s%020d", intentSortKeyPrefix, version)
+}
+
+// WriteCompletionIntent writes an outbox record atomically under the job
+// partition. It uses attribute_not_exists to guarantee idempotence: if a
+// concurrent terminal transition already wrote the intent, this call is a
+// no-op and preserves the existing one.
+func (a *AWS) WriteCompletionIntent(ctx context.Context, intent f2e.CompletionIntent) error {
+	if a.LedgerTable == "" {
+		return fmt.Errorf("ledger table is not configured")
+	}
+	payload, err := json.Marshal(intent)
+	if err != nil {
+		return fmt.Errorf("encode completion intent: %w", err)
+	}
+	item := map[string]types.AttributeValue{
+		"pk":            text("JOB#" + intent.JobID),
+		"sk":            text(intentSortKey(intent.Version)),
+		"jobId":         text(intent.JobID),
+		"intentVersion": number(intent.Version),
+		"intentStatus":  text(string(intent.Status)),
+		"intentPending": text(intentPendingMarker),
+		"payload":       text(string(payload)),
+		"createdAt":     text(intent.CreatedAt.UTC().Format(time.RFC3339Nano)),
+		"expiresAt":     number(a.jobRetention()),
+	}
+	_, err = a.DynamoDB.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName:           aws.String(a.LedgerTable),
+		Item:                item,
+		ConditionExpression: aws.String("attribute_not_exists(pk) AND attribute_not_exists(sk)"),
+	})
+	if err != nil {
+		if conditionalConflict(err) {
+			// Intent already exists (concurrent terminal transition). No-op.
+			return nil
+		}
+		return fmt.Errorf("write completion intent: %w", err)
+	}
+	return nil
+}
+
+// PendingCompletionIntents queries the sparse GSI for intents whose
+// intentPending attribute is still set. The publisher calls this to recover
+// undelivered intents after a DynamoDB Streams expiration or a publisher crash.
+func (a *AWS) PendingCompletionIntents(ctx context.Context, limit int) ([]f2e.CompletionIntent, error) {
+	if a.LedgerTable == "" {
+		return nil, fmt.Errorf("ledger table is not configured")
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+	lim := int32(limit)
+	out, err := a.DynamoDB.Query(ctx, &dynamodb.QueryInput{
+		TableName:              aws.String(a.LedgerTable),
+		IndexName:              aws.String("pending-intents-index"),
+		KeyConditionExpression: aws.String("intentPending = :pending"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":pending": text(intentPendingMarker),
+		},
+		Limit: &lim,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("query pending completion intents: %w", err)
+	}
+	intents := make([]f2e.CompletionIntent, 0, len(out.Items))
+	for _, item := range out.Items {
+		payloadAttr, ok := item["payload"].(*types.AttributeValueMemberS)
+		if !ok {
+			continue
+		}
+		var intent f2e.CompletionIntent
+		if err := json.Unmarshal([]byte(payloadAttr.Value), &intent); err != nil {
+			return nil, fmt.Errorf("decode completion intent: %w", err)
+		}
+		intents = append(intents, intent)
+	}
+	return intents, nil
+}
+
+// quotaKey returns the DynamoDB primary key for a per-prefix active-job counter.
+// The item uses pk = "QUOTA#<prefixID>" and sk = "QUOTA" so it is co-located
+// with job items but separated by a different sort-key prefix.
+func quotaKey(prefixID string) map[string]types.AttributeValue {
+	return map[string]types.AttributeValue{
+		"pk": text("QUOTA#" + prefixID),
+		"sk": text("QUOTA"),
+	}
+}
+
+// ReserveSlot atomically increments the per-prefix active-job counter, returning
+// ErrQuotaExceeded if it would exceed maxActiveJobs. When maxActiveJobs is 0 the
+// call is a no-op. Thread-safe via a DynamoDB conditional update.
+func (a *AWS) ReserveSlot(ctx context.Context, prefixID string, maxActiveJobs int) error {
+	if a.LedgerTable == "" {
+		return fmt.Errorf("ledger table is not configured")
+	}
+	if maxActiveJobs == 0 || prefixID == "" {
+		return nil
+	}
+	// Attempt to increment if count < maxActiveJobs.
+	_, err := a.DynamoDB.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: aws.String(a.LedgerTable),
+		Key:       quotaKey(prefixID),
+		// Create the counter at 1 if it doesn't exist yet (if_not_exists(activeJobs,0)+1),
+		// but only if the resulting value does not exceed the quota.
+		ConditionExpression:      aws.String("attribute_not_exists(activeJobs) OR activeJobs < :max"),
+		UpdateExpression:         aws.String("SET activeJobs = if_not_exists(activeJobs, :zero) + :one, prefixId = :prefix, updatedAt = :now"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":max":    number(int64(maxActiveJobs)),
+			":zero":   number(0),
+			":one":    number(1),
+			":prefix": text(prefixID),
+			":now":    text(time.Now().UTC().Format(time.RFC3339Nano)),
+		},
+	})
+	if err != nil {
+		if conditionalConflict(err) {
+			return port.ErrQuotaExceeded
+		}
+		return fmt.Errorf("reserve quota slot for prefix %q: %w", prefixID, err)
+	}
+	return nil
+}
+
+// ReleaseSlot atomically decrements the per-prefix active-job counter.
+// It is idempotent: if the counter is already 0 it stays at 0.
+func (a *AWS) ReleaseSlot(ctx context.Context, prefixID string) error {
+	if a.LedgerTable == "" {
+		return fmt.Errorf("ledger table is not configured")
+	}
+	if prefixID == "" {
+		return nil
+	}
+	// Decrement only if activeJobs > 0 to prevent negative counters.
+	_, err := a.DynamoDB.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName:           aws.String(a.LedgerTable),
+		Key:                 quotaKey(prefixID),
+		ConditionExpression: aws.String("attribute_exists(activeJobs) AND activeJobs > :zero"),
+		UpdateExpression:    aws.String("SET activeJobs = activeJobs - :one, updatedAt = :now"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":zero": number(0),
+			":one":  number(1),
+			":now":  text(time.Now().UTC().Format(time.RFC3339Nano)),
+		},
+	})
+	if err != nil {
+		if conditionalConflict(err) {
+			// Counter is already 0; no-op (idempotent).
+			return nil
+		}
+		return fmt.Errorf("release quota slot for prefix %q: %w", prefixID, err)
+	}
+	return nil
+}
+
+// MarkIntentDelivered removes the intentPending attribute from the intent item,
+// dropping it from the sparse GSI. It is called by the publisher only after SQS
+// confirms the send; a crash between send and mark may duplicate delivery, which
+// consumers handle via the stable, deterministic eventId.
+func (a *AWS) MarkIntentDelivered(ctx context.Context, jobID string, version int64) error {
+	if a.LedgerTable == "" {
+		return fmt.Errorf("ledger table is not configured")
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err := a.DynamoDB.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: aws.String(a.LedgerTable),
+		Key:       ledgerKey(jobID, intentSortKey(version)),
+		// Only remove the GSI marker if the intent is still pending; idempotent
+		// if already delivered.
+		ConditionExpression:      aws.String("attribute_exists(pk) AND attribute_exists(intentPending)"),
+		UpdateExpression:         aws.String("REMOVE intentPending SET deliveredAt = :now"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{":now": text(now)},
+	})
+	if err != nil {
+		if conditionalConflict(err) {
+			// Already marked delivered; idempotent.
+			return nil
+		}
+		return fmt.Errorf("mark intent delivered: %w", err)
+	}
+	return nil
 }

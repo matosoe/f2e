@@ -268,6 +268,18 @@ variable "organizer_batch_size" {
   default = 1
 }
 
+# ── Alarm destinations (T14) ─────────────────────────────────────────────────
+
+variable "alarm_sns_topic_arn" {
+  type        = string
+  default     = ""
+  description = "ARN of an SNS topic to notify when CloudWatch alarms trigger. Leave empty to create alarms without notification actions (review runbooks manually). Required for production."
+  validation {
+    condition     = var.alarm_sns_topic_arn == "" || can(regex("^arn:aws[a-z-]*:sns:[a-z0-9-]+:[0-9]{12}:.+$", var.alarm_sns_topic_arn))
+    error_message = "alarm_sns_topic_arn must be empty or a valid SNS topic ARN."
+  }
+}
+
 variable "worker_batch_size" {
   type    = number
   default = 1
@@ -275,4 +287,31 @@ variable "worker_batch_size" {
     condition     = var.worker_batch_size == 1
     error_message = "Worker batch size must be 1 so every chunk has an independent Lambda timeout and retry lifecycle."
   }
+}
+
+# ── Per-prefix Worker configuration (T21) ────────────────────────────────────
+#
+# Each key must match a key in locals.file_configurations.
+# Absent keys fall back to the defaults in the module.
+# Example tfvars:
+#
+#   prefix_worker_config = {
+#     example-text = { reserved_concurrency = 5, maximum_concurrency = 5, memory_mb = 1024 }
+#     example-json = { reserved_concurrency = 2, maximum_concurrency = 2, memory_mb = 2048 }
+#   }
+variable "prefix_worker_config" {
+  description = <<EOF
+Per-prefix Worker Lambda configuration overrides.
+Keys must match entries in locals.file_configurations.
+Each value is an object with optional fields:
+  reserved_concurrency  - isolated concurrency units (>0); -1 = unreserved (default).
+  maximum_concurrency   - max SQS poller concurrency; null = no limit (default).
+  memory_mb             - Lambda memory in MiB (default 1024).
+EOF
+  type = map(object({
+    reserved_concurrency = optional(number, -1)
+    maximum_concurrency  = optional(number, null)
+    memory_mb            = optional(number, 1024)
+  }))
+  default = {}
 }

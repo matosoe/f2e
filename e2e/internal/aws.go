@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -90,6 +91,23 @@ func NewAWSClient() *AWSClient {
 		ledgerTable:    env("F2E_E2E_LEDGER_TABLE", "f2e-job-ledger"),
 		intakeDLQName:  env("F2E_E2E_INTAKE_DLQ_NAME", "file-intake-dlq"),
 		chunkDLQName:   env("F2E_E2E_CHUNK_DLQ_NAME", "chunk-jobs-dlq"),
+	}
+}
+
+// Fork returns a new AWSClient that shares the underlying SDK clients and
+// configuration but has its own Counters pointer. Use Fork in parallel
+// scenarios so each scenario's instrumentation stays independent.
+func (c *AWSClient) Fork() *AWSClient {
+	return &AWSClient{
+		s3Client:       c.s3Client,
+		sqsClient:      c.sqsClient,
+		dynamoClient:   c.dynamoClient,
+		intakeQueueURL: c.intakeQueueURL,
+		outputQueueURL: c.outputQueueURL,
+		bucket:         c.bucket,
+		ledgerTable:    c.ledgerTable,
+		intakeDLQName:  c.intakeDLQName,
+		chunkDLQName:   c.chunkDLQName,
 	}
 }
 
@@ -301,6 +319,195 @@ func (c *AWSClient) WaitForCount(ctx context.Context, expected int, timeout time
 		case <-time.After(2 * time.Second):
 		}
 	}
+}
+
+// bundleEnvelopeShape detects bundle messages and expands them into individual
+// Envelope entries. Non-bundle messages are returned as-is (single-element slice).
+func expandMessage(body string) ([]Envelope, error) {
+	// Fast-path check: bundle messages have a top-level schemaVersion field.
+	var probe struct {
+		SchemaVersion string     `json:"schemaVersion"`
+		Items         []Envelope `json:"items"`
+	}
+	if err := json.Unmarshal([]byte(body), &probe); err != nil {
+		return nil, fmt.Errorf("unmarshal message: %w", err)
+	}
+	if probe.SchemaVersion == "f2e-bundle/1" {
+		return probe.Items, nil
+	}
+	var env Envelope
+	if err := json.Unmarshal([]byte(body), &env); err != nil {
+		return nil, fmt.Errorf("unmarshal single envelope: %w", err)
+	}
+	return []Envelope{env}, nil
+}
+
+// ConsumeAllConcurrent drains the output queue using `workers` parallel
+// goroutines with long polling. Each logical Envelope is returned exactly once;
+// bundle messages are expanded transparently. The method returns an error if
+// the expected count is not reached within timeout, if duplicate eventIds are
+// detected, or if a DeleteMessageBatch call fails.
+//
+// The total wall-clock time for this call is bounded by timeout. Callers should
+// set workers to 4 or 8 for reasonable throughput; higher values add overhead
+// without proportional gain at typical E2E message volumes.
+func (c *AWSClient) ConsumeAllConcurrent(ctx context.Context, expected, workers int, timeout time.Duration) ([]Envelope, error) {
+	if workers < 1 {
+		workers = 1
+	}
+
+	// First wait for enough messages to be visible (using approx count).
+	if _, err := c.WaitForCount(ctx, expected, timeout); err != nil {
+		return nil, err
+	}
+
+	deadline := time.Now().Add(timeout)
+	ctxDeadline, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
+
+	type result struct {
+		envs    []Envelope
+		entries []sqstypes.DeleteMessageBatchRequestEntry
+		err     error
+	}
+
+	resultCh := make(chan result, workers*2)
+	var wg sync.WaitGroup
+	limit := expected*2 + 20
+
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			emptyRuns := 0
+			for emptyRuns < 3 {
+				if ctxDeadline.Err() != nil {
+					return
+				}
+				out, err := c.sqsClient.ReceiveMessage(ctxDeadline, &sqs.ReceiveMessageInput{
+					QueueUrl:              aws.String(c.outputQueueURL),
+					MaxNumberOfMessages:   10,
+					WaitTimeSeconds:       5, // long polling
+					MessageAttributeNames: []string{"All"},
+				})
+				if err != nil {
+					resultCh <- result{err: err}
+					return
+				}
+				if c.Counters != nil {
+					emptyInt := int64(0)
+					if len(out.Messages) == 0 {
+						emptyInt = 1
+					}
+					c.Counters.incSQSReceive(int64(len(out.Messages)), emptyInt)
+				}
+				if len(out.Messages) == 0 {
+					emptyRuns++
+					continue
+				}
+				emptyRuns = 0
+
+				var envs []Envelope
+				var entries []sqstypes.DeleteMessageBatchRequestEntry
+				for _, m := range out.Messages {
+					expanded, er := expandMessage(aws.ToString(m.Body))
+					if er != nil {
+						resultCh <- result{err: fmt.Errorf("msgId=%s: %w", aws.ToString(m.MessageId), er)}
+						return
+					}
+					envs = append(envs, expanded...)
+					entries = append(entries, sqstypes.DeleteMessageBatchRequestEntry{
+						Id:            m.MessageId,
+						ReceiptHandle: m.ReceiptHandle,
+					})
+				}
+
+				// Delete the batch; retry only failed entries once.
+				del, delErr := c.sqsClient.DeleteMessageBatch(ctxDeadline, &sqs.DeleteMessageBatchInput{
+					QueueUrl: aws.String(c.outputQueueURL),
+					Entries:  entries,
+				})
+				if delErr != nil {
+					resultCh <- result{err: fmt.Errorf("DeleteMessageBatch: %w", delErr)}
+					return
+				}
+				if len(del.Failed) > 0 {
+					// Retry failed deletes once.
+					retryEntries := make([]sqstypes.DeleteMessageBatchRequestEntry, 0, len(del.Failed))
+					for _, f := range del.Failed {
+						for _, e := range entries {
+							if aws.ToString(e.Id) == aws.ToString(f.Id) {
+								retryEntries = append(retryEntries, e)
+								break
+							}
+						}
+					}
+					if _, retryErr := c.sqsClient.DeleteMessageBatch(ctxDeadline, &sqs.DeleteMessageBatchInput{
+						QueueUrl: aws.String(c.outputQueueURL),
+						Entries:  retryEntries,
+					}); retryErr != nil {
+						resultCh <- result{err: fmt.Errorf("DeleteMessageBatch retry: %w", retryErr)}
+						return
+					}
+				}
+				if c.Counters != nil {
+					c.Counters.incSQSDeleteBatch(int64(len(entries)))
+				}
+				resultCh <- result{envs: envs}
+			}
+		}()
+	}
+
+	go func() {
+		wg.Wait()
+		close(resultCh)
+	}()
+
+	allEnvelopes := make([]Envelope, 0, expected)
+	seenEventIDs := make(map[string]int, expected) // maps eventId → occurrence count
+	var firstErr error
+
+	for r := range resultCh {
+		if r.err != nil && firstErr == nil {
+			firstErr = r.err
+			cancel()
+			continue
+		}
+		for _, env := range r.envs {
+			if len(allEnvelopes) >= limit {
+				break
+			}
+			seenEventIDs[env.Metadata.EventID]++
+			allEnvelopes = append(allEnvelopes, env)
+		}
+	}
+
+	if firstErr != nil {
+		return nil, firstErr
+	}
+
+	// Detect identity duplicates (same eventId delivered more than once).
+	var dups []string
+	for id, count := range seenEventIDs {
+		if count > 1 {
+			dups = append(dups, fmt.Sprintf("%s×%d", id, count))
+		}
+	}
+	if len(dups) > 0 {
+		return allEnvelopes, fmt.Errorf("identity duplicates detected (%d distinct): %v", len(dups), dups[:min(3, len(dups))])
+	}
+
+	if len(allEnvelopes) < expected {
+		return allEnvelopes, fmt.Errorf("concurrent collect: got %d envelopes, want %d", len(allEnvelopes), expected)
+	}
+	return allEnvelopes, nil
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // ConsumeAll drains up to limit messages from the output queue, waiting up to timeout for

@@ -73,3 +73,15 @@ output "organizer_role_arn" {
 output "worker_role_arn" {
   value = aws_iam_role.worker.arn
 }
+
+# ── Per-prefix module outputs (T21) ──────────────────────────────────────────
+
+output "prefix_output_queue_urls" {
+  description = "Map of prefixId → output queue URL for each registered prefix. Copy these values into the corresponding SSM PrefixConfiguration.outputQueueURL."
+  value       = { for k, m in module.prefix : k => m.output_queue_url }
+}
+
+output "prefix_worker_function_arns" {
+  description = "Map of prefixId → Worker Lambda ARN for each registered prefix."
+  value       = { for k, m in module.prefix : k => m.worker_function_arn }
+}

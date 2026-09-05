@@ -73,3 +73,100 @@ O envelope v2 contém `eventId`, `sourceRecordId`, identidade imutável da orige
 | `csv` (coluna única / LF) | Reconfigurar como `text` | Parsing RFC 4180 |
 | `csv` (campos multi-linha) | Sem equivalente | Requer parser externo |
 | `binary` | Sem equivalente | Encapsulamento Base64; usar contrato de referência S3 |
+
+## Evento de conclusão (T12)
+
+Após cada job chegar a estado terminal (`COMPLETED`, `REJECTED`, `FAILED`), o
+Organizer ou Worker escreve um `CompletionIntent` no ledger (outbox). O
+publisher (T13) entrega o evento na fila de conclusão e marca o intent como
+entregue. O JSON Schema normativo está em
+`documentacao/schemas/completion-v1.schema.json`.
+
+Campo `eventId` é SHA-256 determinístico de `jobId + "#" + version`. Consumidores
+devem deduplicar pelo `eventId` — duplicatas podem ocorrer se o publisher reiniciar
+antes de marcar a entrega.
+
+## Configuração de prefixo com roteamento e quota (T20–T22)
+
+O parâmetro SSM de configuração de prefixo aceita os seguintes campos opcionais:
+
+```json
+{
+  "prefixId": "pagamentos-pix",
+  "outputQueueUrl": "https://sqs.us-east-1.amazonaws.com/123456789012/f2e-output-pix",
+  "allowedSourceArns": [
+    "arn:aws:iam::123456789012:role/f2e-organizer"
+  ],
+  "maxActiveJobs": 5
+}
+```
+
+- `prefixId`: identificador alfanumérico do prefixo (`[a-zA-Z0-9-_]`). Quando
+  definido, jobs desse prefixo são roteados para `outputQueueUrl` em vez da fila
+  padrão, e o contador de quota é mantido separado dos demais prefixos.
+- `outputQueueUrl`: URL da fila SQS de output dedicada. Deve começar com
+  `https://sqs.` (AWS) ou `http://` (LocalStack). Quando ausente, o Worker usa a
+  fila padrão configurada em `F2E_OUTPUT_QUEUE_URL`.
+- `allowedSourceArns`: ARNs IAM autorizados a enviar à fila de output. Usados
+  pelo módulo Terraform `f2e-prefix` para gerar política de recurso na fila.
+  Informativo no campo de configuração; enforcement real é via IAM.
+- `maxActiveJobs`: número máximo de jobs simultaneamente ativos para este
+  prefixo. Quando zero ou ausente, nenhum limite é aplicado. Admissão além do
+  limite retorna `ErrQuotaExceeded`; a mensagem SQS volta via visibility timeout
+  e é retentada naturalmente.
+
+**Precedência de `outputQueueUrl`:** se presente no `JobConfiguration` (herdado
+de `PrefixConfiguration`), o Worker usa essa URL em vez de `F2E_OUTPUT_QUEUE_URL`.
+Útil para direcionar saída de testes para filas isoladas sem alterar a infraestrutura.
+
+## Exemplos de parâmetros SSM
+
+### Prefixo simples (text, sem quota)
+
+```bash
+aws ssm put-parameter \
+  --name "/f2e/production/prefixes/uploads-clientes" \
+  --type SecureString \
+  --value '{
+    "bucket": "empresa-uploads",
+    "prefix": "clientes/",
+    "dataType": "text",
+    "maxRecordLengthBytes": 4096,
+    "responsible": "time-dados@empresa.com"
+  }'
+```
+
+### Prefixo com roteamento dedicado e quota (T20–T22)
+
+```bash
+aws ssm put-parameter \
+  --name "/f2e/production/prefixes/pagamentos-pix" \
+  --type SecureString \
+  --value '{
+    "bucket": "empresa-pagamentos",
+    "prefix": "pix/",
+    "dataType": "text",
+    "maxRecordLengthBytes": 2048,
+    "prefixId": "pagamentos-pix",
+    "outputQueueUrl": "https://sqs.us-east-1.amazonaws.com/123456789012/f2e-output-pix",
+    "allowedSourceArns": [
+      "arn:aws:iam::123456789012:role/f2e-worker-pagamentos-pix"
+    ],
+    "maxActiveJobs": 10,
+    "responsible": "time-pagamentos@empresa.com"
+  }'
+```
+
+### Limites globais
+
+```bash
+aws ssm put-parameter \
+  --name "/f2e/production/global-limits" \
+  --type SecureString \
+  --value '{
+    "maxFileSizeBytes": 10737418240,
+    "maxChunkSizeBytes": 67108864,
+    "maxRecordsPerChunk": 50000
+  }'
+```
+

@@ -1,8 +1,9 @@
 locals {
   is_localstack = var.localstack_endpoint != ""
 
-  organizer_zip = "${path.module}/${var.lambda_zip_dir}/organizer.zip"
-  worker_zip    = "${path.module}/${var.lambda_zip_dir}/worker.zip"
+  organizer_zip            = "${path.module}/${var.lambda_zip_dir}/organizer.zip"
+  worker_zip               = "${path.module}/${var.lambda_zip_dir}/worker.zip"
+  completion_publisher_zip = "${path.module}/${var.lambda_zip_dir}/completion-publisher.zip"
 
   # Base env vars shared by both Lambda functions.
   lambda_env_base = {

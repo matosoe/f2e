@@ -161,6 +161,23 @@ func validateOutboundMessage(message port.OutboundMessage) error {
 	return nil
 }
 
+// SendCompletion sends a single completion event body to the dedicated
+// completion SQS queue. It is called by the completion-publisher Lambda after
+// decoding an outbox intent from DynamoDB Streams or the recovery path.
+func (a *AWS) SendCompletion(ctx context.Context, queueURL string, body string) error {
+	if queueURL == "" {
+		return fmt.Errorf("completion queue URL is empty")
+	}
+	if body == "" {
+		return fmt.Errorf("completion event body is empty")
+	}
+	_, err := a.SQS.SendMessage(ctx, &sqs.SendMessageInput{
+		QueueUrl:    &queueURL,
+		MessageBody: &body,
+	})
+	return err
+}
+
 // OpenChunkRange implements port.SourceResolver. It uses the pre-signed URL when
 // present, falling back to S3 SDK access via bucket/key.
 func (a *AWS) OpenChunkRange(ctx context.Context, job f2e.ChunkJob, start, end int64) (io.ReadCloser, error) {

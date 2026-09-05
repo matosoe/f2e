@@ -14,6 +14,51 @@ resource "aws_dynamodb_table" "job_ledger" {
     type = "S"
   }
 
+  # intentPending is set to "1" on COMPLETION_INTENT items that have not yet
+  # been delivered. The publisher clears it after SQS confirms the send.
+  # Using a sparse GSI on this attribute means only pending intents appear
+  # in the index, enabling efficient recovery without a full Scan.
+  attribute {
+    name = "intentPending"
+    type = "S"
+  }
+
+  global_secondary_index {
+    name            = "pending-intents-index"
+    hash_key        = "intentPending"
+    range_key       = "sk"
+    projection_type = "ALL"
+  }
+
+  # DynamoDB Streams feeds the completion-publisher Lambda (T13). NEW_AND_OLD_IMAGES
+  # is required so the publisher can read the intent payload even when the item
+  # already existed before the Streams window.
+  stream_enabled   = true
+  stream_view_type = "NEW_AND_OLD_IMAGES"
+
+  # status-time-index (T14): enables operational queries by status and time range
+  # without a full Scan. Only JOB aggregate items carry a statusIndex attribute
+  # (set on every state transition). Non-terminal jobs with an old updatedAt are
+  # candidates for the stuck-job reconciler.
+  attribute {
+    name = "statusIndex"
+    type = "S"
+  }
+  attribute {
+    name = "updatedAt"
+    type = "S"
+  }
+
+  global_secondary_index {
+    name            = "status-time-index"
+    hash_key        = "statusIndex"
+    range_key       = "updatedAt"
+    projection_type = "INCLUDE"
+    non_key_attributes = [
+      "jobId", "fileId", "receiptId", "status", "createdAt", "environment"
+    ]
+  }
+
   point_in_time_recovery {
     enabled = !local.is_localstack
   }

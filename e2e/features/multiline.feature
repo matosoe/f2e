@@ -8,11 +8,13 @@ Feature: Multi-line file processing with header and trailer
   The organizer uses BreakMarker="D", AcceptedPrefixes=["D"], MaxBytesPerRecord=128.
   Files with ≤1000 data records fit in a single chunk; larger files produce multiple chunks.
 
+  @smoke @regression
   Scenario: Empty multi-line file is rejected
     Given I have an empty "multi-line" file
     When I upload and process the file
     Then no events are produced within 15 seconds
 
+  @smoke @regression
   Scenario Outline: Multi-line file with header, <count> data records, and trailer — full validation
     Given I have a multi-line file with header, <count> data records, and trailer
     When I upload and process the file
@@ -26,6 +28,7 @@ Feature: Multi-line file processing with header and trailer
       | 2     | 30      |
       | 1000  | 90      |
 
+  @regression
   Scenario Outline: Multi-line file with header, <count> data records, and trailer — count validation only
     Given I have a multi-line file with header, <count> data records, and trailer
     When I upload and process the file

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/cucumber/godog"
@@ -12,6 +13,8 @@ import (
 // scenarioCtx holds per-scenario state shared across all step executions.
 type scenarioCtx struct {
 	aws           *AWSClient
+	dispatcher    *MessageDispatcher // non-nil when E2E_CONCURRENCY > 1
+	dispatcherCh  <-chan Envelope    // per-scenario channel set after dispatcher.Subscribe
 	fileContent   []byte
 	s3Key         string
 	dataType      string
@@ -42,6 +45,7 @@ func (s *scenarioCtx) reset() {
 	s.jsonArrayLayout = JSONArrayLayout{}
 	s.maxRecordLen = 0
 	s.receivedMessages = nil
+	s.dispatcherCh = nil
 	s.metrics = ScenarioMetrics{}
 	s.scenarioName = ""
 	s.scenarioStart = time.Time{}
@@ -61,9 +65,25 @@ func NewScenarioInitializer(client *AWSClient) func(*godog.ScenarioContext) {
 
 // NewScenarioInitializerWithMetrics is like NewScenarioInitializer but appends one
 // ScenarioMetrics entry per scenario to collector after the scenario completes.
+// collector is written under mu so it is safe for concurrent scenarios.
 func NewScenarioInitializerWithMetrics(client *AWSClient, collector *[]ScenarioMetrics) func(*godog.ScenarioContext) {
+	return newInitializer(client, nil, collector)
+}
+
+// NewScenarioInitializerWithDispatcher enables parallel-safe message collection
+// by routing envelopes through dispatcher instead of polling the shared queue
+// directly. Use this when godog.Options.Concurrency > 1.
+func NewScenarioInitializerWithDispatcher(client *AWSClient, d *MessageDispatcher, collector *[]ScenarioMetrics) func(*godog.ScenarioContext) {
+	return newInitializer(client, d, collector)
+}
+
+// newInitializer is the shared factory used by the public initializer variants.
+var collectorMu sync.Mutex
+
+func newInitializer(client *AWSClient, d *MessageDispatcher, collector *[]ScenarioMetrics) func(*godog.ScenarioContext) {
 	return func(sc *godog.ScenarioContext) {
-		s := &scenarioCtx{aws: client}
+		// Each scenario gets its own AWSClient fork so Counters is never shared.
+		s := &scenarioCtx{aws: client.Fork(), dispatcher: d}
 
 		sc.Before(func(ctx context.Context, scenario *godog.Scenario) (context.Context, error) {
 			s.reset()
@@ -77,6 +97,10 @@ func NewScenarioInitializerWithMetrics(client *AWSClient, collector *[]ScenarioM
 
 		sc.After(func(ctx context.Context, _ *godog.Scenario, _ error) (context.Context, error) {
 			s.aws.Counters = nil
+			// Unsubscribe from dispatcher if we registered (clean-up is idempotent).
+			if s.dispatcher != nil && s.s3Key != "" {
+				s.dispatcher.Unsubscribe(s.s3Key)
+			}
 			if collector != nil {
 				m := s.metrics
 				m.ScenarioName = s.scenarioName
@@ -86,7 +110,9 @@ func NewScenarioInitializerWithMetrics(client *AWSClient, collector *[]ScenarioM
 				if s.lastCounters != nil {
 					m.API = *s.lastCounters
 				}
+				collectorMu.Lock()
 				*collector = append(*collector, m)
+				collectorMu.Unlock()
 			}
 			return ctx, nil
 		})
@@ -163,6 +189,11 @@ func (s *scenarioCtx) uploadAndProcess(ctx context.Context) error {
 	}
 	s.s3Key = uniqueKey(s.dataType)
 
+	// Subscribe to the dispatcher before uploading so no message is missed.
+	if s.dispatcher != nil {
+		s.dispatcherCh = s.dispatcher.Subscribe(s.s3Key)
+	}
+
 	uploadTimer := StartPhase()
 	if err := s.aws.UploadFile(ctx, s.s3Key, s.fileContent); err != nil {
 		return fmt.Errorf("upload %s: %w", s.s3Key, err)
@@ -196,6 +227,12 @@ func (s *scenarioCtx) uploadThroughConfiguredS3Prefix(ctx context.Context) error
 		return fmt.Errorf("file content not set — call a 'I have a ... file' step first")
 	}
 	s.s3Key = fmt.Sprintf("example-%s/%d.dat", s.dataType, time.Now().UnixNano())
+
+	// Subscribe to the dispatcher before uploading so no message is missed.
+	if s.dispatcher != nil {
+		s.dispatcherCh = s.dispatcher.Subscribe(s.s3Key)
+	}
+
 	uploadTimer := StartPhase()
 	if err := s.aws.UploadFile(ctx, s.s3Key, s.fileContent); err != nil {
 		return fmt.Errorf("upload %s: %w", s.s3Key, err)
@@ -205,15 +242,31 @@ func (s *scenarioCtx) uploadThroughConfiguredS3Prefix(ctx context.Context) error
 }
 
 // receiveExactly is the core assertion step.
-// For ≤1000 records it drains and stores all messages for further validation.
-// For >1000 records it polls the approximate queue count only (draining would be too slow).
+// In dispatcher mode (parallel), it collects envelopes from the per-scenario
+// channel. In sequential mode it uses the concurrent queue collector.
+// For >1000 records it polls the approximate queue count only (sequential only).
 func (s *scenarioCtx) receiveExactly(ctx context.Context, expected, timeoutSec int) error {
 	timeout := time.Duration(timeoutSec) * time.Second
 
+	if s.dispatcherCh != nil {
+		collectStart := time.Now()
+		msgs, err := CollectFromDispatcher(s.dispatcherCh, expected, timeout)
+		s.metrics.ConsumeMs = time.Since(collectStart).Milliseconds()
+		if err != nil {
+			return err
+		}
+		if len(msgs) != expected {
+			return fmt.Errorf("expected exactly %d messages, received %d", expected, len(msgs))
+		}
+		s.receivedMessages = msgs
+		return nil
+	}
+
 	if expected <= smallFileThreshold {
-		msgs, waitMs, consumeMs, err := s.aws.ConsumeAllTimed(ctx, expected, timeout)
-		s.metrics.WaitMs = waitMs
-		s.metrics.ConsumeMs = consumeMs
+		collectStart := time.Now()
+		msgs, err := s.aws.ConsumeAllConcurrent(ctx, expected, 4, timeout)
+		elapsed := time.Since(collectStart).Milliseconds()
+		s.metrics.ConsumeMs = elapsed
 		if err != nil {
 			return err
 		}
@@ -237,12 +290,26 @@ func (s *scenarioCtx) receiveExactly(ctx context.Context, expected, timeoutSec i
 	return drainErr
 }
 
-// noEventsWithin asserts that no messages appear in the output queue within the given window.
+// noEventsWithin asserts that no messages appear for this scenario's job within
+// the given window. In parallel mode it checks the per-scenario dispatcher
+// channel; in sequential mode it checks the shared queue approximate count.
 func (s *scenarioCtx) noEventsWithin(ctx context.Context, waitSec int) error {
+	wait := time.Duration(waitSec) * time.Second
 	select {
-	case <-time.After(time.Duration(waitSec) * time.Second):
+	case <-time.After(wait):
 	case <-ctx.Done():
 		return ctx.Err()
+	}
+	if s.dispatcherCh != nil {
+		// In parallel mode: if a message arrived on our channel the scenario failed.
+		select {
+		case env, ok := <-s.dispatcherCh:
+			if ok {
+				return fmt.Errorf("expected 0 events but received envelope jobId=%s", env.Processing.JobID)
+			}
+		default:
+		}
+		return nil
 	}
 	count, err := s.aws.ApproximateCount(ctx)
 	if err != nil {
