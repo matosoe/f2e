@@ -1,4 +1,4 @@
-// Package organizer plans and schedules fixed-width file chunks.
+// Package organizer plans and schedules file chunks for the F2E runtime modes.
 package organizer
 
 import (
@@ -35,17 +35,6 @@ func hash(s string) string { x := sha256.Sum256([]byte(s)); return hex.EncodeToS
 func fileID(bucket, key, versionID, etag string, size int64) string {
 	return hash(fmt.Sprintf("%s/%s/%s/%s/%d", bucket, key, versionID, etag, size))
 }
-func (s Service) Jobs(ctx context.Context, references []f2e.FileReference) ([]f2e.ChunkJob, error) {
-	return s.JobsWithExecutionID(ctx, references, "")
-}
-
-func (s Service) JobsWithExecutionID(ctx context.Context, references []f2e.FileReference, executionID string) ([]f2e.ChunkJob, error) {
-	files := make([]f2e.FileRequest, len(references))
-	for i, reference := range references {
-		files[i] = f2e.FileRequest{Bucket: reference.Bucket, Key: reference.Key, DataType: f2e.DataTypeFixedWidth}
-	}
-	return s.Plan(ctx, f2e.OrganizerRequest{SchemaVersion: f2e.SchemaVersion, ExecutionID: executionID, Files: files})
-}
 
 // Plan converts the explicit organizer contract into explicit worker jobs.
 func (s Service) Plan(ctx context.Context, request f2e.OrganizerRequest) ([]f2e.ChunkJob, error) {
@@ -54,8 +43,11 @@ func (s Service) Plan(ctx context.Context, request f2e.OrganizerRequest) ([]f2e.
 	}
 	var jobs []f2e.ChunkJob
 	for _, file := range request.Files {
-		if file.Bucket == "" || file.Key == "" || !s.validType(file.DataType) || (file.Options.BypassJSONValidation && file.DataType != f2e.DataTypeJSONL && file.DataType != f2e.DataTypeNDJSON) {
+		if file.Bucket == "" || file.Key == "" {
 			return nil, fmt.Errorf("invalid file request")
+		}
+		if !s.validType(file.DataType) {
+			return nil, fmt.Errorf("unsupported data type %q", file.DataType)
 		}
 		object, e := s.Store.Head(ctx, file.Bucket, file.Key)
 		if e != nil {
@@ -89,7 +81,7 @@ func (s Service) Plan(ctx context.Context, request f2e.OrganizerRequest) ([]f2e.
 			jobs = append(jobs, planned...)
 			continue
 		}
-		if file.MaxRecordLengthBytes > 0 && (file.DataType == f2e.DataTypeJSONL || file.DataType == f2e.DataTypeNDJSON || file.DataType == f2e.DataTypeText) {
+		if file.MaxRecordLengthBytes > 0 && file.DataType == f2e.DataTypeText {
 			planned, err := s.variableJobs(ctx, file, size, etag, versionID, executionID)
 			if err != nil {
 				return nil, err
@@ -97,42 +89,36 @@ func (s Service) Plan(ctx context.Context, request f2e.OrganizerRequest) ([]f2e.
 			jobs = append(jobs, planned...)
 			continue
 		}
-		if file.DataType != f2e.DataTypeFixedWidth {
-			if size == 0 {
-				return nil, fmt.Errorf("empty object")
-			}
-			if size > s.maxChunkBytes() {
-				return nil, fmt.Errorf("non-splittable %s object size %d exceeds chunk maximum %d", file.DataType, size, s.maxChunkBytes())
-			}
-			if file.DataType == f2e.DataTypeBinary && size > s.maxBinaryBytes() {
-				return nil, fmt.Errorf("binary object size %d exceeds maximum payload %d bytes", size, s.maxBinaryBytes())
-			}
-			fileID := fileID(file.Bucket, file.Key, versionID, etag, size)
-			jobs = append(jobs, f2e.ChunkJob{SchemaVersion: f2e.SchemaVersion, JobID: executionID, FileID: fileID, ChunkID: "00000001", Bucket: file.Bucket, Key: file.Key, PresignedURL: file.PresignedURL, ETag: etag, VersionID: versionID, FileSize: size, RecordCount: 1, StartByte: 0, EndByteInclusive: size - 1, MaxRecordLengthBytes: file.MaxRecordLengthBytes, DataType: file.DataType, Options: file.Options, Context: file.Context})
-			continue
+		if size == 0 {
+			return nil, fmt.Errorf("empty object")
 		}
-		if size == 0 || size%s.safeLen() != 0 {
-			return nil, fmt.Errorf("invalid fixed-width object size %d", size)
-		}
-		if int64(s.Config.RecordsPerChunk)*s.safeLen() > s.maxChunkBytes() {
-			return nil, fmt.Errorf("fixed-width chunk exceeds maximum %d bytes", s.maxChunkBytes())
+		if size > s.maxChunkBytes() {
+			return nil, fmt.Errorf("non-splittable %s object size %d exceeds chunk maximum %d", file.DataType, size, s.maxChunkBytes())
 		}
 		fileID := fileID(file.Bucket, file.Key, versionID, etag, size)
-		total := size / s.safeLen()
-		for start, chunk := int64(0), int64(1); start < total; start, chunk = start+int64(s.Config.RecordsPerChunk), chunk+1 {
-			count := int64(s.Config.RecordsPerChunk)
-			if total-start < count {
-				count = total - start
-			}
-			startByte := start * s.safeLen()
-			jobs = append(jobs, f2e.ChunkJob{SchemaVersion: f2e.SchemaVersion, JobID: executionID, FileID: fileID, ChunkID: fmt.Sprintf("%08d", chunk), Bucket: file.Bucket, Key: file.Key, PresignedURL: file.PresignedURL, ETag: etag, VersionID: versionID, FileSize: size, StartRecord: start, RecordCount: count, RecordLengthBytes: s.safeLen(), StartByte: startByte, EndByteInclusive: startByte + count*s.safeLen() - 1, DataType: file.DataType, Options: file.Options, Context: file.Context})
-		}
+		jobs = append(jobs, f2e.ChunkJob{
+			SchemaVersion:        f2e.SchemaVersion,
+			JobID:                executionID,
+			FileID:               fileID,
+			ChunkID:              "00000001",
+			Bucket:               file.Bucket,
+			Key:                  file.Key,
+			PresignedURL:         file.PresignedURL,
+			ETag:                 etag,
+			VersionID:            versionID,
+			FileSize:             size,
+			StartByte:            0,
+			EndByteInclusive:     size - 1,
+			MaxRecordLengthBytes: file.MaxRecordLengthBytes,
+			DataType:             file.DataType,
+			Context:              file.Context,
+		})
 	}
 	return jobs, nil
 }
 
-// variableJobs divides a newline-delimited object into nominal ranges. Each
-// range is extended only far enough to finish the record crossing its end.
+// variableJobs divides a line-delimited object into nominal ranges. Each range
+// is extended only far enough to finish the record crossing its end.
 func (s Service) variableJobs(ctx context.Context, file f2e.FileRequest, size int64, etag, versionID, executionID string) ([]f2e.ChunkJob, error) {
 	if size == 0 {
 		return nil, fmt.Errorf("empty object")
@@ -172,27 +158,24 @@ func (s Service) variableJobs(ctx context.Context, file f2e.FileRequest, size in
 			if closeErr != nil {
 				return nil, closeErr
 			}
-			at := bytes.IndexByte(data, '\n')
-			if at < 0 {
+			termPadding, ok := firstLineTerminatorPadding(data)
+			if !ok {
 				return nil, fmt.Errorf("record after byte %d exceeds maxRecordLengthBytes %d", ownedEnd, file.MaxRecordLengthBytes)
 			}
-			padding = int64(at + 1)
+			padding = int64(termPadding)
 		}
-		jobs = append(jobs, f2e.ChunkJob{SchemaVersion: f2e.SchemaVersion, JobID: executionID, FileID: fileID, ChunkID: fmt.Sprintf("%08d", chunk), Bucket: file.Bucket, Key: file.Key, PresignedURL: file.PresignedURL, ETag: etag, VersionID: versionID, FileSize: size, StartByte: start, EndByteInclusive: ownedEnd + padding, MaxRecordLengthBytes: file.MaxRecordLengthBytes, TrailingPaddingBytes: padding, DataType: file.DataType, Options: file.Options, Context: file.Context})
+		jobs = append(jobs, f2e.ChunkJob{SchemaVersion: f2e.SchemaVersion, JobID: executionID, FileID: fileID, ChunkID: fmt.Sprintf("%08d", chunk), Bucket: file.Bucket, Key: file.Key, PresignedURL: file.PresignedURL, ETag: etag, VersionID: versionID, FileSize: size, StartByte: start, EndByteInclusive: ownedEnd + padding, MaxRecordLengthBytes: file.MaxRecordLengthBytes, TrailingPaddingBytes: padding, DataType: file.DataType, Context: file.Context})
 	}
 	return jobs, nil
 }
 func (s Service) validType(t f2e.DataType) bool {
 	switch t {
-	case f2e.DataTypeFixedWidth, f2e.DataTypeJSONL, f2e.DataTypeNDJSON,
-		f2e.DataTypeText, f2e.DataTypeCSV, f2e.DataTypeJSON,
-		f2e.DataTypeBinary, f2e.DataTypeMultiLine:
+	case f2e.DataTypeText, f2e.DataTypeJSON, f2e.DataTypeMultiLine:
 		return true
 	default:
 		return false
 	}
 }
-func (s Service) safeLen() int64 { return int64(s.Config.RecordLength) }
 func (s Service) maxChunkBytes() int64 {
 	if s.Config.MaxChunkBytes > 0 {
 		return s.Config.MaxChunkBytes
@@ -200,46 +183,43 @@ func (s Service) maxChunkBytes() int64 {
 	return 64 * 1024 * 1024
 }
 
-// maxBinaryBytes reserves space for Base64 expansion and the mandatory envelope
-// metadata. The Worker performs the authoritative serialized-size validation.
-func (s Service) maxBinaryBytes() int64 {
-	maxEventBytes := int64(s.Config.MaxEventBytes)
-	if maxEventBytes == 0 {
-		maxEventBytes = 256 * 1024
+func firstLineTerminatorPadding(data []byte) (int, bool) {
+	for i := 0; i < len(data); i++ {
+		switch data[i] {
+		case '\n':
+			return i + 1, true
+		case '\r':
+			if i+1 < len(data) && data[i+1] == '\n' {
+				return i + 2, true
+			}
+			return i + 1, true
+		}
 	}
-	const envelopeOverhead = 4096
-	if maxEventBytes <= envelopeOverhead {
-		return 0
-	}
-	return (maxEventBytes - envelopeOverhead) / 4 * 3
+	return 0, false
 }
 
-// nextBreakOffset scans data line-by-line and returns the byte offset within data
-// of the first line whose content at breakPosition starts with breakMarker.
+// nextBreakOffset scans data line-by-line using CR, LF, and CRLF terminators
+// and returns the byte offset within data of the first line whose content at
+// breakPosition starts with breakMarker.
 // Returns -1 when no such line is found.
 func nextBreakOffset(data []byte, breakPosition int, breakMarker string) int {
-	i := 0
-	for i < len(data) {
-		eol := bytes.IndexByte(data[i:], '\n')
-		var line []byte
-		var next int
-		if eol < 0 {
-			line = data[i:]
-			next = len(data)
-		} else {
-			line = data[i : i+eol]
-			next = i + eol + 1
+	for start := 0; start < len(data); {
+		end := start
+		for end < len(data) && data[end] != '\r' && data[end] != '\n' {
+			end++
 		}
-		if len(line) > 0 && line[len(line)-1] == '\r' {
-			line = line[:len(line)-1]
+		line := data[start:end]
+		if breakPosition >= 0 && breakPosition < len(line) && strings.HasPrefix(string(line[breakPosition:]), breakMarker) {
+			return start
 		}
-		if breakPosition < len(line) && strings.HasPrefix(string(line[breakPosition:]), breakMarker) {
-			return i
-		}
-		if eol < 0 {
+		if end >= len(data) {
 			break
 		}
-		i = next
+		if data[end] == '\r' && end+1 < len(data) && data[end+1] == '\n' {
+			start = end + 2
+			continue
+		}
+		start = end + 1
 	}
 	return -1
 }
@@ -317,7 +297,6 @@ func (s Service) multiLineJobs(ctx context.Context, file f2e.FileRequest, size i
 			TrailingPaddingBytes: padding,
 			DataType:             file.DataType,
 			MultiLineLayout:      layout,
-			Options:              file.Options,
 			Context:              file.Context,
 		})
 	}
@@ -565,7 +544,6 @@ func (s Service) jsonArrayJobs(ctx context.Context, file f2e.FileRequest, size i
 			DataType:             file.DataType,
 			JSONArrayLayout:      layout,
 			JSONArrayOffset:      arrayOffset,
-			Options:              file.Options,
 			Context:              file.Context,
 		})
 		start = ownedEnd + padding + 1

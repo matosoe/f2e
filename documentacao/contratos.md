@@ -4,48 +4,72 @@ Todos os contratos usam `schemaVersion: "1"`.
 
 ## Entrada do Organizer
 
-O Organizer recebe em SQS o contrato explícito abaixo. Cada arquivo declara o formato e as opções que devem ser propagadas sem alteração para o `ChunkJob` de cada worker.
+O Organizer recebe em SQS o contrato explícito abaixo. Cada arquivo declara o modo de delimitação e os layouts que devem ser propagados sem alteração para o `ChunkJob` de cada worker.
 
 ```json
 {
   "schemaVersion": "1",
   "files": [{
     "bucket": "f2e-input",
-    "key": "entrada/eventos.ndjson",
-    "dataType": "ndjson",
-    "maxRecordLengthBytes": 1048576,
-    "options": { "bypassJsonValidation": false }
+    "key": "entrada/registros.txt",
+    "dataType": "text",
+    "maxRecordLengthBytes": 1048576
   }]
 }
 ```
 
-Os formatos de produção são `fixed-width`, `jsonl`, `ndjson`, `text`, `csv`, JSON array (`json`), `binary` e `multi-line`. `bypassJsonValidation` só é aceito para `jsonl` e `ndjson`: quando `false` (padrão), cada linha é validada como um valor JSON; quando `true`, a linha é encaminhada como recebida, sem parse/validação. `text` é processado por linhas. CSV usa UTF-8, não remove header nem BOM, aceita quantidade variável de colunas e segue o parser RFC 4180 do Go, incluindo campos entre aspas, CRLF e quebras de linha internas.
+Os três modos suportados são `text`, `json` e `multi-line`. Tipos removidos (`fixed-width`, `jsonl`, `ndjson`, `csv`, `binary`) produzem erro explícito "unsupported data type". Nomes antigos não são aceitos como aliases.
 
-JSON array aceita qualquer valor JSON válido (objeto, array, string, número,
-booleano ou `null`) e usa parser consciente de strings, escapes e nesting. A
-busca pelo array configurado em `arrayPath` é limitada por
-`F2E_JSON_ARRAY_SEARCH_BYTES` (1 MiB por padrão); não localizar o path nessa
-janela é erro explícito. Binário é não divisível e só é publicado se o envelope
-Base64 completo couber em `F2E_MAX_EVENT_BYTES`; acima disso deve ser usado um
-contrato de referência S3 pela aplicação hospedeira.
+### Modo `text`
 
-Os limites padrão são 10 GiB por arquivo (`F2E_MAX_FILE_BYTES`), 64 MiB por chunk (`F2E_MAX_CHUNK_BYTES`), o limite declarado por registro/layout e 256 KiB para body mais Message Attributes. Configurações cujo chunk nominal ultrapasse o limite são rejeitadas no planejamento.
+Uma linha física terminada por CR (`\r`), LF (`\n`) ou CRLF (`\r\n`) é um registro lógico. CRLF é um único terminador; LFCR são dois. O terminador não integra `data.raw`. Linha vazia terminada é um registro vazio válido. Terminador final não gera registro extra. Última linha sem terminador é erro. Arquivo vazio é rejeitado. Bytes UTF-8 inválidos geram erro identificável. `maxRecordLengthBytes` é obrigatório para arquivos com mais de `F2E_RECORDS_PER_CHUNK` linhas.
 
-Para arquivos de registros variáveis delimitados por LF (`jsonl`, `ndjson` e `text`), informe `maxRecordLengthBytes`. O organizer cria faixas nominais de `F2E_RECORDS_PER_CHUNK × maxRecordLengthBytes` e estende cada faixa até o LF que encerra o registro atravessando o fim nominal. O job informa o limite em `maxRecordLengthBytes` e a extensão exata em `trailingPaddingBytes` (a “gordura”). O worker lê até um tamanho máximo de registro antes do início nominal, descarta o primeiro fragmento/registo anterior e publica exclusivamente registros cujo byte inicial esteja na faixa nominal. Logo, registros completos da gordura inicial são desprezados e registros iniciados antes do fim nominal são processados pelo worker anterior, sem duplicação ou lacuna.
+### Modo `json`
 
-O envelope padrão de notificação S3 em SQS aceita múltiplos `Records`; somente
-`ObjectCreated:*` é processado. Para cada objeto, o Organizer busca no SSM a
-configuração cuja combinação de bucket e prefixo seja a correspondência mais
-específica e gera os jobs com o `dataType`, layouts e limites encontrados. A
-chave é decodificada conforme a codificação URL de eventos S3. Eventos de teste
-do próprio S3, sem registros de objeto, são reconhecidos e ignorados.
+Um elemento do array selecionado por `jsonArrayLayout.arrayPath` (vazio = root array). Parser consciente de strings, escapes e nesting. Busca limitada por `F2E_JSON_ARRAY_SEARCH_BYTES` (1 MiB padrão). Array vazio conclui com zero registros e zero chunks. `maxBytesPerElement` é obrigatório.
 
-`ChunkJob` contém `bucket`, `key`, `versionId`, `etag`, `fileSize`, IDs SHA-256, `startRecord`, `recordCount`, `recordLengthBytes`, `startByte`, `endByteInclusive`, `maxRecordLengthBytes`, `trailingPaddingBytes`, `dataType`, contexto corporativo e opções. `VersionId` é usado quando presente; sem ele, toda leitura usa `If-Match` com o ETag. ETag multipart é tratado somente como token opaco de condição, nunca como MD5. Para `fixed-width`, a largura inclui o LF; a massa é ASCII/UTF-8 e sempre usa LF.
+### Modo `multi-line`
 
-`transactionId`, `correlationId`, `traceId` e `sourceSystem` atravessam organizer e worker e são incorporados ao body final. Os Message Attributes são construídos depois do `RecordProcessor`, a partir do envelope serializado, e portanto refletem `schema` e `format` finais. Extensões não podem remover ou trocar IDs e localização técnica. A aplicação hospedeira é responsável por validar o schema funcional de `data`.
+Linhas físicas agrupadas por marcadores configurados em `multiLineLayout`:
+- `breakMarker`: prefixo de linha que inicia um novo registro.
+- `acceptedPrefixes`: prefixos de linhas incluídas no registro atual; quando vazio, todas as linhas após o break são incluídas.
+- `lineSeparator`: separador entre linhas do registro (padrão: `\x1C`).
+- `maxBytesPerRecord`: tamanho máximo do registro lógico completo (obrigatório).
 
-O envelope v2 contém `eventId`, `sourceRecordId`, identidade imutável da origem,
-IDs do job/chunk, posição e payload. `eventId` é estável durante retries do mesmo
-job e muda em replay explícito. Consumidores que deduplicam o registro físico
-devem usar `sourceRecordId`. O JSON Schema normativo está em
-`documentacao/schemas/envelope-v2.schema.json`.
+Cabeçalhos e trailers (linhas que não correspondem a nenhum prefixo) são silenciosamente ignorados e contados como linhas físicas ignoradas em métrica separada. Terminadores físicos CR/LF/CRLF são suportados com as mesmas regras do modo `text`.
+
+## Limites padrão
+
+10 GiB por arquivo (`F2E_MAX_FILE_BYTES`), 64 MiB por chunk (`F2E_MAX_CHUNK_BYTES`), limite por registro/elemento declarado no layout, e 256 KiB para body mais Message Attributes. Configurações cujo chunk nominal ultrapasse o limite são rejeitadas no planejamento.
+
+## Planejamento de chunks (text e multi-line)
+
+Para `text` com `maxRecordLengthBytes > 0`, o organizer cria faixas nominais de `F2E_RECORDS_PER_CHUNK × maxRecordLengthBytes` bytes e estende cada faixa até o terminador que encerra o registro cruzando o fim nominal. O job informa `maxRecordLengthBytes` e a extensão exata em `trailingPaddingBytes`. O worker lê até `maxRecordLengthBytes` antes do início nominal, descarta o primeiro fragmento e publica somente registros cujo byte inicial esteja na faixa nominal.
+
+CRLF que cruza a fronteira nominal é tratado corretamente: se o CR está no último byte nominal e o LF está no primeiro byte de extensão, o chunk inclui ambos e o leitor os reconhece como terminador único.
+
+## Notificação S3
+
+O envelope de notificação S3 aceita múltiplos `Records`; somente `ObjectCreated:*` é processado. O Organizer busca no SSM a configuração cuja combinação de bucket e prefixo seja a mais específica. A chave é decodificada conforme a codificação URL de eventos S3. Eventos de teste sem registros de objeto são reconhecidos e ignorados.
+
+## ChunkJob
+
+`ChunkJob` contém `bucket`, `key`, `versionId`, `etag`, `fileSize`, IDs SHA-256, `startByte`, `endByteInclusive`, `maxRecordLengthBytes`, `trailingPaddingBytes`, `dataType`, `multiLineLayout`, `jsonArrayLayout`, contexto corporativo e configuração. `VersionId` é usado quando presente; sem ele, toda leitura usa `If-Match` com o ETag.
+
+## Contexto corporativo e identidades de mensagem
+
+`transactionId`, `correlationId`, `traceId` e `sourceSystem` atravessam organizer e worker e são incorporados ao body final. Os Message Attributes são construídos após o `RecordProcessor` e refletem `schema` e `format` finais. Extensões não podem remover ou trocar IDs e localização técnica.
+
+## Envelope v2
+
+O envelope v2 contém `eventId`, `sourceRecordId`, identidade imutável da origem, IDs do job/chunk, posição e payload (`data.raw` para todos os três modos). `eventId` é estável durante retries do mesmo job e muda em replay explícito. Consumidores que deduplicam o registro físico devem usar `sourceRecordId`. O JSON Schema normativo está em `documentacao/schemas/envelope-v2.schema.json`.
+
+## Migração de tipos removidos
+
+| Tipo removido | Caminho | Perda |
+|---|---|---|
+| `fixed-width` (com LF) | Reconfigurar como `text` com `maxRecordLengthBytes = recordLengthBytes` | Validação de tamanho exato por registro |
+| `jsonl` / `ndjson` | Reconfigurar como `text` | Validação estrutural JSON por linha |
+| `csv` (coluna única / LF) | Reconfigurar como `text` | Parsing RFC 4180 |
+| `csv` (campos multi-linha) | Sem equivalente | Requer parser externo |
+| `binary` | Sem equivalente | Encapsulamento Base64; usar contrato de referência S3 |

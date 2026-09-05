@@ -1,9 +1,11 @@
-package fixedwidth
+package multiline_test
 
 import (
 	"context"
 	"strings"
 	"testing"
+
+	"github.com/f2e/f2e/internal/domain/multiline"
 )
 
 // TestReadMultiLineBytePosBreak exercises Example 1: break on first byte value,
@@ -11,7 +13,7 @@ import (
 func TestReadMultiLineBytePosBreak(t *testing.T) {
 	input := "1abc123\n2zzzaaa\n3999888\n3777666\n1def456\n2xxxbbb\n3555444\n3333222\n"
 	var got []string
-	err := ReadMultiLine(context.Background(), strings.NewReader(input), 0, "1", []string{"2", "3"}, "\x1C", func(_, _ int64, raw string) error {
+	err := multiline.ReadMultiLine(context.Background(), strings.NewReader(input), 0, "1", []string{"2", "3"}, "\x1C", 1024, func(_, _ int64, raw string) error {
 		got = append(got, raw)
 		return nil
 	})
@@ -40,7 +42,7 @@ func TestReadMultiLinePrefixBreak(t *testing.T) {
 		"[titulo]id=3\n[mensagem]b\n[mensagem]c\n" +
 		"[trailer]123\n"
 	var got []string
-	err := ReadMultiLine(context.Background(), strings.NewReader(input), 0, "[titulo]", []string{"[juros]", "[desconto]", "[mensagem]"}, "\x1C", func(_, _ int64, raw string) error {
+	err := multiline.ReadMultiLine(context.Background(), strings.NewReader(input), 0, "[titulo]", []string{"[juros]", "[desconto]", "[mensagem]"}, "\x1C", 1024, func(_, _ int64, raw string) error {
 		got = append(got, raw)
 		return nil
 	})
@@ -67,10 +69,9 @@ func TestReadMultiLinePrefixBreak(t *testing.T) {
 // TestReadMultiLineReportsBreakLineOffset verifies that fn receives the byte
 // offset of each record's break line within the stream.
 func TestReadMultiLineReportsBreakLineOffset(t *testing.T) {
-	// "1abc\n" = 5 bytes (offset 0), "2def\n" = 5 bytes, "1xyz\n" = 5 bytes (offset 10)
 	input := "1abc\n2def\n1xyz\n2uvw\n"
 	var offsets []int64
-	if err := ReadMultiLine(context.Background(), strings.NewReader(input), 0, "1", []string{"2"}, "", func(_, off int64, _ string) error {
+	if err := multiline.ReadMultiLine(context.Background(), strings.NewReader(input), 0, "1", []string{"2"}, "", 1024, func(_, off int64, _ string) error {
 		offsets = append(offsets, off)
 		return nil
 	}); err != nil {
@@ -86,7 +87,7 @@ func TestReadMultiLineReportsBreakLineOffset(t *testing.T) {
 func TestReadMultiLineNoAcceptedPrefixesIncludesAll(t *testing.T) {
 	input := "BREAK\nany1\nany2\nBREAK\nany3\n"
 	var got []string
-	if err := ReadMultiLine(context.Background(), strings.NewReader(input), 0, "BREAK", nil, "\x1C", func(_, _ int64, raw string) error {
+	if err := multiline.ReadMultiLine(context.Background(), strings.NewReader(input), 0, "BREAK", nil, "\x1C", 1024, func(_, _ int64, raw string) error {
 		got = append(got, raw)
 		return nil
 	}); err != nil {
@@ -102,13 +103,27 @@ func TestReadMultiLineNoAcceptedPrefixesIncludesAll(t *testing.T) {
 func TestReadMultiLineHeaderAndTrailerSkipped(t *testing.T) {
 	input := "HEADER\n[R]line1\n[A]line2\nTRAILER\n"
 	var got []string
-	if err := ReadMultiLine(context.Background(), strings.NewReader(input), 0, "[R]", []string{"[A]"}, "\x1C", func(_, _ int64, raw string) error {
+	if err := multiline.ReadMultiLine(context.Background(), strings.NewReader(input), 0, "[R]", []string{"[A]"}, "\x1C", 1024, func(_, _ int64, raw string) error {
 		got = append(got, raw)
 		return nil
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if len(got) != 1 || got[0] != "[R]line1\x1C[A]line2" {
+		t.Fatalf("got=%v", got)
+	}
+}
+
+func TestReadMultiLineSupportsCRLFAndCR(t *testing.T) {
+	input := "1abc\r\n2def\r1xyz\n2uvw\r\n"
+	var got []string
+	if err := multiline.ReadMultiLine(context.Background(), strings.NewReader(input), 0, "1", []string{"2"}, "", 1024, func(_, _ int64, raw string) error {
+		got = append(got, raw)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0] != "1abc\x1C2def" || got[1] != "1xyz\x1C2uvw" {
 		t.Fatalf("got=%v", got)
 	}
 }

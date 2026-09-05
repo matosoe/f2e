@@ -95,7 +95,7 @@ func jobsFor(ctx context.Context, body []byte, executionID string) ([]f2e.ChunkJ
 		return nil, nil
 	}
 	if configurationResolver == nil {
-		return service.JobsWithExecutionID(ctx, references, executionID)
+		return nil, fmt.Errorf("S3 event received but no prefix configuration resolver available")
 	}
 	var jobs []f2e.ChunkJob
 	for _, reference := range references {
@@ -107,7 +107,6 @@ func jobsFor(ctx context.Context, body []byte, executionID string) ([]f2e.ChunkJ
 			return nil, err
 		}
 		configured := service
-		configured.Config.RecordLength = prefixConfig.RecordLengthBytes
 		configured.Config.RecordsPerChunk = prefixConfig.RecordsPerChunk
 		configured.Config.BatchSize = prefixConfig.BatchSize
 		configured.Config.MaxEventBytes = prefixConfig.MaxEventBytes
@@ -120,7 +119,7 @@ func jobsFor(ctx context.Context, body []byte, executionID string) ([]f2e.ChunkJ
 		request := f2e.OrganizerRequest{SchemaVersion: f2e.SchemaVersion, ExecutionID: executionID, Files: []f2e.FileRequest{{
 			Bucket: reference.Bucket, Key: reference.Key, DataType: prefixConfig.DataType,
 			MaxRecordLengthBytes: prefixConfig.MaxRecordLengthBytes, MultiLineLayout: prefixConfig.MultiLineLayout,
-			JSONArrayLayout: prefixConfig.JSONArrayLayout, Options: prefixConfig.Options,
+			JSONArrayLayout: prefixConfig.JSONArrayLayout,
 		}}}
 		execution, err := configured.PlanWithSummary(ctx, request)
 		if err != nil {
@@ -128,7 +127,7 @@ func jobsFor(ctx context.Context, body []byte, executionID string) ([]f2e.ChunkJ
 		}
 		for i := range execution.Jobs {
 			execution.Jobs[i].Configuration = f2e.JobConfiguration{
-				RecordLengthBytes: prefixConfig.RecordLengthBytes, BatchSize: prefixConfig.BatchSize, MaxEventBytes: prefixConfig.MaxEventBytes,
+				BatchSize: prefixConfig.BatchSize, MaxEventBytes: prefixConfig.MaxEventBytes,
 				MaxChunkBytes: prefixConfig.MaxChunkBytes, EventSchemaID: prefixConfig.EventSchemaID,
 				EventSchemaVersion: prefixConfig.EventSchemaVersion, EventFormat: prefixConfig.EventFormat,
 			}
@@ -145,7 +144,7 @@ func validateGlobalLimits(limits f2e.GlobalLimits) error {
 		limits.MaxJSONArraySearchBytes < 1024 || limits.MaxJSONArraySearchBytes > 16*1024*1024 {
 		return fmt.Errorf("invalid numeric global limits")
 	}
-	for _, dataType := range []f2e.DataType{f2e.DataTypeFixedWidth, f2e.DataTypeText, f2e.DataTypeJSONL, f2e.DataTypeNDJSON, f2e.DataTypeCSV, f2e.DataTypeJSON, f2e.DataTypeBinary, f2e.DataTypeMultiLine} {
+	for _, dataType := range []f2e.DataType{f2e.DataTypeText, f2e.DataTypeJSON, f2e.DataTypeMultiLine} {
 		limit, ok := limits.InputTypes[dataType]
 		if !ok || limit.MaxFileBytes < 1 || limit.MaxFileBytes > limits.MaxFileBytes || limit.MaxRecordBytes < 1 || limit.MaxRecordBytes > int64(limits.MaxEventBytes) {
 			return fmt.Errorf("invalid global limits for dataType %q", dataType)
@@ -155,8 +154,11 @@ func validateGlobalLimits(limits f2e.GlobalLimits) error {
 }
 
 func validatePrefixConfiguration(c f2e.PrefixConfiguration, limits f2e.GlobalLimits) error {
+	if c.DataType != f2e.DataTypeText && c.DataType != f2e.DataTypeJSON && c.DataType != f2e.DataTypeMultiLine {
+		return fmt.Errorf("unsupported data type %q", c.DataType)
+	}
 	typeLimits, knownType := limits.InputTypes[c.DataType]
-	if c.RecordLengthBytes < 2 || c.RecordsPerChunk < 1 || c.BatchSize < 1 || c.BatchSize > 10 ||
+	if c.RecordsPerChunk < 1 || c.BatchSize < 1 || c.BatchSize > 10 ||
 		c.MaxEventBytes < 1024 || c.MaxEventBytes > 256*1024 || c.MaxChunkBytes < 1024 ||
 		c.MaxFileBytes < c.MaxChunkBytes || c.JSONArraySearchBytes < 1024 || c.JSONArraySearchBytes > 16*1024*1024 ||
 		c.EventSchemaID == "" || c.EventSchemaVersion == "" || c.EventFormat == "" {
@@ -164,7 +166,7 @@ func validatePrefixConfiguration(c f2e.PrefixConfiguration, limits f2e.GlobalLim
 	}
 	if !knownType || c.MaxFileBytes > limits.MaxFileBytes || c.MaxFileBytes > typeLimits.MaxFileBytes ||
 		c.MaxChunkBytes > limits.MaxChunkBytes || c.MaxEventBytes > limits.MaxEventBytes || c.BatchSize > limits.MaxBatchSize ||
-		c.JSONArraySearchBytes > limits.MaxJSONArraySearchBytes || int64(c.RecordLengthBytes) > typeLimits.MaxRecordBytes ||
+		c.JSONArraySearchBytes > limits.MaxJSONArraySearchBytes ||
 		c.MaxRecordLengthBytes > typeLimits.MaxRecordBytes || c.MultiLineLayout.MaxBytesPerRecord > typeLimits.MaxRecordBytes ||
 		c.JSONArrayLayout.MaxBytesPerElement > typeLimits.MaxRecordBytes {
 		return fmt.Errorf("SSM configuration for s3://%s/%s exceeds global limits", c.Bucket, c.Prefix)

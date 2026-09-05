@@ -25,6 +25,12 @@ type scenarioCtx struct {
 
 	// receivedMessages is populated for detailed-validation scenarios (≤1000 records).
 	receivedMessages []Envelope
+
+	// metrics accumulates instrumentation for this scenario; exported to RunReport at suite end.
+	metrics       ScenarioMetrics
+	scenarioName  string
+	scenarioStart time.Time
+	lastCounters  *APICounters // reference held so After hook can copy before nil-ing
 }
 
 func (s *scenarioCtx) reset() {
@@ -36,6 +42,10 @@ func (s *scenarioCtx) reset() {
 	s.jsonArrayLayout = JSONArrayLayout{}
 	s.maxRecordLen = 0
 	s.receivedMessages = nil
+	s.metrics = ScenarioMetrics{}
+	s.scenarioName = ""
+	s.scenarioStart = time.Time{}
+	s.lastCounters = nil
 }
 
 // uniqueKey returns a time-based S3 key unique within the test run.
@@ -46,23 +56,45 @@ func uniqueKey(format string) string {
 // NewScenarioInitializer returns the Godog ScenarioInitializer bound to the given AWSClient.
 // The same client is reused across all scenarios; a fresh scenarioCtx is created per scenario.
 func NewScenarioInitializer(client *AWSClient) func(*godog.ScenarioContext) {
+	return NewScenarioInitializerWithMetrics(client, nil)
+}
+
+// NewScenarioInitializerWithMetrics is like NewScenarioInitializer but appends one
+// ScenarioMetrics entry per scenario to collector after the scenario completes.
+func NewScenarioInitializerWithMetrics(client *AWSClient, collector *[]ScenarioMetrics) func(*godog.ScenarioContext) {
 	return func(sc *godog.ScenarioContext) {
 		s := &scenarioCtx{aws: client}
 
-		sc.Before(func(ctx context.Context, _ *godog.Scenario) (context.Context, error) {
+		sc.Before(func(ctx context.Context, scenario *godog.Scenario) (context.Context, error) {
 			s.reset()
+			s.scenarioName = scenario.Name
+			s.scenarioStart = time.Now()
+			counters := &APICounters{}
+			s.lastCounters = counters
+			s.aws.Counters = counters
+			return ctx, nil
+		})
+
+		sc.After(func(ctx context.Context, _ *godog.Scenario, _ error) (context.Context, error) {
+			s.aws.Counters = nil
+			if collector != nil {
+				m := s.metrics
+				m.ScenarioName = s.scenarioName
+				m.DataType = s.dataType
+				m.RecordCount = s.expectedCount
+				m.TotalMs = time.Since(s.scenarioStart).Milliseconds()
+				if s.lastCounters != nil {
+					m.API = *s.lastCounters
+				}
+				*collector = append(*collector, m)
+			}
 			return ctx, nil
 		})
 
 		// ── File generation steps ───────────────────────────────────────────────
-		sc.Step(`^I have a fixed-width file with (\d+) records$`, s.haveFixedWidthFile)
-		sc.Step(`^I have a CSV file with (\d+) records$`, s.haveCSVFile)
-		sc.Step(`^I have a JSONL file with (\d+) records$`, s.haveJSONLFile)
-		sc.Step(`^I have an NDJSON file with (\d+) records$`, s.haveNDJSONFile)
 		sc.Step(`^I have a text file with (\d+) records$`, s.haveTextFile)
 		sc.Step(`^I have a multi-line file with header, (\d+) data records, and trailer$`, s.haveMultiLineFile)
 		sc.Step(`^I have a JSON array file with (\d+) elements$`, s.haveJSONArrayFile)
-		sc.Step(`^I have a binary file$`, s.haveBinaryFile)
 		sc.Step(`^I have an empty "([^"]*)" file$`, s.haveEmptyFile)
 
 		// ── Upload + trigger step ───────────────────────────────────────────────
@@ -79,46 +111,18 @@ func NewScenarioInitializer(client *AWSClient) func(*godog.ScenarioContext) {
 
 // ── Step implementations ────────────────────────────────────────────────────
 
-func (s *scenarioCtx) haveFixedWidthFile(count int) error {
-	s.fileContent = GenerateFixedWidth(count)
-	s.dataType = "fixed-width"
-	s.expectedCount = count
-	return nil
-}
-
-func (s *scenarioCtx) haveCSVFile(count int) error {
-	s.fileContent = GenerateCSV(count)
-	s.dataType = "csv"
-	s.expectedCount = count
-	s.maxRecordLen = MaxRecordLenFor("csv", count)
-	return nil
-}
-
-func (s *scenarioCtx) haveJSONLFile(count int) error {
-	s.fileContent = GenerateJSONL(count)
-	s.dataType = "jsonl"
-	s.expectedCount = count
-	s.maxRecordLen = MaxRecordLenFor("jsonl", count)
-	return nil
-}
-
-func (s *scenarioCtx) haveNDJSONFile(count int) error {
-	s.fileContent = GenerateNDJSON(count)
-	s.dataType = "ndjson"
-	s.expectedCount = count
-	s.maxRecordLen = MaxRecordLenFor("ndjson", count)
-	return nil
-}
-
 func (s *scenarioCtx) haveTextFile(count int) error {
+	t := StartPhase()
 	s.fileContent = GenerateText(count)
 	s.dataType = "text"
 	s.expectedCount = count
 	s.maxRecordLen = MaxRecordLenFor("text", count)
+	s.metrics.SetupMs += t.ElapsedMs()
 	return nil
 }
 
 func (s *scenarioCtx) haveMultiLineFile(count int) error {
+	t := StartPhase()
 	s.fileContent = GenerateMultiLine(count)
 	s.dataType = "multi-line"
 	s.expectedCount = count
@@ -129,10 +133,12 @@ func (s *scenarioCtx) haveMultiLineFile(count int) error {
 		AcceptedPrefixes:  []string{"D"},
 		MaxBytesPerRecord: maxRecordBytesMultiLine,
 	}
+	s.metrics.SetupMs += t.ElapsedMs()
 	return nil
 }
 
 func (s *scenarioCtx) haveJSONArrayFile(count int) error {
+	t := StartPhase()
 	s.fileContent = GenerateJSONArray(count)
 	s.dataType = "json"
 	s.expectedCount = count
@@ -140,13 +146,7 @@ func (s *scenarioCtx) haveJSONArrayFile(count int) error {
 	s.jsonArrayLayout = JSONArrayLayout{
 		MaxBytesPerElement: maxBytesPerJSONElement,
 	}
-	return nil
-}
-
-func (s *scenarioCtx) haveBinaryFile() error {
-	s.fileContent = GenerateBinary()
-	s.dataType = "binary"
-	s.expectedCount = 1
+	s.metrics.SetupMs += t.ElapsedMs()
 	return nil
 }
 
@@ -163,9 +163,11 @@ func (s *scenarioCtx) uploadAndProcess(ctx context.Context) error {
 	}
 	s.s3Key = uniqueKey(s.dataType)
 
+	uploadTimer := StartPhase()
 	if err := s.aws.UploadFile(ctx, s.s3Key, s.fileContent); err != nil {
 		return fmt.Errorf("upload %s: %w", s.s3Key, err)
 	}
+	s.metrics.UploadMs = uploadTimer.ElapsedMs()
 
 	req := OrganizerRequest{
 		SchemaVersion: schemaVersion,
@@ -180,7 +182,10 @@ func (s *scenarioCtx) uploadAndProcess(ctx context.Context) error {
 			},
 		},
 	}
-	return s.aws.SendOrganizerRequest(ctx, req)
+	intakeTimer := StartPhase()
+	err := s.aws.SendOrganizerRequest(ctx, req)
+	s.metrics.IntakeMs = intakeTimer.ElapsedMs()
+	return err
 }
 
 // uploadThroughConfiguredS3Prefix exercises the S3 → Organizer path. The
@@ -191,9 +196,11 @@ func (s *scenarioCtx) uploadThroughConfiguredS3Prefix(ctx context.Context) error
 		return fmt.Errorf("file content not set — call a 'I have a ... file' step first")
 	}
 	s.s3Key = fmt.Sprintf("example-%s/%d.dat", s.dataType, time.Now().UnixNano())
+	uploadTimer := StartPhase()
 	if err := s.aws.UploadFile(ctx, s.s3Key, s.fileContent); err != nil {
 		return fmt.Errorf("upload %s: %w", s.s3Key, err)
 	}
+	s.metrics.UploadMs = uploadTimer.ElapsedMs()
 	return nil
 }
 
@@ -204,7 +211,9 @@ func (s *scenarioCtx) receiveExactly(ctx context.Context, expected, timeoutSec i
 	timeout := time.Duration(timeoutSec) * time.Second
 
 	if expected <= smallFileThreshold {
-		msgs, err := s.aws.ConsumeAll(ctx, expected, timeout)
+		msgs, waitMs, consumeMs, err := s.aws.ConsumeAllTimed(ctx, expected, timeout)
+		s.metrics.WaitMs = waitMs
+		s.metrics.ConsumeMs = consumeMs
 		if err != nil {
 			return err
 		}
@@ -215,12 +224,17 @@ func (s *scenarioCtx) receiveExactly(ctx context.Context, expected, timeoutSec i
 		return nil
 	}
 
-	// Count-only path for large files.
+	// Count-only path for large files: measure wait separately from drain.
+	waitTimer := StartPhase()
 	actual, err := s.aws.WaitForCount(ctx, expected, timeout)
+	s.metrics.WaitMs = waitTimer.ElapsedMs()
 	if err != nil {
 		return fmt.Errorf("expected %d messages, last observed ~%d: %w", expected, actual, err)
 	}
-	return s.aws.DrainOutputQueue(ctx)
+	drainTimer := StartPhase()
+	drainErr := s.aws.DrainOutputQueue(ctx)
+	s.metrics.ConsumeMs = drainTimer.ElapsedMs()
+	return drainErr
 }
 
 // noEventsWithin asserts that no messages appear in the output queue within the given window.
@@ -245,8 +259,12 @@ func (s *scenarioCtx) allEventsAreValidEnvelopes(_ context.Context) error {
 	if len(s.receivedMessages) == 0 {
 		return fmt.Errorf("no messages to validate — 'I receive exactly N events' must run first")
 	}
+	validateTimer := StartPhase()
+	defer func() { s.metrics.ValidateMs = validateTimer.ElapsedMs() }()
+
 	eventIDs := make(map[string]struct{}, len(s.receivedMessages))
 	sourceRecordIDs := make(map[string]struct{}, len(s.receivedMessages))
+	var earliest, latest string
 	for i, env := range s.receivedMessages {
 		if env.Metadata.EventID == "" {
 			return fmt.Errorf("message[%d]: metadata.eventId is empty", i)
@@ -262,6 +280,16 @@ func (s *scenarioCtx) allEventsAreValidEnvelopes(_ context.Context) error {
 		}
 		eventIDs[env.Metadata.EventID] = struct{}{}
 		sourceRecordIDs[env.Metadata.SourceRecordID] = struct{}{}
+		// Capture AWS-side timestamps from envelope.metadata.createdAt.
+		// These use the Worker's clock and must not be subtracted from local times.
+		if ts := env.Metadata.CreatedAt; ts != "" {
+			if earliest == "" || ts < earliest {
+				earliest = ts
+			}
+			if ts > latest {
+				latest = ts
+			}
+		}
 		if env.Metadata.Schema.ID == "" {
 			return fmt.Errorf("message[%d]: metadata.schema.id is empty", i)
 		}
@@ -287,24 +315,18 @@ func (s *scenarioCtx) allEventsAreValidEnvelopes(_ context.Context) error {
 			return fmt.Errorf("message[%d]: processing.recordNumber = %d, want >= 1", i, *env.Processing.RecordNumber)
 		}
 		switch s.dataType {
-		case "fixed-width", "jsonl", "ndjson", "text", "multi-line":
+		case "text", "multi-line":
 			if env.Data.Raw == "" {
 				return fmt.Errorf("message[%d]: data.raw is empty for %s record", i, s.dataType)
-			}
-		case "csv":
-			if len(env.Data.Fields) == 0 {
-				return fmt.Errorf("message[%d]: data.fields is empty for csv record", i)
 			}
 		case "json":
 			if env.Data.Raw == "" {
 				return fmt.Errorf("message[%d]: data.raw is empty for json element", i)
 			}
-		case "binary":
-			if env.Data.Base64 == "" || env.Data.Raw != "" {
-				return fmt.Errorf("message[%d]: invalid binary payload", i)
-			}
 		}
 	}
+	s.metrics.EarliestEnvelopeCreatedAt = earliest
+	s.metrics.LatestEnvelopeCreatedAt = latest
 	return nil
 }
 

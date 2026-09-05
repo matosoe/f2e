@@ -31,17 +31,17 @@ As falhas de processamento são tratadas por reprocessamento seletivo de mensage
 
 ## Formatos de entrada
 
-| Formato | Status | Características e condições |
-|---|---|---|
-| `fixed-width` | Produção | Registros de tamanho fixo terminados em LF. |
-| `text` | Produção | Um evento por linha de texto. |
-| `jsonl` / `ndjson` | Produção | Um valor JSON por linha; a validação pode ser desabilitada por arquivo. |
-| `csv` | Produção | Parser RFC 4180, incluindo campos entre aspas e quebras de linha. Header e BOM não são removidos. |
-| `json` (array) | Produção | Um evento por elemento do array, inclusive para arrays aninhados configurados por caminho. |
-| `binary` | Produção | Arquivo não divisível, publicado como payload Base64 e limitado ao tamanho máximo do evento. |
-| `multi-line` | Produção | Registros com múltiplas linhas físicas, definidos por layout de marcadores. |
+O F2E suporta três modos de delimitação:
 
-Para `text`, `jsonl` e `ndjson`, informe `maxRecordLengthBytes`. Esse limite permite que o Organizer defina as fronteiras dos chunks e que os Workers tratem registros que cruzam uma fronteira sem gerar duplicatas ou lacunas.
+| Modo | Registro lógico |
+|---|---|
+| `text` | Uma linha física terminada por CR, LF ou CRLF. |
+| `json` | Um elemento do array selecionado em `arrayPath`, com parsing estrutural. |
+| `multi-line` | Linhas físicas agrupadas por marcadores configurados. |
+
+Tipos removidos (`fixed-width`, `jsonl`, `ndjson`, `csv`, `binary`) produzem erro explícito. Para informações sobre migração, consulte [contratos](documentacao/contratos.md) e o [ADR 0005](documentacao/adr/0005-tres-modos-de-delimitacao.md).
+
+Para `text` com arquivos grandes (mais de `F2E_RECORDS_PER_CHUNK` linhas), informe `maxRecordLengthBytes`. Esse limite permite que o Organizer defina as fronteiras dos chunks e que os Workers tratem registros que cruzam uma fronteira sem gerar duplicatas ou lacunas. Arquivos pequenos podem omitir `maxRecordLengthBytes` (modo single-chunk).
 
 ### Configuração por prefixo no SSM
 
@@ -54,15 +54,10 @@ Lambdas.
 
 O Terraform cria estes exemplos no bucket do ambiente:
 
-| Prefixo S3 | Formato |
+| Prefixo S3 | Modo |
 |---|---|
-| `example-fixed-width/` | `fixed-width` |
 | `example-text/` | `text` |
-| `example-jsonl/` | `jsonl` |
-| `example-ndjson/` | `ndjson` |
-| `example-csv/` | `csv` |
-| `example-json/` | array JSON |
-| `example-binary/` | `binary` |
+| `example-json/` | `json` (array) |
 | `example-multi-line/` | `multi-line` |
 
 O valor de cada parâmetro é um JSON completo. Exemplo para texto:
@@ -72,7 +67,6 @@ O valor de cada parâmetro é um JSON completo. Exemplo para texto:
   "bucket": "<bucket-criado>",
   "prefix": "example-text/",
   "dataType": "text",
-  "recordLengthBytes": 100,
   "recordsPerChunk": 1000,
   "batchSize": 10,
   "maxEventBytes": 262144,
@@ -82,25 +76,22 @@ O valor de cada parâmetro é um JSON completo. Exemplo para texto:
   "maxRecordLengthBytes": 65536,
   "eventSchemaId": "f2e-record",
   "eventSchemaVersion": "1",
-  "eventFormat": "json",
-  "options": { "bypassJsonValidation": false }
+  "eventFormat": "json"
 }
 ```
 
 | Propriedade | Uso |
 |---|---|
 | `bucket` e `prefix` | Chave de seleção da configuração. O prefixo é relativo ao bucket e termina em `/`. |
-| `dataType` | `fixed-width`, `text`, `jsonl`, `ndjson`, `csv`, `json`, `binary` ou `multi-line`. |
-| `recordLengthBytes` | Largura do registro `fixed-width`, incluindo o LF. Mantido no documento de todos os formatos para que cada registro SSM seja completo. |
+| `dataType` | `text`, `json` ou `multi-line`. |
 | `recordsPerChunk` | Granularidade do planejamento; valores menores geram mais chunks e disponibilizam mais paralelismo. |
 | `batchSize` | Quantidade de eventos enviada por chamada `SendMessageBatch`, entre 1 e 10. |
 | `maxEventBytes` | Limite serializado de cada evento, entre 1 KiB e 256 KiB. |
 | `maxFileBytes` | Maior arquivo aceito pelo prefixo. |
 | `maxChunkBytes` | Maior faixa de bytes entregue a um Worker. |
 | `jsonArraySearchBytes` | Janela usada para localizar o array configurado em arquivos `json`. |
-| `maxRecordLengthBytes` | Limite de linha para `text`, `jsonl` e `ndjson`; use `0` nos formatos aos quais não se aplica. |
+| `maxRecordLengthBytes` | Limite de linha para `text`; use `0` quando não se aplica. |
 | `eventSchemaId`, `eventSchemaVersion`, `eventFormat` | Identificação do contrato dos eventos de saída. |
-| `options.bypassJsonValidation` | Permite ignorar a validação de cada linha apenas em `jsonl` e `ndjson`. |
 | `jsonArrayLayout` | Para `json`: contém `arrayPath` e `maxBytesPerElement`. |
 | `multiLineLayout` | Para `multi-line`: contém marcadores, separador e `maxBytesPerRecord`. |
 
@@ -126,18 +117,12 @@ rejeitadas antes do planejamento.
 
 | `dataType` | Arquivo máximo | Registro/elemento máximo |
 |---|---:|---:|
-| `fixed-width` | 10 GiB | 258.048 bytes |
 | `text` | 10 GiB | 258.048 bytes |
-| `jsonl` | 10 GiB | 258.048 bytes |
-| `ndjson` | 10 GiB | 258.048 bytes |
-| `csv` | 64 MiB | 258.048 bytes |
 | `json` | 10 GiB | 258.048 bytes |
-| `binary` | 193.536 bytes | 193.536 bytes |
 | `multi-line` | 10 GiB | 258.048 bytes |
 
-O teto de registro reserva aproximadamente 4 KiB para o envelope. Binário usa
-um teto menor para acomodar a expansão Base64. A validação final considera o
-evento serializado e seus atributos; por isso, conteúdo com muito escape JSON
+O teto de registro reserva aproximadamente 4 KiB para o envelope. A validação final considera o
+evento serializado e seus atributos; conteúdo com muito escape JSON
 pode atingir o limite de 256 KiB antes do tamanho nominal acima.
 
 ```json
@@ -148,17 +133,14 @@ pode atingir o limite de 256 KiB antes do tamanho nominal acima.
   "maxBatchSize": 10,
   "maxJsonArraySearchBytes": 16777216,
   "inputTypes": {
-    "text": { "maxFileBytes": 10737418240, "maxRecordBytes": 258048 },
-    "csv": { "maxFileBytes": 67108864, "maxRecordBytes": 258048 },
-    "binary": { "maxFileBytes": 193536, "maxRecordBytes": 193536 }
+    "text":        { "maxFileBytes": 10737418240, "maxRecordBytes": 258048 },
+    "json":        { "maxFileBytes": 10737418240, "maxRecordBytes": 258048 },
+    "multi-line":  { "maxFileBytes": 10737418240, "maxRecordBytes": 258048 }
   }
 }
 ```
 
-O documento real contém os oito tipos; o trecho acima foi reduzido apenas para
-facilitar a leitura.
-
-A decisão formal e os limites de cada formato estão no [ADR 0004](documentacao/adr/0004-formatos-suportados.md) e nos [contratos](documentacao/contratos.md).
+A decisão formal está no [ADR 0005](documentacao/adr/0005-tres-modos-de-delimitacao.md) e nos [contratos](documentacao/contratos.md).
 
 ## Evento de saída e rastreabilidade
 
@@ -168,12 +150,12 @@ Cada registro é publicado como um Envelope v2. Ele preserva a origem do arquivo
 {
   "schemaVersion": "2",
   "schema": "record:1",
-  "format": "ndjson",
+  "format": "text",
   "eventId": "<id estável durante retries>",
   "sourceRecordId": "<id imutável do registro físico>",
-  "origin": { "bucket": "f2e-input", "key": "entrada/eventos.ndjson" },
+  "origin": { "bucket": "f2e-input", "key": "entrada/registros.txt" },
   "job": { "jobId": "…", "chunkId": "00000001", "recordNumber": 42 },
-  "data": { "raw": "{\"campo\":\"valor\"}" }
+  "data": { "raw": "2026-09-05;PAGAMENTO;00001;100.00" }
 }
 ```
 
@@ -249,7 +231,6 @@ prefixo e carregam a configuração selecionada em cada `ChunkJob`.
 
 | Variável | Padrão | Finalidade |
 |---|---:|---|
-| `F2E_RECORD_LENGTH` | `100` | Tamanho do registro `fixed-width`, incluindo LF. |
 | `F2E_RECORDS_PER_CHUNK` | `1000` | Quantidade nominal de registros por chunk. |
 | `F2E_BATCH_SIZE` | `10` | Eventos publicados por lote SQS. |
 | `F2E_MAX_FILE_BYTES` | `10 GiB` | Tamanho máximo aceito por arquivo. |

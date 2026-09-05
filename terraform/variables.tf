@@ -105,11 +105,6 @@ variable "f2e_input_bucket" {
   default = "f2e-input"
 }
 
-variable "f2e_record_length" {
-  type    = number
-  default = 100
-}
-
 variable "f2e_records_per_chunk" {
   type    = number
   default = 1000
