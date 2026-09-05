@@ -2,11 +2,8 @@
 package worker
 
 import (
-	"bufio"
 	"context"
 	"crypto/sha256"
-	"encoding/base64"
-	"encoding/csv"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -14,12 +11,12 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"path"
-	"strings"
 	"time"
 
 	"github.com/f2e/f2e/internal/application/port"
 	"github.com/f2e/f2e/internal/domain/f2e"
-	"github.com/f2e/f2e/internal/domain/fixedwidth"
+	"github.com/f2e/f2e/internal/domain/lineio"
+	"github.com/f2e/f2e/internal/domain/multiline"
 	"github.com/f2e/f2e/internal/platform/config"
 )
 
@@ -78,13 +75,6 @@ func (s Service) processWithMetrics(ctx context.Context, body []byte, attempt in
 	var j f2e.ChunkJob
 	if e := json.Unmarshal(body, &j); e != nil {
 		return nil, fmt.Errorf("decode job: %w", e)
-	}
-	// Jobs produced before the explicit dataType contract were fixed-width.
-	if j.DataType == "" {
-		j.DataType = f2e.DataTypeFixedWidth
-	}
-	if j.Configuration.RecordLengthBytes > 0 {
-		s.Config.RecordLength = j.Configuration.RecordLengthBytes
 	}
 	if j.Configuration.BatchSize > 0 {
 		s.Config.BatchSize = j.Configuration.BatchSize
@@ -172,16 +162,10 @@ func (s Service) valid(j f2e.ChunkJob) error {
 	if j.EndByteInclusive-j.StartByte+1 > maxChunkBytes {
 		return fmt.Errorf("chunk exceeds maximum %d bytes", maxChunkBytes)
 	}
-	if j.DataType == f2e.DataTypeFixedWidth && (j.RecordCount < 1 || j.RecordLengthBytes != int64(s.Config.RecordLength) || j.EndByteInclusive-j.StartByte+1 != j.RecordCount*j.RecordLengthBytes) {
-		return fmt.Errorf("invalid fixed-width chunk job")
-	}
-	if j.DataType != f2e.DataTypeFixedWidth && j.DataType != f2e.DataTypeJSONL && j.DataType != f2e.DataTypeNDJSON && j.DataType != f2e.DataTypeCSV && j.DataType != f2e.DataTypeBinary && j.DataType != f2e.DataTypeText && j.DataType != f2e.DataTypeMultiLine && j.DataType != f2e.DataTypeJSON {
+	if j.DataType != f2e.DataTypeText && j.DataType != f2e.DataTypeMultiLine && j.DataType != f2e.DataTypeJSON {
 		return fmt.Errorf("unsupported data type %q", j.DataType)
 	}
-	if j.Options.BypassJSONValidation && j.DataType != f2e.DataTypeJSONL && j.DataType != f2e.DataTypeNDJSON {
-		return fmt.Errorf("invalid JSON validation option")
-	}
-	if j.MaxRecordLengthBytes > 0 && (j.DataType == f2e.DataTypeFixedWidth || j.DataType == f2e.DataTypeBinary || j.TrailingPaddingBytes < 0 || j.TrailingPaddingBytes > j.MaxRecordLengthBytes || j.EndByteInclusive-j.StartByte+1 < j.TrailingPaddingBytes) {
+	if j.MaxRecordLengthBytes > 0 && (j.TrailingPaddingBytes < 0 || j.TrailingPaddingBytes > j.MaxRecordLengthBytes || j.EndByteInclusive-j.StartByte+1 < j.TrailingPaddingBytes) {
 		return fmt.Errorf("invalid variable-record chunk job")
 	}
 	if j.DataType == f2e.DataTypeMultiLine && j.MultiLineLayout.BreakMarker == "" {
@@ -236,7 +220,7 @@ func (s Service) streamWithMetrics(ctx context.Context, j f2e.ChunkJob, r io.Rea
 		return fmt.Errorf("output batch partial failure after retries")
 	}
 
-	publish := func(n, off int64, raw string, fields []string, binary []byte, physicalLength int64) error {
+	publish := func(n, off int64, raw string, physicalLength int64) error {
 		byteOffset := j.StartByte + off
 		if j.MaxRecordLengthBytes > 0 {
 			byteOffset = readStart + off
@@ -248,9 +232,9 @@ func (s Service) streamWithMetrics(ctx context.Context, j f2e.ChunkJob, r io.Rea
 		eventID := hash(j.JobID + "/" + sourceRecordID)
 		recNum := j.StartRecord + n + 1
 		var recordNumber *int64
-		// Fixed-width chunks carry an exact starting record. For variable
-		// formats only the first chunk has a provably global ordinal.
-		if j.DataType == f2e.DataTypeFixedWidth || j.ChunkID == "00000001" || j.StartByte == 0 {
+		// For chunked variable-length formats only the first chunk has a
+		// provably global ordinal.
+		if j.ChunkID == "00000001" || j.StartByte == 0 {
 			recordNumber = &recNum
 		}
 		var byteLen *int64
@@ -258,10 +242,7 @@ func (s Service) streamWithMetrics(ctx context.Context, j f2e.ChunkJob, r io.Rea
 			byteLen = &physicalLength
 		}
 		switch j.DataType {
-		case f2e.DataTypeFixedWidth:
-			bl := j.RecordLengthBytes
-			byteLen = &bl
-		case f2e.DataTypeJSON, f2e.DataTypeJSONL, f2e.DataTypeNDJSON, f2e.DataTypeText, f2e.DataTypeMultiLine:
+		case f2e.DataTypeJSON, f2e.DataTypeText, f2e.DataTypeMultiLine:
 			if raw != "" {
 				bl := int64(len(raw))
 				byteLen = &bl
@@ -296,10 +277,7 @@ func (s Service) streamWithMetrics(ctx context.Context, j f2e.ChunkJob, r io.Rea
 				ByteOffset:   &byteOffset,
 				ByteLength:   byteLen,
 			},
-			Data: f2e.RecordPayload{Raw: raw, Fields: fields},
-		}
-		if binary != nil {
-			env.Data.Base64 = base64.StdEncoding.EncodeToString(binary)
+			Data: f2e.RecordPayload{Raw: raw},
 		}
 		if s.Processor != nil {
 			original := env
@@ -353,9 +331,7 @@ func (s Service) streamWithMetrics(ctx context.Context, j f2e.ChunkJob, r io.Rea
 
 	var err error
 	switch j.DataType {
-	case f2e.DataTypeFixedWidth:
-		err = fixedwidth.Read(ctx, r, j.RecordLengthBytes, j.RecordCount, func(n, off int64, raw string) error { return publish(n, off, raw, nil, nil, j.RecordLengthBytes) })
-	case f2e.DataTypeJSONL, f2e.DataTypeNDJSON, f2e.DataTypeText:
+	case f2e.DataTypeText:
 		lineLimit := j.MaxRecordLengthBytes
 		if lineLimit == 0 {
 			lineLimit = int64(s.Config.MaxEventBytes)
@@ -363,44 +339,23 @@ func (s Service) streamWithMetrics(ctx context.Context, j f2e.ChunkJob, r io.Rea
 				lineLimit = 256 * 1024
 			}
 		}
-		err = readLines(ctx, r, j.MaxRecordLengthBytes > 0 && readStart > 0, lineLimit, func(n, off int64, raw string) error {
+		err = lineio.ReadLines(ctx, r, lineLimit, j.MaxRecordLengthBytes > 0 && readStart > 0, func(n, off int64, raw string) error {
 			if j.MaxRecordLengthBytes > 0 && (readStart+off < j.StartByte || readStart+off > j.EndByteInclusive-j.TrailingPaddingBytes) {
 				return nil
 			}
-			if (j.DataType == f2e.DataTypeJSONL || j.DataType == f2e.DataTypeNDJSON) && !j.Options.BypassJSONValidation {
-				var value any
-				if e := json.Unmarshal([]byte(raw), &value); e != nil {
-					return fmt.Errorf("invalid JSON at record %d: %w", n+1, e)
-				}
-			}
-			return publish(n, off, raw, nil, nil, 0)
+			return publish(n, off, raw, 0)
 		})
-	case f2e.DataTypeCSV:
-		err = readCSV(ctx, r, func(n, off, length int64, fields []string) error { return publish(n, off, "", fields, nil, length) })
-	case f2e.DataTypeBinary:
-		var body []byte
-		limit := int64(s.Config.MaxEventBytes)
-		if limit == 0 {
-			limit = 256 * 1024
-		}
-		body, err = io.ReadAll(io.LimitReader(r, limit+1))
-		if int64(len(body)) > limit {
-			err = fmt.Errorf("binary record exceeds event limit: %d > %d bytes", len(body), limit)
-		}
-		if err == nil {
-			err = publish(0, 0, "", nil, body, int64(len(body)))
-		}
 	case f2e.DataTypeMultiLine:
 		layout := j.MultiLineLayout
-		err = fixedwidth.ReadMultiLine(ctx, r, layout.BreakPosition, layout.BreakMarker, layout.AcceptedPrefixes, layout.LineSeparator, func(n, off int64, raw string) error {
+		err = multiline.ReadMultiLine(ctx, r, layout.BreakPosition, layout.BreakMarker, layout.AcceptedPrefixes, layout.LineSeparator, layout.MaxBytesPerRecord, func(n, off int64, raw string) error {
 			if readStart+off < j.StartByte || readStart+off > j.EndByteInclusive-j.TrailingPaddingBytes {
 				return nil
 			}
-			return publish(n, off, raw, nil, nil, 0)
+			return publish(n, off, raw, 0)
 		})
 	case f2e.DataTypeJSON:
 		err = readJSONArray(ctx, r, j, readStart, func(n, off int64, raw string) error {
-			return publish(n, off, raw, nil, nil, int64(len(raw)))
+			return publish(n, off, raw, int64(len(raw)))
 		})
 	}
 	if err != nil {
@@ -412,70 +367,6 @@ func (s Service) streamWithMetrics(ctx context.Context, j f2e.ChunkJob, r io.Rea
 		}
 	}
 	return recordsProcessed, nil
-}
-
-func readLines(ctx context.Context, r io.Reader, discardFirst bool, maxRecordBytes int64, fn func(int64, int64, string) error) error {
-	br := bufio.NewReader(r)
-	var offset, number int64
-	for {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		line, err := readBoundedLine(br, maxRecordBytes)
-		if len(line) > 0 {
-			raw := strings.TrimSuffix(string(line), "\n")
-			raw = strings.TrimSuffix(raw, "\r")
-			if !discardFirst || number > 0 {
-				if e := fn(number, offset, raw); e != nil {
-					return e
-				}
-			}
-			number++
-			offset += int64(len(line))
-		}
-		if err == io.EOF {
-			return nil
-		}
-		if err != nil {
-			return fmt.Errorf("record at byte %d: %w", offset, err)
-		}
-	}
-}
-
-func readBoundedLine(br *bufio.Reader, maxRecordBytes int64) ([]byte, error) {
-	line := make([]byte, 0, min(maxRecordBytes, 64*1024))
-	for {
-		fragment, err := br.ReadSlice('\n')
-		if int64(len(line)+len(fragment)) > maxRecordBytes {
-			return nil, fmt.Errorf("record exceeds maximum %d bytes", maxRecordBytes)
-		}
-		line = append(line, fragment...)
-		if err == bufio.ErrBufferFull {
-			continue
-		}
-		return line, err
-	}
-}
-
-func readCSV(ctx context.Context, r io.Reader, fn func(int64, int64, int64, []string) error) error {
-	cr := csv.NewReader(r)
-	cr.FieldsPerRecord = -1
-	for n := int64(0); ; n++ {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		off := cr.InputOffset()
-		fields, err := cr.Read()
-		if err == io.EOF {
-			return nil
-		}
-		if err != nil {
-			return fmt.Errorf("invalid CSV at record %d: %w", n+1, err)
-		}
-		if err := fn(n, off, cr.InputOffset()-off, fields); err != nil {
-			return err
-		}
-	}
 }
 
 // readJSONArray streams elements from a JSON array within the chunk's owned byte range.

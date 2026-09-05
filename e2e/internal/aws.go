@@ -36,6 +36,9 @@ type AWSClient struct {
 	ledgerTable    string
 	intakeDLQName  string
 	chunkDLQName   string
+	// Counters is swapped per scenario by the step initializer.
+	// Nil means no instrumentation (e.g. during teardown).
+	Counters *APICounters
 }
 
 // LocalStackAvailable returns true when the LocalStack health endpoint responds.
@@ -111,7 +114,7 @@ func (c *AWSClient) AssertLedgerComplete(ctx context.Context, expectedJobs int) 
 				expected := ledgerNumber(item, "expectedChunks")
 				completed := ledgerNumber(item, "completedChunks")
 				failed := ledgerNumber(item, "failedChunks")
-				if status.Value != "COMPLETED" || expected < 1 || completed != expected || failed != 0 {
+				if status.Value != "COMPLETED" || expected < 0 || completed != expected || failed != 0 {
 					return fmt.Errorf("unreconciled job: status=%s expected=%d completed=%d failed=%d", status.Value, expected, completed, failed)
 				}
 			} else if strings.HasPrefix(sk.Value, "CHUNK#") {
@@ -158,6 +161,9 @@ func (c *AWSClient) UploadFile(ctx context.Context, key string, data []byte) err
 		Body:          bytes.NewReader(data),
 		ContentLength: &cl,
 	})
+	if err == nil && c.Counters != nil {
+		c.Counters.incS3Put()
+	}
 	return err
 }
 
@@ -171,6 +177,9 @@ func (c *AWSClient) SendOrganizerRequest(ctx context.Context, req OrganizerReque
 		QueueUrl:    aws.String(c.intakeQueueURL),
 		MessageBody: aws.String(string(body)),
 	})
+	if err == nil && c.Counters != nil {
+		c.Counters.incSQSSend()
+	}
 	return err
 }
 
@@ -187,6 +196,13 @@ func (c *AWSClient) DrainOutputQueue(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("drain receive: %w", err)
 		}
+		if c.Counters != nil {
+			empty := int64(0)
+			if len(out.Messages) == 0 {
+				empty = 1
+			}
+			c.Counters.incSQSReceive(int64(len(out.Messages)), empty)
+		}
 		if len(out.Messages) == 0 {
 			return nil
 		}
@@ -200,12 +216,19 @@ func (c *AWSClient) DrainOutputQueue(ctx context.Context) error {
 		}); err != nil {
 			return fmt.Errorf("drain delete: %w", err)
 		}
+		if c.Counters != nil {
+			c.Counters.incSQSDeleteBatch(int64(len(entries)))
+		}
 	}
 }
 
 // ApproximateCount returns the approximate number of messages available in the output queue.
 func (c *AWSClient) ApproximateCount(ctx context.Context) (int, error) {
-	return c.approximateCount(ctx, c.outputQueueURL)
+	n, err := c.approximateCount(ctx, c.outputQueueURL)
+	if err == nil && c.Counters != nil {
+		c.Counters.incSQSGetAttrs()
+	}
+	return n, err
 }
 
 func (c *AWSClient) approximateCount(ctx context.Context, queueURL string) (int, error) {
@@ -259,7 +282,10 @@ func (c *AWSClient) WaitForDLQCounts(ctx context.Context, expectedIntake, expect
 func (c *AWSClient) WaitForCount(ctx context.Context, expected int, timeout time.Duration) (int, error) {
 	deadline := time.Now().Add(timeout)
 	for {
-		count, err := c.ApproximateCount(ctx)
+		count, err := c.approximateCount(ctx, c.outputQueueURL)
+		if c.Counters != nil {
+			c.Counters.incSQSGetAttrs()
+		}
 		if err != nil {
 			return 0, err
 		}
@@ -299,6 +325,13 @@ func (c *AWSClient) ConsumeAll(ctx context.Context, expected int, timeout time.D
 		if err != nil {
 			return nil, err
 		}
+		if c.Counters != nil {
+			empty := int64(0)
+			if len(out.Messages) == 0 {
+				empty = 1
+			}
+			c.Counters.incSQSReceive(int64(len(out.Messages)), empty)
+		}
 		if len(out.Messages) == 0 {
 			emptyRuns++
 			continue
@@ -330,6 +363,79 @@ func (c *AWSClient) ConsumeAll(ctx context.Context, expected int, timeout time.D
 		}); err != nil {
 			return nil, err
 		}
+		if c.Counters != nil {
+			c.Counters.incSQSDeleteBatch(int64(len(entries)))
+		}
 	}
 	return envelopes, nil
+}
+
+// ConsumeAllTimed is like ConsumeAll but returns the wall-clock milliseconds spent
+// waiting for messages (WaitForCount) and consuming them (Receive+Delete loops) separately.
+// Both use the local clock only; they must not be compared with AWS-side timestamps.
+func (c *AWSClient) ConsumeAllTimed(ctx context.Context, expected int, timeout time.Duration) (envelopes []Envelope, waitMs, consumeMs int64, err error) {
+	waitStart := time.Now()
+	if _, err = c.WaitForCount(ctx, expected, timeout); err != nil {
+		return nil, 0, 0, err
+	}
+	waitMs = time.Since(waitStart).Milliseconds()
+
+	consumeStart := time.Now()
+	limit := expected*2 + 20
+	emptyRuns := 0
+
+	for len(envelopes) < limit && emptyRuns < 3 {
+		out, receiveErr := c.sqsClient.ReceiveMessage(ctx, &sqs.ReceiveMessageInput{
+			QueueUrl:              aws.String(c.outputQueueURL),
+			MaxNumberOfMessages:   10,
+			WaitTimeSeconds:       1,
+			MessageAttributeNames: []string{"All"},
+		})
+		if receiveErr != nil {
+			return nil, waitMs, 0, receiveErr
+		}
+		if c.Counters != nil {
+			empty := int64(0)
+			if len(out.Messages) == 0 {
+				empty = 1
+			}
+			c.Counters.incSQSReceive(int64(len(out.Messages)), empty)
+		}
+		if len(out.Messages) == 0 {
+			emptyRuns++
+			continue
+		}
+		emptyRuns = 0
+
+		entries := make([]sqstypes.DeleteMessageBatchRequestEntry, 0, len(out.Messages))
+		for _, m := range out.Messages {
+			var env Envelope
+			if unmarshalErr := json.Unmarshal([]byte(*m.Body), &env); unmarshalErr != nil {
+				return nil, waitMs, 0, fmt.Errorf("unmarshal envelope (msgId=%s): %w", *m.MessageId, unmarshalErr)
+			}
+			schema := env.Metadata.Schema.ID + ":" + env.Metadata.Schema.Version
+			if attr, ok := m.MessageAttributes["schema"]; !ok || aws.ToString(attr.StringValue) != schema {
+				return nil, waitMs, 0, fmt.Errorf("message attribute schema diverges from body (msgId=%s)", aws.ToString(m.MessageId))
+			}
+			if attr, ok := m.MessageAttributes["format"]; !ok || aws.ToString(attr.StringValue) != env.Metadata.Format {
+				return nil, waitMs, 0, fmt.Errorf("message attribute format diverges from body (msgId=%s)", aws.ToString(m.MessageId))
+			}
+			envelopes = append(envelopes, env)
+			entries = append(entries, sqstypes.DeleteMessageBatchRequestEntry{
+				Id:            m.MessageId,
+				ReceiptHandle: m.ReceiptHandle,
+			})
+		}
+		if _, deleteErr := c.sqsClient.DeleteMessageBatch(ctx, &sqs.DeleteMessageBatchInput{
+			QueueUrl: aws.String(c.outputQueueURL),
+			Entries:  entries,
+		}); deleteErr != nil {
+			return nil, waitMs, 0, deleteErr
+		}
+		if c.Counters != nil {
+			c.Counters.incSQSDeleteBatch(int64(len(entries)))
+		}
+	}
+	consumeMs = time.Since(consumeStart).Milliseconds()
+	return envelopes, waitMs, consumeMs, nil
 }

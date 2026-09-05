@@ -77,7 +77,5 @@ type EnvProcessing struct {
 
 // EnvData holds the raw record content.
 type EnvData struct {
-	Raw    string   `json:"raw,omitempty"`
-	Fields []string `json:"fields,omitempty"`
-	Base64 string   `json:"base64,omitempty"`
+	Raw string `json:"raw,omitempty"`
 }

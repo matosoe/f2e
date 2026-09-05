@@ -7,55 +7,13 @@ import (
 )
 
 const (
-	fixedWidthRecordLength = 100
 	// maxRecordBytes* are used for variable-length formats when chunking is needed (>1000 records).
-	maxRecordBytesJSONL     int64 = 128
-	maxRecordBytesCSV       int64 = 64
 	maxRecordBytesText      int64 = 64
 	maxRecordBytesMultiLine int64 = 128
 	maxBytesPerJSONElement  int64 = 256
 	// smallFileThreshold is the maximum record count processed as a single chunk.
 	smallFileThreshold = 1000
 )
-
-// GenerateFixedWidth produces N fixed-width records of exactly recordLength bytes each
-// (recordLength-1 printable ASCII characters + LF), matching the default F2E_RECORD_LENGTH=100.
-func GenerateFixedWidth(recordCount int) []byte {
-	var buf bytes.Buffer
-	buf.Grow(recordCount * fixedWidthRecordLength)
-	padding := strings.Repeat("X", fixedWidthRecordLength-9) // 8-digit seq + 91 X's + LF = 100
-	for i := 1; i <= recordCount; i++ {
-		fmt.Fprintf(&buf, "%08d%s\n", i, padding)
-	}
-	return buf.Bytes()
-}
-
-// GenerateCSV produces N data rows without a header row, one per line.
-// Each row: seq,record-N,value-N,field-N
-func GenerateCSV(recordCount int) []byte {
-	var buf bytes.Buffer
-	buf.Grow(recordCount * 50)
-	for i := 1; i <= recordCount; i++ {
-		fmt.Fprintf(&buf, "%d,record-%d,value-%d,field-%d\n", i, i, i, i)
-	}
-	return buf.Bytes()
-}
-
-// GenerateJSONL produces N JSON Lines records, one JSON object per line.
-func GenerateJSONL(recordCount int) []byte {
-	var buf bytes.Buffer
-	buf.Grow(recordCount * 80)
-	for i := 1; i <= recordCount; i++ {
-		fmt.Fprintf(&buf, `{"id":%d,"name":"record-%d","value":"data-%d"}`, i, i, i)
-		buf.WriteByte('\n')
-	}
-	return buf.Bytes()
-}
-
-// GenerateNDJSON is an alias for GenerateJSONL (NDJSON and JSONL are identical formats).
-func GenerateNDJSON(recordCount int) []byte {
-	return GenerateJSONL(recordCount)
-}
 
 // GenerateText produces N variable-length text lines.
 func GenerateText(recordCount int) []byte {
@@ -96,11 +54,6 @@ func GenerateJSONArray(recordCount int) []byte {
 	return buf.Bytes()
 }
 
-// GenerateBinary produces a small binary payload containing non-text bytes.
-func GenerateBinary() []byte {
-	return []byte{0x00, 0x46, 0x32, 0x45, 0xff}
-}
-
 // MaxRecordLenFor returns the MaxRecordLengthBytes for variable-length formats.
 // Returns 0 for small files, which signals the organizer to use single-chunk mode.
 func MaxRecordLenFor(dataType string, recordCount int) int64 {
@@ -108,10 +61,6 @@ func MaxRecordLenFor(dataType string, recordCount int) int64 {
 		return 0 // single-chunk: no need for record-length hint
 	}
 	switch dataType {
-	case "jsonl", "ndjson":
-		return maxRecordBytesJSONL
-	case "csv":
-		return maxRecordBytesCSV
 	case "text":
 		return maxRecordBytesText
 	default:

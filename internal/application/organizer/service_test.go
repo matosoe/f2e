@@ -6,27 +6,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/f2e/f2e/internal/adapter/inbound/s3event"
 	"github.com/f2e/f2e/internal/domain/f2e"
 	"github.com/f2e/f2e/internal/platform/config"
 )
 
-func TestJobs(t *testing.T) {
-	s := Service{Store: fakeHead{}, Config: config.Config{RecordLength: 10, RecordsPerChunk: 10}}
-	b := []byte(`{"Records":[{"eventName":"ObjectCreated:Put","s3":{"bucket":{"name":"f2e-input"},"object":{"key":"input%2Fa+b.txt"}}}]}`)
-	references, e := s3event.Parse(b)
-	if e != nil {
-		t.Fatal(e)
-	}
-	j, e := s.Jobs(context.Background(), references)
-	if e != nil || len(j) != 3 || j[2].RecordCount != 5 || j[1].StartByte != 100 || j[2].EndByteInclusive != 249 {
-		t.Fatalf("jobs=%+v err=%v", j, e)
-	}
-}
-
 func TestPlanCreatesNewJobForReplayButPreservesFileIdentity(t *testing.T) {
-	s := Service{Store: fakeHead{}, Config: config.Config{RecordLength: 10, RecordsPerChunk: 10}}
-	req := f2e.OrganizerRequest{SchemaVersion: f2e.SchemaVersion, Files: []f2e.FileRequest{{Bucket: "b", Key: "k", DataType: f2e.DataTypeFixedWidth}}}
+	s := Service{Store: rangeStore{"aaa\n"}, Config: config.Config{RecordsPerChunk: 10}}
+	req := f2e.OrganizerRequest{SchemaVersion: f2e.SchemaVersion, Files: []f2e.FileRequest{{Bucket: "b", Key: "k", DataType: f2e.DataTypeText, MaxRecordLengthBytes: 4}}}
 	first, err := s.Plan(context.Background(), req)
 	if err != nil {
 		t.Fatal(err)
@@ -41,8 +27,8 @@ func TestPlanCreatesNewJobForReplayButPreservesFileIdentity(t *testing.T) {
 }
 
 func TestPlanPreservesJobForSameIntakeOccurrence(t *testing.T) {
-	s := Service{Store: fakeHead{}, Config: config.Config{RecordLength: 50, RecordsPerChunk: 10}}
-	req := f2e.OrganizerRequest{SchemaVersion: f2e.SchemaVersion, ExecutionID: "sqs-message-id", Files: []f2e.FileRequest{{Bucket: "b", Key: "k", DataType: f2e.DataTypeFixedWidth}}}
+	s := Service{Store: rangeStore{"aaa\n"}, Config: config.Config{RecordsPerChunk: 10}}
+	req := f2e.OrganizerRequest{SchemaVersion: f2e.SchemaVersion, ExecutionID: "sqs-message-id", Files: []f2e.FileRequest{{Bucket: "b", Key: "k", DataType: f2e.DataTypeText, MaxRecordLengthBytes: 4}}}
 	first, err := s.Plan(context.Background(), req)
 	if err != nil {
 		t.Fatal(err)
@@ -56,10 +42,11 @@ func TestPlanPreservesJobForSameIntakeOccurrence(t *testing.T) {
 	}
 }
 
-func TestPlanCarriesFormatAndOptionsToWorkerJob(t *testing.T) {
-	s := Service{Store: fakeHead{}, Config: config.Config{RecordLength: 10, RecordsPerChunk: 10}}
-	jobs, err := s.Plan(context.Background(), f2e.OrganizerRequest{SchemaVersion: f2e.SchemaVersion, Files: []f2e.FileRequest{{Bucket: "b", Key: "events.jsonl", DataType: f2e.DataTypeJSONL, Options: f2e.ProcessingOptions{BypassJSONValidation: true}}}})
-	if err != nil || len(jobs) != 1 || jobs[0].DataType != f2e.DataTypeJSONL || !jobs[0].Options.BypassJSONValidation || jobs[0].EndByteInclusive != 249 {
+func TestPlanCarriesFormatAndLayoutToWorkerJob(t *testing.T) {
+	s := Service{Store: rangeStore{`{"items":[{"a":1}]}`}, Config: config.Config{RecordsPerChunk: 10}}
+	layout := f2e.JSONArrayLayout{ArrayPath: "items", MaxBytesPerElement: 16}
+	jobs, err := s.Plan(context.Background(), f2e.OrganizerRequest{SchemaVersion: f2e.SchemaVersion, Files: []f2e.FileRequest{{Bucket: "b", Key: "events.json", DataType: f2e.DataTypeJSON, JSONArrayLayout: layout}}})
+	if err != nil || len(jobs) != 1 || jobs[0].DataType != f2e.DataTypeJSON || jobs[0].JSONArrayLayout.MaxBytesPerElement != 16 || jobs[0].JSONArrayOffset == 0 {
 		t.Fatalf("jobs=%+v err=%v", jobs, err)
 	}
 }
@@ -67,9 +54,7 @@ func TestPlanCarriesFormatAndOptionsToWorkerJob(t *testing.T) {
 func TestAllFormatsAreAcceptedInProduction(t *testing.T) {
 	s := Service{Config: config.Config{Environment: "production"}}
 	for _, dataType := range []f2e.DataType{
-		f2e.DataTypeFixedWidth, f2e.DataTypeJSONL, f2e.DataTypeNDJSON,
-		f2e.DataTypeText, f2e.DataTypeCSV, f2e.DataTypeJSON,
-		f2e.DataTypeBinary, f2e.DataTypeMultiLine,
+		f2e.DataTypeText, f2e.DataTypeJSON, f2e.DataTypeMultiLine,
 	} {
 		if !s.validType(dataType) {
 			t.Errorf("%q must be accepted in production", dataType)
@@ -77,15 +62,16 @@ func TestAllFormatsAreAcceptedInProduction(t *testing.T) {
 	}
 }
 
-func TestPlanRejectsBinaryThatCannotFitAnEvent(t *testing.T) {
-	data := strings.Repeat("x", 800)
-	s := Service{Store: rangeStore{data}, Config: config.Config{Environment: "production", MaxEventBytes: 1024}}
-	_, err := s.Plan(context.Background(), f2e.OrganizerRequest{
-		SchemaVersion: f2e.SchemaVersion,
-		Files:         []f2e.FileRequest{{Bucket: "b", Key: "payload.bin", DataType: f2e.DataTypeBinary}},
-	})
-	if err == nil || !strings.Contains(err.Error(), "binary object size") {
-		t.Fatalf("expected binary size error, got %v", err)
+func TestPlanRejectsLegacyDataTypes(t *testing.T) {
+	s := Service{Store: rangeStore{"aaa\n"}, Config: config.Config{RecordsPerChunk: 10}}
+	for _, dataType := range []f2e.DataType{"", "fixed-width", "jsonl", "ndjson", "csv", "binary"} {
+		_, err := s.Plan(context.Background(), f2e.OrganizerRequest{
+			SchemaVersion: f2e.SchemaVersion,
+			Files:         []f2e.FileRequest{{Bucket: "b", Key: "k", DataType: dataType}},
+		})
+		if err == nil || !strings.Contains(err.Error(), "unsupported data type") {
+			t.Fatalf("dataType=%q err=%v", dataType, err)
+		}
 	}
 }
 

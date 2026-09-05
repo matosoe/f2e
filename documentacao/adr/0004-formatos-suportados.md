@@ -1,6 +1,6 @@
 # ADR 0004 — Status dos formatos
 
-**Status:** aceito em 2026-09-01; alterado em 2026-09-03
+**Status:** supersedido em 2026-09-05 pelo [ADR 0005](0005-tres-modos-de-delimitacao.md)
 
 ## Decisão
 

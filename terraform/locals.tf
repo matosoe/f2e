@@ -8,7 +8,6 @@ locals {
   lambda_env_base = {
     F2E_ENVIRONMENT             = var.environment
     F2E_INPUT_BUCKET            = var.f2e_input_bucket
-    F2E_RECORD_LENGTH           = tostring(var.f2e_record_length)
     F2E_RECORDS_PER_CHUNK       = tostring(var.f2e_records_per_chunk)
     F2E_BATCH_SIZE              = tostring(var.f2e_batch_size)
     F2E_MAX_EVENT_BYTES         = tostring(var.f2e_max_event_bytes)
@@ -37,7 +36,6 @@ locals {
 
   file_configuration_base = {
     bucket               = var.f2e_input_bucket
-    recordLengthBytes    = var.f2e_record_length
     recordsPerChunk      = var.f2e_records_per_chunk
     batchSize            = var.f2e_batch_size
     maxEventBytes        = var.f2e_max_event_bytes
@@ -48,16 +46,10 @@ locals {
     eventSchemaId        = "f2e-record"
     eventSchemaVersion   = "1"
     eventFormat          = "json"
-    options              = { bypassJsonValidation = false }
   }
 
   file_configurations = {
-    "example-fixed-width" = merge(local.file_configuration_base, { prefix = "example-fixed-width/", dataType = "fixed-width" })
-    "example-text"        = merge(local.file_configuration_base, { prefix = "example-text/", dataType = "text", maxRecordLengthBytes = 65536 })
-    "example-jsonl"       = merge(local.file_configuration_base, { prefix = "example-jsonl/", dataType = "jsonl", maxRecordLengthBytes = 65536 })
-    "example-ndjson"      = merge(local.file_configuration_base, { prefix = "example-ndjson/", dataType = "ndjson", maxRecordLengthBytes = 65536 })
-    "example-csv"         = merge(local.file_configuration_base, { prefix = "example-csv/", dataType = "csv", maxFileBytes = 67108864, maxChunkBytes = 67108864 })
-    "example-binary"      = merge(local.file_configuration_base, { prefix = "example-binary/", dataType = "binary", maxFileBytes = 193536, maxChunkBytes = 193536 })
+    "example-text" = merge(local.file_configuration_base, { prefix = "example-text/", dataType = "text", maxRecordLengthBytes = 65536 })
     "example-json" = merge(local.file_configuration_base, {
       prefix          = "example-json/", dataType = "json",
       jsonArrayLayout = { arrayPath = "", maxBytesPerElement = 65536 }
@@ -75,14 +67,9 @@ locals {
     maxBatchSize            = 10
     maxJsonArraySearchBytes = 16777216
     inputTypes = {
-      "fixed-width" = { maxFileBytes = 10737418240, maxRecordBytes = 258048 }
-      text          = { maxFileBytes = 10737418240, maxRecordBytes = 258048 }
-      jsonl         = { maxFileBytes = 10737418240, maxRecordBytes = 258048 }
-      ndjson        = { maxFileBytes = 10737418240, maxRecordBytes = 258048 }
-      csv           = { maxFileBytes = 67108864, maxRecordBytes = 258048 }
-      json          = { maxFileBytes = 10737418240, maxRecordBytes = 258048 }
-      binary        = { maxFileBytes = 193536, maxRecordBytes = 193536 }
-      "multi-line"  = { maxFileBytes = 10737418240, maxRecordBytes = 258048 }
+      text         = { maxFileBytes = 10737418240, maxRecordBytes = 258048 }
+      json         = { maxFileBytes = 10737418240, maxRecordBytes = 258048 }
+      "multi-line" = { maxFileBytes = 10737418240, maxRecordBytes = 258048 }
     }
   }
 }

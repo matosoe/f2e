@@ -20,14 +20,9 @@ type ObjectIdentity struct {
 type DataType string
 
 const (
-	DataTypeFixedWidth DataType = "fixed-width"
-	DataTypeJSONL      DataType = "jsonl"
-	DataTypeNDJSON     DataType = "ndjson"
-	DataTypeCSV        DataType = "csv"
-	DataTypeBinary     DataType = "binary"
-	DataTypeText       DataType = "text"
-	DataTypeMultiLine  DataType = "multi-line"
-	DataTypeJSON       DataType = "json"
+	DataTypeText      DataType = "text"
+	DataTypeMultiLine DataType = "multi-line"
+	DataTypeJSON      DataType = "json"
 )
 
 // MultiLineLayout describes how to group physical lines into logical multi-line records.
@@ -55,12 +50,6 @@ type JSONArrayLayout struct {
 	MaxBytesPerElement int64 `json:"maxBytesPerElement"`
 }
 
-// ProcessingOptions are deliberately carried in both organizer and worker
-// contracts so each worker has all decisions needed to process its chunk.
-type ProcessingOptions struct {
-	BypassJSONValidation bool `json:"bypassJsonValidation,omitempty"`
-}
-
 // CorporateContext carries trace identifiers through every internal hop and
 // into the self-contained output envelope.
 type CorporateContext struct {
@@ -71,38 +60,35 @@ type CorporateContext struct {
 }
 
 type FileRequest struct {
-	Bucket               string            `json:"bucket"`
-	Key                  string            `json:"key"`
-	PresignedURL         string            `json:"presignedUrl,omitempty"`
-	DataType             DataType          `json:"dataType"`
-	MaxRecordLengthBytes int64             `json:"maxRecordLengthBytes,omitempty"`
-	MultiLineLayout      MultiLineLayout   `json:"multiLineLayout,omitempty"`
-	JSONArrayLayout      JSONArrayLayout   `json:"jsonArrayLayout,omitempty"`
-	Options              ProcessingOptions `json:"options,omitempty"`
-	Context              CorporateContext  `json:"context,omitempty"`
+	Bucket               string           `json:"bucket"`
+	Key                  string           `json:"key"`
+	PresignedURL         string           `json:"presignedUrl,omitempty"`
+	DataType             DataType         `json:"dataType"`
+	MaxRecordLengthBytes int64            `json:"maxRecordLengthBytes,omitempty"`
+	MultiLineLayout      MultiLineLayout  `json:"multiLineLayout,omitempty"`
+	JSONArrayLayout      JSONArrayLayout  `json:"jsonArrayLayout,omitempty"`
+	Context              CorporateContext `json:"context,omitempty"`
 }
 
 // PrefixConfiguration is the JSON document stored in SSM for an S3 bucket/key
 // prefix. It combines the file contract with the tunable limits that used to
 // be defined only at Lambda startup.
 type PrefixConfiguration struct {
-	Bucket               string            `json:"bucket"`
-	Prefix               string            `json:"prefix"`
-	DataType             DataType          `json:"dataType"`
-	RecordLengthBytes    int               `json:"recordLengthBytes"`
-	RecordsPerChunk      int               `json:"recordsPerChunk"`
-	BatchSize            int               `json:"batchSize"`
-	MaxEventBytes        int               `json:"maxEventBytes"`
-	MaxFileBytes         int64             `json:"maxFileBytes"`
-	MaxChunkBytes        int64             `json:"maxChunkBytes"`
-	JSONArraySearchBytes int               `json:"jsonArraySearchBytes"`
-	MaxRecordLengthBytes int64             `json:"maxRecordLengthBytes,omitempty"`
-	MultiLineLayout      MultiLineLayout   `json:"multiLineLayout,omitempty"`
-	JSONArrayLayout      JSONArrayLayout   `json:"jsonArrayLayout,omitempty"`
-	Options              ProcessingOptions `json:"options,omitempty"`
-	EventSchemaID        string            `json:"eventSchemaId"`
-	EventSchemaVersion   string            `json:"eventSchemaVersion"`
-	EventFormat          string            `json:"eventFormat"`
+	Bucket               string          `json:"bucket"`
+	Prefix               string          `json:"prefix"`
+	DataType             DataType        `json:"dataType"`
+	RecordsPerChunk      int             `json:"recordsPerChunk"`
+	BatchSize            int             `json:"batchSize"`
+	MaxEventBytes        int             `json:"maxEventBytes"`
+	MaxFileBytes         int64           `json:"maxFileBytes"`
+	MaxChunkBytes        int64           `json:"maxChunkBytes"`
+	JSONArraySearchBytes int             `json:"jsonArraySearchBytes"`
+	MaxRecordLengthBytes int64           `json:"maxRecordLengthBytes,omitempty"`
+	MultiLineLayout      MultiLineLayout `json:"multiLineLayout,omitempty"`
+	JSONArrayLayout      JSONArrayLayout `json:"jsonArrayLayout,omitempty"`
+	EventSchemaID        string          `json:"eventSchemaId"`
+	EventSchemaVersion   string          `json:"eventSchemaVersion"`
+	EventFormat          string          `json:"eventFormat"`
 }
 
 type InputTypeLimits struct {
@@ -123,7 +109,6 @@ type GlobalLimits struct {
 
 // JobConfiguration carries the selected prefix configuration to the Worker.
 type JobConfiguration struct {
-	RecordLengthBytes  int    `json:"recordLengthBytes"`
 	BatchSize          int    `json:"batchSize"`
 	MaxEventBytes      int    `json:"maxEventBytes"`
 	MaxChunkBytes      int64  `json:"maxChunkBytes"`
@@ -142,37 +127,32 @@ type OrganizerRequest struct {
 }
 
 type ChunkJob struct {
-	SchemaVersion        string            `json:"schemaVersion"`
-	JobID                string            `json:"jobId"`
-	FileID               string            `json:"fileId"`
-	ChunkID              string            `json:"chunkId"`
-	Bucket               string            `json:"bucket"`
-	Key                  string            `json:"key"`
-	PresignedURL         string            `json:"presignedUrl,omitempty"`
-	ETag                 string            `json:"etag"`
-	StartRecord          int64             `json:"startRecord"`
-	RecordCount          int64             `json:"recordCount"`
-	RecordLengthBytes    int64             `json:"recordLengthBytes"`
-	StartByte            int64             `json:"startByte"`
-	EndByteInclusive     int64             `json:"endByteInclusive"`
-	MaxRecordLengthBytes int64             `json:"maxRecordLengthBytes,omitempty"`
-	TrailingPaddingBytes int64             `json:"trailingPaddingBytes,omitempty"`
-	DataType             DataType          `json:"dataType"`
-	MultiLineLayout      MultiLineLayout   `json:"multiLineLayout,omitempty"`
-	JSONArrayLayout      JSONArrayLayout   `json:"jsonArrayLayout,omitempty"`
-	JSONArrayOffset      int64             `json:"jsonArrayOffset,omitempty"`
-	Options              ProcessingOptions `json:"options,omitempty"`
-	Context              CorporateContext  `json:"context,omitempty"`
-	VersionID            string            `json:"versionId,omitempty"`
-	FileSize             int64             `json:"fileSize,omitempty"`
-	Configuration        JobConfiguration  `json:"configuration,omitempty"`
+	SchemaVersion        string           `json:"schemaVersion"`
+	JobID                string           `json:"jobId"`
+	FileID               string           `json:"fileId"`
+	ChunkID              string           `json:"chunkId"`
+	Bucket               string           `json:"bucket"`
+	Key                  string           `json:"key"`
+	PresignedURL         string           `json:"presignedUrl,omitempty"`
+	ETag                 string           `json:"etag"`
+	StartRecord          int64            `json:"startRecord"`
+	StartByte            int64            `json:"startByte"`
+	EndByteInclusive     int64            `json:"endByteInclusive"`
+	MaxRecordLengthBytes int64            `json:"maxRecordLengthBytes,omitempty"`
+	TrailingPaddingBytes int64            `json:"trailingPaddingBytes,omitempty"`
+	DataType             DataType         `json:"dataType"`
+	MultiLineLayout      MultiLineLayout  `json:"multiLineLayout,omitempty"`
+	JSONArrayLayout      JSONArrayLayout  `json:"jsonArrayLayout,omitempty"`
+	JSONArrayOffset      int64            `json:"jsonArrayOffset,omitempty"`
+	Context              CorporateContext `json:"context,omitempty"`
+	VersionID            string           `json:"versionId,omitempty"`
+	FileSize             int64            `json:"fileSize,omitempty"`
+	Configuration        JobConfiguration `json:"configuration,omitempty"`
 }
 
 // RecordPayload carries the raw parsed content of a single record.
 type RecordPayload struct {
-	Raw    string   `json:"raw,omitempty"`
-	Fields []string `json:"fields,omitempty"`
-	Base64 string   `json:"base64,omitempty"`
+	Raw string `json:"raw,omitempty"`
 }
 
 // Envelope is the standard File-to-Envelope contract for every published event.

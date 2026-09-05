@@ -63,7 +63,7 @@ enviar_arquivo() {
 enviar_solicitacao_organizer() {
   local intake body
   intake="$(awsq get-queue-url --queue-name file-intake --query QueueUrl --output text)"
-  body="$(jq -cn --arg bucket f2e-input --arg key "input/entrada-${QUANTIDADE_REGISTROS}.txt" '{schemaVersion:"1",files:[{bucket:$bucket,key:$key,dataType:"fixed-width"}]}')"
+  body="$(jq -cn --arg bucket f2e-input --arg key "input/entrada-${QUANTIDADE_REGISTROS}.txt" '{schemaVersion:"1",files:[{bucket:$bucket,key:$key,dataType:"text"}]}')"
   awsq send-message --queue-url "$intake" --message-body "$body" >/dev/null
 }
 

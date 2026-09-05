@@ -31,9 +31,9 @@ func TestHandlerReturnsOnlyInvalidMessageAsPartialBatchFailure(t *testing.T) {
 	q := &testQueue{}
 	service = workerapp.Service{
 		Resolver: testResolver{}, Queue: q,
-		Config: config.Config{RecordLength: 4, BatchSize: 10, MaxEventBytes: 256 * 1024, OutputQueueURL: "out", EventSchemaID: "test", EventSchemaVersion: "1", EventFormat: "json"},
+		Config: config.Config{BatchSize: 10, MaxEventBytes: 256 * 1024, OutputQueueURL: "out", EventSchemaID: "test", EventSchemaVersion: "1", EventFormat: "json"},
 	}
-	job := f2e.ChunkJob{SchemaVersion: f2e.SchemaVersion, FileID: "f", JobID: "j", ChunkID: "00000001", Bucket: "b", Key: "k", RecordCount: 1, RecordLengthBytes: 4, EndByteInclusive: 3, DataType: f2e.DataTypeFixedWidth}
+	job := f2e.ChunkJob{SchemaVersion: f2e.SchemaVersion, FileID: "f", JobID: "j", ChunkID: "00000001", Bucket: "b", Key: "k", EndByteInclusive: 3, MaxRecordLengthBytes: 4, DataType: f2e.DataTypeText}
 	body, _ := json.Marshal(job)
 	event := events.SQSEvent{Records: []events.SQSMessage{
 		{MessageId: "valid", Body: string(body), Attributes: map[string]string{"ApproximateReceiveCount": "1"}},

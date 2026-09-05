@@ -63,9 +63,8 @@ DERRUBAR_AMBIENTE=false
 ```
 
 `QUANTIDADE_REGISTROS` controla o arquivo gerado. Com `DERRUBAR_AMBIENTE=true`,
-o LocalStack é encerrado ao fim do fluxo. O gerador cria registros de 100 bytes,
-compatíveis com `F2E_RECORD_LENGTH=100`, e grava um manifesto com tamanho e
-SHA-256 em `automacao/dados/`.
+o LocalStack é encerrado ao fim do fluxo. O gerador cria registros de texto (uma
+linha por evento) e grava um manifesto com tamanho e SHA-256 em `automacao/dados/`.
 
 O LocalStack também provisiona configurações SSM sob
 `/f2e/local/file-config/f2e-input` e uma notificação S3 para os prefixos
@@ -88,7 +87,7 @@ intake="$(aws sqs --endpoint-url http://localhost:4566 --region us-east-1 \
   get-queue-url --queue-name file-intake --query QueueUrl --output text)"
 aws sqs --endpoint-url http://localhost:4566 --region us-east-1 send-message \
   --queue-url "$intake" \
-  --message-body '{"schemaVersion":"1","files":[{"bucket":"f2e-input","key":"input/entrada-90.txt","dataType":"fixed-width"}]}'
+  --message-body '{"schemaVersion":"1","files":[{"bucket":"f2e-input","key":"input/entrada-90.txt","dataType":"text","maxRecordLengthBytes":256}]}'
 ```
 
 Ajuste `entrada-90.txt` se tiver alterado a quantidade. O ambiente local usa o

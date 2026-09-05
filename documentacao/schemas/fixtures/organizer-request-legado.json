@@ -1,0 +1,13 @@
+{
+  "_comment": "Exemplo LEGADO — tipo removido. Referência histórica; o Organizer rejeitará este request após T04.",
+  "schemaVersion": "1",
+  "files": [
+    {
+      "bucket": "f2e-input",
+      "key": "entrada/registros.ndjson",
+      "dataType": "ndjson",
+      "maxRecordLengthBytes": 1048576,
+      "options": { "bypassJsonValidation": false }
+    }
+  ]
+}

@@ -13,7 +13,7 @@ type Config struct {
 	Environment                                                                  string
 	FileConfigPath                                                               string
 	GlobalLimitsParameter                                                        string
-	RecordLength, RecordsPerChunk, BatchSize, MaxReceiveCount                    int
+	RecordsPerChunk, BatchSize, MaxReceiveCount                    int
 	LedgerRetentionDays                                                          int
 	MaxEventBytes                                                                int
 	JSONArraySearchBytes                                                         int
@@ -28,9 +28,6 @@ func Load() (Config, error) {
 	c.FileConfigPath = value("F2E_FILE_CONFIG_PATH", "/f2e/"+c.Environment+"/file-config")
 	c.GlobalLimitsParameter = value("F2E_GLOBAL_LIMITS_PARAMETER", "/f2e/"+c.Environment+"/global-limits")
 	var err error
-	if c.RecordLength, err = integer("F2E_RECORD_LENGTH", 100); err != nil {
-		return c, err
-	}
 	if c.RecordsPerChunk, err = integer("F2E_RECORDS_PER_CHUNK", 1000); err != nil {
 		return c, err
 	}
@@ -55,7 +52,7 @@ func Load() (Config, error) {
 	if c.MaxChunkBytes, err = integer64("F2E_MAX_CHUNK_BYTES", 64*1024*1024); err != nil {
 		return c, err
 	}
-	if c.RecordLength < 2 || c.RecordsPerChunk < 1 || c.BatchSize < 1 || c.BatchSize > 10 || c.MaxReceiveCount < 1 || c.LedgerRetentionDays < 1 || c.MaxEventBytes < 1024 || c.MaxEventBytes > 256*1024 || c.JSONArraySearchBytes < 1024 || c.JSONArraySearchBytes > 16*1024*1024 || c.MaxChunkBytes < 1024 || c.MaxFileBytes < c.MaxChunkBytes {
+	if c.RecordsPerChunk < 1 || c.BatchSize < 1 || c.BatchSize > 10 || c.MaxReceiveCount < 1 || c.LedgerRetentionDays < 1 || c.MaxEventBytes < 1024 || c.MaxEventBytes > 256*1024 || c.JSONArraySearchBytes < 1024 || c.JSONArraySearchBytes > 16*1024*1024 || c.MaxChunkBytes < 1024 || c.MaxFileBytes < c.MaxChunkBytes {
 		return c, fmt.Errorf("invalid F2E numeric configuration")
 	}
 	c.EventSchemaID = value("F2E_EVENT_SCHEMA_ID", "f2e-record")
