@@ -89,6 +89,30 @@ type PrefixConfiguration struct {
 	EventSchemaID        string          `json:"eventSchemaId"`
 	EventSchemaVersion   string          `json:"eventSchemaVersion"`
 	EventFormat          string          `json:"eventFormat"`
+	// Responsible is a declared human-readable identifier for the party that
+	// last updated this configuration. It is not an authenticated identity;
+	// correlate with CloudTrail for proof of authorship.
+	Responsible string `json:"responsible,omitempty"`
+}
+
+// ConfigurationSnapshot captures the immutable provenance of a prefix
+// configuration as loaded from SSM at admission time. Once attached to a job,
+// subsequent SSM changes do not affect that job.
+type ConfigurationSnapshot struct {
+	// ConfigHash is the SHA-256 hex digest of the canonical JSON content.
+	ConfigHash string `json:"configHash"`
+	// ParameterName is the SSM parameter name (or ARN) that supplied the configuration.
+	ParameterName string `json:"parameterName"`
+	// ParameterVersion is the SSM parameter version returned by GetParameter/GetParametersByPath.
+	ParameterVersion int64 `json:"parameterVersion"`
+	// Responsible is the declared responsible field from the configuration document.
+	Responsible string `json:"responsible,omitempty"`
+	// LoadedAt is the instant the configuration was read from SSM (UTC RFC3339Nano).
+	LoadedAt string `json:"loadedAt"`
+	// GlobalLimitsParameter is the SSM parameter name that supplied the global limits.
+	GlobalLimitsParameter string `json:"globalLimitsParameter"`
+	// GlobalLimitsVersion is the SSM parameter version of the global limits.
+	GlobalLimitsVersion int64 `json:"globalLimitsVersion"`
 }
 
 type InputTypeLimits struct {
@@ -127,27 +151,28 @@ type OrganizerRequest struct {
 }
 
 type ChunkJob struct {
-	SchemaVersion        string           `json:"schemaVersion"`
-	JobID                string           `json:"jobId"`
-	FileID               string           `json:"fileId"`
-	ChunkID              string           `json:"chunkId"`
-	Bucket               string           `json:"bucket"`
-	Key                  string           `json:"key"`
-	PresignedURL         string           `json:"presignedUrl,omitempty"`
-	ETag                 string           `json:"etag"`
-	StartRecord          int64            `json:"startRecord"`
-	StartByte            int64            `json:"startByte"`
-	EndByteInclusive     int64            `json:"endByteInclusive"`
-	MaxRecordLengthBytes int64            `json:"maxRecordLengthBytes,omitempty"`
-	TrailingPaddingBytes int64            `json:"trailingPaddingBytes,omitempty"`
-	DataType             DataType         `json:"dataType"`
-	MultiLineLayout      MultiLineLayout  `json:"multiLineLayout,omitempty"`
-	JSONArrayLayout      JSONArrayLayout  `json:"jsonArrayLayout,omitempty"`
-	JSONArrayOffset      int64            `json:"jsonArrayOffset,omitempty"`
-	Context              CorporateContext `json:"context,omitempty"`
-	VersionID            string           `json:"versionId,omitempty"`
-	FileSize             int64            `json:"fileSize,omitempty"`
-	Configuration        JobConfiguration `json:"configuration,omitempty"`
+	SchemaVersion        string                `json:"schemaVersion"`
+	JobID                string                `json:"jobId"`
+	FileID               string                `json:"fileId"`
+	ChunkID              string                `json:"chunkId"`
+	Bucket               string                `json:"bucket"`
+	Key                  string                `json:"key"`
+	PresignedURL         string                `json:"presignedUrl,omitempty"`
+	ETag                 string                `json:"etag"`
+	StartRecord          int64                 `json:"startRecord"`
+	StartByte            int64                 `json:"startByte"`
+	EndByteInclusive     int64                 `json:"endByteInclusive"`
+	MaxRecordLengthBytes int64                 `json:"maxRecordLengthBytes,omitempty"`
+	TrailingPaddingBytes int64                 `json:"trailingPaddingBytes,omitempty"`
+	DataType             DataType              `json:"dataType"`
+	MultiLineLayout      MultiLineLayout       `json:"multiLineLayout,omitempty"`
+	JSONArrayLayout      JSONArrayLayout       `json:"jsonArrayLayout,omitempty"`
+	JSONArrayOffset      int64                 `json:"jsonArrayOffset,omitempty"`
+	Context              CorporateContext      `json:"context,omitempty"`
+	VersionID            string                `json:"versionId,omitempty"`
+	FileSize             int64                 `json:"fileSize,omitempty"`
+	Configuration        JobConfiguration      `json:"configuration,omitempty"`
+	ConfigSnapshot       ConfigurationSnapshot `json:"configSnapshot,omitempty"`
 }
 
 // RecordPayload carries the raw parsed content of a single record.

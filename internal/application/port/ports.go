@@ -27,8 +27,8 @@ type ObjectStore interface {
 }
 
 type PrefixConfigurationResolver interface {
-	ResolvePrefixConfiguration(context.Context, string, string) (f2e.PrefixConfiguration, error)
-	LoadGlobalLimits(context.Context) (f2e.GlobalLimits, error)
+	ResolvePrefixConfiguration(context.Context, string, string) (f2e.PrefixConfiguration, f2e.ConfigurationSnapshot, error)
+	LoadGlobalLimits(context.Context) (f2e.GlobalLimits, int64, string, error)
 }
 
 type Queue interface {

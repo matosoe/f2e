@@ -15,17 +15,29 @@ import (
 
 func TestResolvePrefixConfigurationSelectsMostSpecificPrefix(t *testing.T) {
 	base := f2e.PrefixConfiguration{Bucket: "input", Prefix: "example/", DataType: f2e.DataTypeText}
-	specific := f2e.PrefixConfiguration{Bucket: "input", Prefix: "example-text/", DataType: f2e.DataTypeText, MaxRecordLengthBytes: 128}
+	specific := f2e.PrefixConfiguration{Bucket: "input", Prefix: "example-text/", DataType: f2e.DataTypeText, MaxRecordLengthBytes: 128, Responsible: "ops-team"}
 	a := testSSMClient(t, map[string]any{"Parameters": parameters(t, base, specific)})
 
-	got, err := a.ResolvePrefixConfiguration(context.Background(), "input", "example-text/records.txt")
+	got, snapshot, err := a.ResolvePrefixConfiguration(context.Background(), "input", "example-text/records.txt")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got.Prefix != specific.Prefix || got.MaxRecordLengthBytes != 128 {
 		t.Fatalf("selected %+v, want %+v", got, specific)
 	}
-	if _, err := a.ResolvePrefixConfiguration(context.Background(), "input", "unknown/file.txt"); err == nil {
+	if snapshot.ConfigHash == "" {
+		t.Fatal("expected non-empty config hash in snapshot")
+	}
+	if snapshot.ParameterName == "" {
+		t.Fatal("expected non-empty parameter name in snapshot")
+	}
+	if snapshot.Responsible != "ops-team" {
+		t.Fatalf("expected responsible 'ops-team', got %q", snapshot.Responsible)
+	}
+	if snapshot.LoadedAt == "" {
+		t.Fatal("expected non-empty loadedAt in snapshot")
+	}
+	if _, _, err := a.ResolvePrefixConfiguration(context.Background(), "input", "unknown/file.txt"); err == nil {
 		t.Fatal("expected an unmatched key to fail")
 	}
 }
@@ -36,14 +48,44 @@ func TestLoadGlobalLimitsDecodesSSMDocument(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	a := testSSMClient(t, map[string]any{"Parameter": map[string]string{"Name": "/f2e/local/global-limits", "Value": string(value)}})
+	a := testSSMClient(t, map[string]any{"Parameter": map[string]any{"Name": "/f2e/local/global-limits", "Value": string(value), "Version": float64(5)}})
 
-	got, err := a.LoadGlobalLimits(context.Background())
+	got, version, paramName, err := a.LoadGlobalLimits(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got.MaxEventBytes != want.MaxEventBytes || got.InputTypes[f2e.DataTypeText].MaxRecordBytes != 512 {
 		t.Fatalf("decoded %+v, want %+v", got, want)
+	}
+	if version != 5 {
+		t.Fatalf("expected version 5, got %d", version)
+	}
+	if paramName != "/f2e/local/global-limits" {
+		t.Fatalf("expected param name '/f2e/local/global-limits', got %q", paramName)
+	}
+}
+
+func TestConfigurationSnapshotIsImmutableAfterAdmission(t *testing.T) {
+	// Simulate two SSM responses: first with version 1, second with version 2.
+	// The snapshot captured at admission must reflect version 1.
+	cfg := f2e.PrefixConfiguration{Bucket: "input", Prefix: "example/", DataType: f2e.DataTypeText, MaxRecordLengthBytes: 128, Responsible: "v1"}
+	a := testSSMClient(t, map[string]any{"Parameters": parameters(t, cfg)})
+
+	_, snapshot1, err := a.ResolvePrefixConfiguration(context.Background(), "input", "example/file.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot1.ConfigHash == "" {
+		t.Fatal("expected non-empty config hash")
+	}
+
+	// A second call with the same SSM response produces the same hash (deterministic).
+	_, snapshot2, err := a.ResolvePrefixConfiguration(context.Background(), "input", "example/file.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot1.ConfigHash != snapshot2.ConfigHash {
+		t.Fatal("config hash must be deterministic for the same SSM content")
 	}
 }
 

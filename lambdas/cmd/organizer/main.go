@@ -21,6 +21,8 @@ import (
 var service organizer.Service
 var configurationResolver port.PrefixConfigurationResolver
 var globalLimits f2e.GlobalLimits
+var globalLimitsVersion int64
+var globalLimitsParameter string
 
 func init() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
@@ -35,7 +37,7 @@ func init() {
 		slog.Error("aws initialization failed", "service", "organizer", "error", e)
 		os.Exit(1)
 	}
-	globalLimits, e = a.LoadGlobalLimits(ctx)
+	globalLimits, globalLimitsVersion, globalLimitsParameter, e = a.LoadGlobalLimits(ctx)
 	if e != nil {
 		slog.Error("global limits initialization failed", "service", "organizer", "error", e)
 		os.Exit(1)
@@ -99,10 +101,13 @@ func jobsFor(ctx context.Context, body []byte, executionID string) ([]f2e.ChunkJ
 	}
 	var jobs []f2e.ChunkJob
 	for _, reference := range references {
-		prefixConfig, err := configurationResolver.ResolvePrefixConfiguration(ctx, reference.Bucket, reference.Key)
+		prefixConfig, configSnapshot, err := configurationResolver.ResolvePrefixConfiguration(ctx, reference.Bucket, reference.Key)
 		if err != nil {
 			return nil, err
 		}
+		// Enrich snapshot with global limits provenance captured at cold start.
+		configSnapshot.GlobalLimitsParameter = globalLimitsParameter
+		configSnapshot.GlobalLimitsVersion = globalLimitsVersion
 		if err := validatePrefixConfiguration(prefixConfig, globalLimits); err != nil {
 			return nil, err
 		}
@@ -131,6 +136,7 @@ func jobsFor(ctx context.Context, body []byte, executionID string) ([]f2e.ChunkJ
 				MaxChunkBytes: prefixConfig.MaxChunkBytes, EventSchemaID: prefixConfig.EventSchemaID,
 				EventSchemaVersion: prefixConfig.EventSchemaVersion, EventFormat: prefixConfig.EventFormat,
 			}
+			execution.Jobs[i].ConfigSnapshot = configSnapshot
 		}
 		logSummary(execution.Summary)
 		jobs = append(jobs, execution.Jobs...)

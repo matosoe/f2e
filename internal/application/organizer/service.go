@@ -367,7 +367,7 @@ func (s Service) Publish(ctx context.Context, jobs []f2e.ChunkJob) error {
 		}
 		for _, chunks := range groups {
 			first := chunks[0]
-			plan := f2e.JobPlan{JobID: first.JobID, FileID: first.FileID, Bucket: first.Bucket, Key: first.Key, VersionID: first.VersionID, ETag: first.ETag, ExpectedChunks: len(chunks), CreatedAt: time.Now().UTC()}
+			plan := f2e.JobPlan{JobID: first.JobID, FileID: first.FileID, Bucket: first.Bucket, Key: first.Key, VersionID: first.VersionID, ETag: first.ETag, ExpectedChunks: len(chunks), CreatedAt: time.Now().UTC(), ConfigSnapshot: first.ConfigSnapshot}
 			if err := s.Ledger.Plan(ctx, plan, chunks); err != nil {
 				return fmt.Errorf("persist job plan: %w", err)
 			}

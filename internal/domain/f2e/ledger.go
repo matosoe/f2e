@@ -22,6 +22,7 @@ type JobPlan struct {
 	ETag           string
 	ExpectedChunks int
 	CreatedAt      time.Time
+	ConfigSnapshot ConfigurationSnapshot
 }
 
 type ChunkResult struct {

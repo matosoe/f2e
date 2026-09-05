@@ -85,9 +85,11 @@ func (a *AWS) Plan(ctx context.Context, plan f2e.JobPlan, chunks []f2e.ChunkJob)
 	if a.LedgerTable == "" {
 		return fmt.Errorf("ledger table is not configured")
 	}
+	configSnapshotJSON, _ := json.Marshal(plan.ConfigSnapshot)
 	values := map[string]types.AttributeValue{
 		":jobId": text(plan.JobID), ":fileId": text(plan.FileID), ":bucket": text(plan.Bucket), ":key": text(plan.Key), ":versionId": text(plan.VersionID), ":etag": text(plan.ETag),
 		":pending": text(string(f2e.JobPending)), ":expected": number(int64(plan.ExpectedChunks)), ":zero": number(0), ":created": text(plan.CreatedAt.Format(time.RFC3339Nano)),
+		":configSnapshot": text(string(configSnapshotJSON)),
 	}
 	retentionDays := a.LedgerRetentionDays
 	if retentionDays < 1 {
@@ -98,7 +100,7 @@ func (a *AWS) Plan(ctx context.Context, plan f2e.JobPlan, chunks []f2e.ChunkJob)
 	if _, err := a.DynamoDB.UpdateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName: aws.String(a.LedgerTable), Key: ledgerKey(plan.JobID, "JOB"),
 		ConditionExpression:      aws.String("attribute_not_exists(pk) OR (fileId = :fileId AND expectedChunks = :expected)"),
-		UpdateExpression:         aws.String("SET jobId = :jobId, fileId = :fileId, #bucket = :bucket, #key = :key, versionId = :versionId, etag = :etag, #s = if_not_exists(#s, :pending), expectedChunks = :expected, completedChunks = if_not_exists(completedChunks, :zero), failedChunks = if_not_exists(failedChunks, :zero), recordsProduced = if_not_exists(recordsProduced, :zero), createdAt = if_not_exists(createdAt, :created), expiresAt = if_not_exists(expiresAt, :expiresAt)"),
+		UpdateExpression:         aws.String("SET jobId = :jobId, fileId = :fileId, #bucket = :bucket, #key = :key, versionId = :versionId, etag = :etag, #s = if_not_exists(#s, :pending), expectedChunks = :expected, completedChunks = if_not_exists(completedChunks, :zero), failedChunks = if_not_exists(failedChunks, :zero), recordsProduced = if_not_exists(recordsProduced, :zero), createdAt = if_not_exists(createdAt, :created), expiresAt = if_not_exists(expiresAt, :expiresAt), configSnapshot = if_not_exists(configSnapshot, :configSnapshot)"),
 		ExpressionAttributeNames: map[string]string{"#s": "status", "#bucket": "bucket", "#key": "key"}, ExpressionAttributeValues: values,
 	}); err != nil {
 		return err
