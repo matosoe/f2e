@@ -85,7 +85,15 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with: { fetch-depth: 0 }
-      - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
+      # The Gitleaks CLI is MIT licensed.  Do not use gitleaks-action here:
+      # its v2+ action wrapper requires a separate GITLEAKS_LICENSE.
+      - name: Scan Git history for leaked secrets
+        run: >-
+          docker run --rm
+          -v "$GITHUB_WORKSPACE:/repo"
+          -w /repo
+          ghcr.io/gitleaks/gitleaks:v8.30.1
+          git --redact
       - uses: bridgecrewio/checkov-action@f967808197a8d784d3e72919f38c3ff0cda7884e # v12
         with:
           directory: terraform
