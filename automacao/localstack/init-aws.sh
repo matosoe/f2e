@@ -13,6 +13,10 @@ for q in file-intake chunk-jobs; do
 done
 mkq output-events 1800
 awslocal s3 mb s3://f2e-input 2>/dev/null || true
+# The Organizer admits S3-triggered objects by their immutable VersionId. Keep
+# the LocalStack bucket aligned with the Terraform-managed bucket so S3 event
+# notifications include that identity.
+awslocal s3api put-bucket-versioning --bucket f2e-input --versioning-configuration Status=Enabled
 global_limits='{"maxFileBytes":10737418240,"maxChunkBytes":67108864,"maxEventBytes":262144,"maxBatchSize":10,"maxJsonArraySearchBytes":16777216,"inputTypes":{"text":{"maxFileBytes":10737418240,"maxRecordBytes":258048},"json":{"maxFileBytes":10737418240,"maxRecordBytes":258048},"multi-line":{"maxFileBytes":10737418240,"maxRecordBytes":258048}}}'
 awslocal ssm put-parameter --name /f2e/local/global-limits --type String --value "$global_limits" --overwrite >/dev/null
 config_path='/f2e/local/file-config/f2e-input'
