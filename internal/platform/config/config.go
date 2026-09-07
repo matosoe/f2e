@@ -9,16 +9,24 @@ import (
 
 type Config struct {
 	Endpoint, Region, InputBucket, IntakeQueueURL, ChunkQueueURL, OutputQueueURL string
-	LedgerTable                                                                  string
-	Environment                                                                  string
-	FileConfigPath                                                               string
-	GlobalLimitsParameter                                                        string
-	RecordsPerChunk, BatchSize, MaxReceiveCount                    int
-	LedgerRetentionDays                                                          int
-	MaxEventBytes                                                                int
-	JSONArraySearchBytes                                                         int
-	MaxFileBytes, MaxChunkBytes                                                  int64
-	EventSchemaID, EventSchemaVersion, EventFormat                               string
+	// CompletionQueueURL is the SQS queue where the completion-publisher Lambda
+	// sends technical conclusion events. It is separate from the record-envelope
+	// output queue so consumers can subscribe independently.
+	CompletionQueueURL    string
+	LedgerTable           string
+	Environment           string
+	FileConfigPath        string
+	GlobalLimitsParameter string
+	RecordsPerChunk, BatchSize, MaxReceiveCount int
+	LedgerRetentionDays                         int
+	MaxEventBytes                               int
+	JSONArraySearchBytes                        int
+	MaxFileBytes, MaxChunkBytes                 int64
+	EventSchemaID, EventSchemaVersion, EventFormat string
+	// PublishConcurrency is the maximum number of SQS SendMessageBatch calls
+	// that may be in-flight simultaneously within a single chunk processing.
+	// Default is 1 (sequential). Values 2–16 are valid; higher is capped to 16.
+	PublishConcurrency int
 }
 
 func Load() (Config, error) {
@@ -52,8 +60,16 @@ func Load() (Config, error) {
 	if c.MaxChunkBytes, err = integer64("F2E_MAX_CHUNK_BYTES", 64*1024*1024); err != nil {
 		return c, err
 	}
+	if c.PublishConcurrency, err = integer("F2E_PUBLISH_CONCURRENCY", 1); err != nil {
+		return c, err
+	}
 	if c.RecordsPerChunk < 1 || c.BatchSize < 1 || c.BatchSize > 10 || c.MaxReceiveCount < 1 || c.LedgerRetentionDays < 1 || c.MaxEventBytes < 1024 || c.MaxEventBytes > 256*1024 || c.JSONArraySearchBytes < 1024 || c.JSONArraySearchBytes > 16*1024*1024 || c.MaxChunkBytes < 1024 || c.MaxFileBytes < c.MaxChunkBytes {
 		return c, fmt.Errorf("invalid F2E numeric configuration")
+	}
+	if c.PublishConcurrency < 1 {
+		c.PublishConcurrency = 1
+	} else if c.PublishConcurrency > 16 {
+		c.PublishConcurrency = 16
 	}
 	c.EventSchemaID = value("F2E_EVENT_SCHEMA_ID", "f2e-record")
 	c.EventSchemaVersion = value("F2E_EVENT_SCHEMA_VERSION", "1")

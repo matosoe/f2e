@@ -1,15 +1,18 @@
 locals {
   monitored_queues = {
-    file-intake = aws_sqs_queue.file_intake
-    chunk-jobs  = aws_sqs_queue.chunk_jobs
+    file-intake       = aws_sqs_queue.file_intake
+    chunk-jobs        = aws_sqs_queue.chunk_jobs
+    completion-events = aws_sqs_queue.completion_events
   }
   monitored_dlqs = {
-    file-intake = aws_sqs_queue.file_intake_dlq
-    chunk-jobs  = aws_sqs_queue.chunk_jobs_dlq
+    file-intake       = aws_sqs_queue.file_intake_dlq
+    chunk-jobs        = aws_sqs_queue.chunk_jobs_dlq
+    completion-events = aws_sqs_queue.completion_events_dlq
   }
   monitored_functions = {
-    organizer = aws_lambda_function.organizer
-    worker    = aws_lambda_function.worker
+    organizer            = aws_lambda_function.organizer
+    worker               = aws_lambda_function.worker
+    completion-publisher = aws_lambda_function.completion_publisher
   }
 }
 
@@ -100,6 +103,34 @@ resource "aws_cloudwatch_metric_alarm" "worker_concurrency" {
   treat_missing_data  = "notBreaching"
   dimensions          = { FunctionName = aws_lambda_function.worker.function_name }
   tags                = local.tags
+}
+
+# ── T14: completion-publisher Streams iterator age alarm ─────────────────────
+#
+# A rising IteratorAge means the completion-publisher is falling behind:
+# completion events are delayed, indicating stuck jobs or publisher outages.
+# Threshold is 5 minutes (300 000 ms) — operators review before the 24-hour
+# Streams retention boundary is approached.
+
+resource "aws_cloudwatch_metric_alarm" "streams_iterator_age" {
+  alarm_name          = "${var.resource_prefix}-${var.environment}-completion-publisher-iterator-age"
+  namespace           = "AWS/Lambda"
+  metric_name         = "IteratorAge"
+  statistic           = "Maximum"
+  period              = 60
+  evaluation_periods  = 5
+  threshold           = 300000 # 5 minutes in milliseconds
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  dimensions = {
+    FunctionName = aws_lambda_function.completion_publisher.function_name
+  }
+  alarm_description = "Completion-publisher DynamoDB Streams iterator age exceeds 5 minutes. Review for stuck jobs or publisher outage. Runbook: documentacao/runbooks/streams-iterator-age.md"
+  # alarm_actions and ok_actions are intentionally empty here. Configure
+  # them via the var.alarm_sns_topic_arn variable (see variables.tf).
+  alarm_actions = var.alarm_sns_topic_arn != "" ? [var.alarm_sns_topic_arn] : []
+  ok_actions    = var.alarm_sns_topic_arn != "" ? [var.alarm_sns_topic_arn] : []
+  tags          = local.tags
 }
 
 resource "aws_cloudwatch_dashboard" "operations" {

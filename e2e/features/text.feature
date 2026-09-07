@@ -4,11 +4,13 @@ Feature: Variable-length text file processing
   Files with ≤1000 lines use single-chunk mode (MaxRecordLengthBytes=0);
   larger files set MaxRecordLengthBytes=64 to enable parallel chunk processing.
 
+  @smoke @regression
   Scenario: Empty text file is rejected
     Given I have an empty "text" file
     When I upload and process the file
     Then no events are produced within 15 seconds
 
+  @smoke @regression
   Scenario Outline: Text file with <count> records — full validation
     Given I have a text file with <count> records
     When I upload and process the file
@@ -22,6 +24,7 @@ Feature: Variable-length text file processing
       | 2     | 30      |
       | 1000  | 90      |
 
+  @regression
   Scenario Outline: Text file with <count> records — count validation only
     Given I have a text file with <count> records
     When I upload and process the file

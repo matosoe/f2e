@@ -90,6 +90,22 @@ type RunReport struct {
 	IntakeDLQCount int `json:"intakeDlqCount"`
 	ChunkDLQCount  int `json:"chunkDlqCount"`
 
+	// Benchmark holds a side-by-side comparison of sequential vs parallel runs.
+	// Present only when E2E_BENCHMARK=true.
+	Benchmark *BenchmarkComparison `json:"benchmark,omitempty"`
+
 	// Notes contains caveats declared at collection time.
 	Notes []string `json:"notes"`
+}
+
+// BenchmarkComparison records the result of running the same scenario set
+// sequentially and then in parallel. The SpeedupFactor is the ratio of the
+// sequential total duration to the parallel total duration. A value > 1
+// indicates actual measured speedup on the current target.
+type BenchmarkComparison struct {
+	Concurrency       int     `json:"concurrency"`
+	SequentialTotalMs int64   `json:"sequentialTotalMs"`
+	ParallelTotalMs   int64   `json:"parallelTotalMs"`
+	SpeedupFactor     float64 `json:"speedupFactor"`
+	Note              string  `json:"note"`
 }

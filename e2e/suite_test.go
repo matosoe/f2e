@@ -2,9 +2,17 @@
 //
 // Prerequisites: start the local environment with automacao/subir-ambiente.sh before running.
 //
-// Run all non-load tests:
+// Run all non-load tests (sequential, default):
 //
 //	cd e2e && go test -v ./...
+//
+// Run with parallel scenarios (4 concurrent):
+//
+//	cd e2e && E2E_CONCURRENCY=4 go test -v ./...
+//
+// Run benchmark comparison (sequential vs parallel):
+//
+//	cd e2e && E2E_BENCHMARK=true E2E_CONCURRENCY=4 go test -v ./...
 //
 // Run including 1-million-record load scenarios:
 //
@@ -20,6 +28,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -47,20 +56,43 @@ func TestE2E(t *testing.T) {
 		target = "aws"
 	}
 
+	concurrency := 1
+	if v := os.Getenv("E2E_CONCURRENCY"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			concurrency = n
+		}
+	}
+
 	runStart := time.Now()
 	runID := runStart.UTC().Format("20060102T150405Z")
 
 	var scenarioMetrics []internal.ScenarioMetrics
+	var benchmarkResult *internal.BenchmarkComparison
+
+	if os.Getenv("E2E_BENCHMARK") == "true" && concurrency > 1 {
+		benchmarkResult = runBenchmark(t, client, tags, concurrency)
+	}
+
+	var initializer func(*godog.ScenarioContext)
+	var dispatcher *internal.MessageDispatcher
+
+	if concurrency > 1 {
+		dispatcher = internal.NewMessageDispatcher(client)
+		defer dispatcher.Stop()
+		initializer = internal.NewScenarioInitializerWithDispatcher(client, dispatcher, &scenarioMetrics)
+	} else {
+		initializer = internal.NewScenarioInitializerWithMetrics(client, &scenarioMetrics)
+	}
 
 	suite := godog.TestSuite{
 		Name:                "f2e-e2e",
-		ScenarioInitializer: internal.NewScenarioInitializerWithMetrics(client, &scenarioMetrics),
+		ScenarioInitializer: initializer,
 		Options: &godog.Options{
 			Format:      "pretty",
 			Paths:       []string{"features"},
 			TestingT:    t,
 			Strict:      true,
-			Concurrency: 1, // sequential: all scenarios share the same output queue
+			Concurrency: concurrency,
 			Tags:        tags,
 		},
 	}
@@ -71,7 +103,7 @@ func TestE2E(t *testing.T) {
 	// A focused tag run is useful during development; its scenario count and
 	// expected DLQ state intentionally differ from the full regression suite.
 	if os.Getenv("E2E_TAGS") != "" {
-		writeMetricsReport(t, runID, runStart, target, scenarioMetrics, 0, 0)
+		writeMetricsReport(t, runID, runStart, target, scenarioMetrics, 0, 0, benchmarkResult)
 		return
 	}
 	// Two empty-file scenarios (text and multi-line) are rejected by the organizer.
@@ -97,13 +129,69 @@ func TestE2E(t *testing.T) {
 	if err := client.AssertLedgerComplete(t.Context(), 14); err != nil {
 		t.Fatal(err)
 	}
-	writeMetricsReport(t, runID, runStart, target, scenarioMetrics, intakeDLQ, chunkDLQ)
+	writeMetricsReport(t, runID, runStart, target, scenarioMetrics, intakeDLQ, chunkDLQ, benchmarkResult)
+}
+
+// runBenchmark runs the scenario suite twice — first sequential, then parallel
+// at the given concurrency — and returns a BenchmarkComparison. The benchmark
+// intentionally uses tag filtering to run a representative but fast subset.
+func runBenchmark(t *testing.T, client *internal.AWSClient, tags string, concurrency int) *internal.BenchmarkComparison {
+	t.Helper()
+
+	// Sequential run.
+	seqStart := time.Now()
+	seqSuite := godog.TestSuite{
+		Name:                "f2e-e2e-seq",
+		ScenarioInitializer: internal.NewScenarioInitializer(client),
+		Options: &godog.Options{
+			Format:      "progress",
+			Paths:       []string{"features"},
+			TestingT:    t,
+			Strict:      true,
+			Concurrency: 1,
+			Tags:        tags + ",~@load",
+		},
+	}
+	seqSuite.Run()
+	seqMs := time.Since(seqStart).Milliseconds()
+
+	// Parallel run.
+	parStart := time.Now()
+	d := internal.NewMessageDispatcher(client)
+	defer d.Stop()
+	parSuite := godog.TestSuite{
+		Name:                "f2e-e2e-par",
+		ScenarioInitializer: internal.NewScenarioInitializerWithDispatcher(client, d, nil),
+		Options: &godog.Options{
+			Format:      "progress",
+			Paths:       []string{"features"},
+			TestingT:    t,
+			Strict:      true,
+			Concurrency: concurrency,
+			Tags:        tags + ",~@load",
+		},
+	}
+	parSuite.Run()
+	parMs := time.Since(parStart).Milliseconds()
+
+	speedup := 0.0
+	if parMs > 0 {
+		speedup = float64(seqMs) / float64(parMs)
+	}
+
+	return &internal.BenchmarkComparison{
+		Concurrency:       concurrency,
+		SequentialTotalMs: seqMs,
+		ParallelTotalMs:   parMs,
+		SpeedupFactor:     speedup,
+		Note:              "Speedup is valid only when both runs target the same AWS environment. LocalStack single-node may not reflect production parallelism.",
+	}
 }
 
 // writeMetricsReport persists the RunReport to the file named by E2E_METRICS_FILE
 // (default: e2e-metrics.json in the working directory). Failures to write are
 // logged as test warnings rather than fatal errors so they don't mask suite results.
-func writeMetricsReport(t *testing.T, runID string, runStart time.Time, target string, scenarios []internal.ScenarioMetrics, intakeDLQ, chunkDLQ int) {
+func writeMetricsReport(t *testing.T, runID string, runStart time.Time, target string, scenarios []internal.ScenarioMetrics, intakeDLQ, chunkDLQ int, benchmark *internal.BenchmarkComparison) {
 	t.Helper()
 	report := internal.RunReport{
 		RunID:          runID,
@@ -114,6 +202,7 @@ func writeMetricsReport(t *testing.T, runID string, runStart time.Time, target s
 		Scenarios:      scenarios,
 		IntakeDLQCount: intakeDLQ,
 		ChunkDLQCount:  chunkDLQ,
+		Benchmark:      benchmark,
 		Notes: []string{
 			"All durations are local wall-clock milliseconds (local clock only).",
 			"AWS-side timestamps in earliestEnvelopeCreatedAt / latestEnvelopeCreatedAt use the Worker clock and must not be subtracted from local durations.",

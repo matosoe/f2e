@@ -4,6 +4,7 @@ package f2e
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"strconv"
 )
 
@@ -86,6 +87,19 @@ func FileID(object ObjectIdentity) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// OutputMode controls how the Worker groups record envelopes into SQS messages.
+//
+//   - OutputModeSingle (default): one SQS message per envelope; limited by MaxEventBytes.
+//   - OutputModeBundle: multiple envelopes packed into one SQS message; limited by
+//     MaxEnvelopesPerMessage and MaxMessageBytes. Consumers must explicitly opt in to
+//     the bundle contract and handle BundleEnvelope instead of a plain Envelope.
+type OutputMode string
+
+const (
+	OutputModeSingle OutputMode = "single" // default; backwards-compatible
+	OutputModeBundle OutputMode = "bundle"
+)
+
 // PrefixConfiguration is the JSON document stored in SSM for an S3 bucket/key
 // prefix. It combines the file contract with the tunable limits that used to
 // be defined only at Lambda startup.
@@ -109,6 +123,46 @@ type PrefixConfiguration struct {
 	// last updated this configuration. It is not an authenticated identity;
 	// correlate with CloudTrail for proof of authorship.
 	Responsible string `json:"responsible,omitempty"`
+
+	// ── Bundle output mode (T15) ──────────────────────────────────────────────
+
+	// OutputMode selects how envelopes are packed into SQS messages.
+	// Omitting or setting "single" preserves the existing per-envelope contract.
+	// Set "bundle" to opt in to multi-envelope packing (requires consumer upgrade).
+	OutputMode OutputMode `json:"outputMode,omitempty"`
+	// MaxEnvelopesPerMessage is the maximum number of envelopes in one bundle
+	// message. Ignored in single mode. Must be ≥ 1 when bundle mode is active.
+	// Default (0) means use the system default of 100 in bundle mode.
+	MaxEnvelopesPerMessage int `json:"maxEnvelopesPerMessage,omitempty"`
+	// MaxMessageBytes is the maximum total byte size of one bundle message
+	// (serialized JSON). Ignored in single mode. Must be ≤ MaxEventBytes when set.
+	// A single envelope that exceeds this limit alone is an explicit error (no truncation).
+	MaxMessageBytes int `json:"maxMessageBytes,omitempty"`
+
+	// ── Authorisation and routing (T20) ──────────────────────────────────────
+
+	// PrefixID is the canonical identifier for this bucket/prefix pair. It
+	// must be unique across all registered prefixes and is used as the stable
+	// key for per-prefix resources (queues, roles, capacity). When empty the
+	// prefix is unregistered and only reachable via explicit OrganizerRequest.
+	PrefixID string `json:"prefixId,omitempty"`
+	// OutputQueueURL overrides the default output queue for events produced by
+	// Workers that process files from this prefix. When empty the system-wide
+	// OutputQueueURL from Lambda environment is used instead.
+	OutputQueueURL string `json:"outputQueueURL,omitempty"`
+	// AllowedSourceARNs is the set of IAM principal ARNs (role, user, or
+	// service) that are permitted to submit OrganizerRequests for files under
+	// this prefix. An empty slice means the prefix is open (legacy behaviour).
+	// These ARNs are not enforced at the code level; they are stored here so
+	// that Terraform can generate corresponding SQS/Lambda resource policies.
+	AllowedSourceARNs []string `json:"allowedSourceARNs,omitempty"`
+
+	// MaxActiveJobs is the maximum number of jobs that may be in a non-terminal
+	// state for this prefix at any given time. 0 means no quota (unlimited).
+	// When the quota is reached, further admissions return ErrQuotaExceeded and
+	// the message is allowed to be retried by the SQS visibility timeout without
+	// causing a DLQ redrive (the organizer does not fail the batch item).
+	MaxActiveJobs int `json:"maxActiveJobs,omitempty"`
 }
 
 // ConfigurationSnapshot captures the immutable provenance of a prefix
@@ -162,6 +216,30 @@ type JobConfiguration struct {
 	EventSchemaID      string `json:"eventSchemaId"`
 	EventSchemaVersion string `json:"eventSchemaVersion"`
 	EventFormat        string `json:"eventFormat"`
+
+	// ── Bundle output mode (T15) ──────────────────────────────────────────────
+
+	// OutputMode controls envelope packing. Empty or "single" preserves the
+	// existing per-envelope contract; "bundle" opts into BundleEnvelope packing.
+	OutputMode OutputMode `json:"outputMode,omitempty"`
+	// MaxEnvelopesPerMessage is the maximum number of envelopes per bundle
+	// message. 0 means use the system default (100).
+	MaxEnvelopesPerMessage int `json:"maxEnvelopesPerMessage,omitempty"`
+	// MaxMessageBytes is the ceiling for a serialised bundle message in bytes.
+	// 0 means use MaxEventBytes. A single envelope that exceeds this limit
+	// produces ErrEnvelopeTooLarge (never truncated).
+	MaxMessageBytes int `json:"maxMessageBytes,omitempty"`
+
+	// ── Authorisation and routing (T20) ──────────────────────────────────────
+
+	// OutputQueueURL overrides the Lambda environment's default OutputQueueURL
+	// for events produced by this job. When empty the default is used.
+	// This is set by the Organizer from PrefixConfiguration.OutputQueueURL so
+	// that the Worker never needs to know which prefix it serves.
+	OutputQueueURL string `json:"outputQueueURL,omitempty"`
+	// PrefixID is the canonical identifier of the registered prefix that owns
+	// this job. Empty for legacy/unregistered prefixes.
+	PrefixID string `json:"prefixId,omitempty"`
 }
 
 // OrganizerRequest is the explicit input contract accepted by the organizer.
@@ -245,6 +323,47 @@ type Processing struct {
 	RecordNumber *int64 `json:"recordNumber,omitempty"`
 	ByteOffset   *int64 `json:"byteOffset,omitempty"`
 	ByteLength   *int64 `json:"byteLength,omitempty"`
+}
+
+// ── Bundle envelope contract (T15) ───────────────────────────────────────────
+
+// BundleSchemaVersion is the version sent in BundleEnvelope.SchemaVersion.
+const BundleSchemaVersion = "f2e-bundle/1"
+
+// BundleEnvelope is the SQS message body used when OutputMode is "bundle".
+// It wraps multiple Envelope[RecordPayload] items produced from the same chunk.
+//
+// A consumer that subscribes to the bundle contract must:
+//  1. Inspect the top-level SchemaVersion to distinguish bundles from single envelopes.
+//  2. Process Items idempotently: a bundle retry re-delivers ALL items in the bundle.
+//     Consumers should track delivered eventIds (e.g. via DynamoDB) and skip duplicates.
+//  3. Never assume Items are ordered across bundles from the same chunk.
+//
+// A single Envelope that serialises to more bytes than MaxMessageBytes is an
+// explicit pipeline error (ErrEnvelopeTooLarge). The pipeline never truncates data.
+type BundleEnvelope struct {
+	// SchemaVersion identifies this message as a bundle. Value: BundleSchemaVersion.
+	SchemaVersion string `json:"schemaVersion"`
+	// BundleID is the SHA-256 hex digest of the sorted eventIds of all items,
+	// making it stable across retries of the same logical bundle.
+	BundleID string `json:"bundleId"`
+	// JobID and ChunkID identify the source work unit; all items share the same chunk.
+	JobID   string `json:"jobId"`
+	ChunkID string `json:"chunkId"`
+	// Items contains the packed envelopes in publication order within the chunk.
+	Items []Envelope[RecordPayload] `json:"items"`
+}
+
+// ErrEnvelopeTooLarge is returned when a single serialised envelope exceeds
+// MaxMessageBytes. The pipeline never truncates; the caller must reject the record.
+type ErrEnvelopeTooLarge struct {
+	EventID      string
+	ActualBytes  int
+	LimitBytes   int
+}
+
+func (e ErrEnvelopeTooLarge) Error() string {
+	return fmt.Sprintf("envelope %s serialises to %d bytes, exceeds MaxMessageBytes %d", e.EventID, e.ActualBytes, e.LimitBytes)
 }
 
 // FileSummary contains processing summary for a single file

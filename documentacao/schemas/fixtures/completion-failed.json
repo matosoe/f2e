@@ -1,0 +1,31 @@
+{
+  "schemaVersion": "f2e-completion/1",
+  "eventId": "a2b3c4d5e6f7a2b3c4d5e6f7a2b3c4d5e6f7a2b3c4d5e6f7a2b3c4d5e6f7a2b3",
+  "jobId": "c4d5e6f7a2b3c4d5e6f7a2b3c4d5e6f7a2b3c4d5e6f7a2b3c4d5e6f7a2b3c4d5",
+  "fileId": "c4d5e6f7a2b3c4d5e6f7a2b3c4d5e6f7a2b3c4d5e6f7a2b3c4d5e6f7a2b3c4d5",
+  "prefixId": "sistema-c",
+  "source": {
+    "bucket": "f2e-input",
+    "key": "entrada/grande.txt",
+    "versionId": "ver456",
+    "etag": "\"fedcba9876543210fedcba9876543210\"",
+    "fileSize": 104857600
+  },
+  "config": {
+    "configId": "b3c4d5e6f7a2b3c4d5e6f7a2b3c4d5e6f7a2b3c4d5e6f7a2b3c4d5e6f7a2b3c4",
+    "parameterName": "/f2e/prod/prefixos/sistema-c",
+    "parameterVersion": 12
+  },
+  "status": "FAILED",
+  "counts": {
+    "recordsRead": 3200,
+    "recordsPublished": 3200,
+    "recordsRejected": 0,
+    "recordsIgnored": 0,
+    "countsComplete": false
+  },
+  "timestamps": {
+    "receivedAt": "2026-09-05T14:00:00Z",
+    "completedAt": "2026-09-05T14:22:15Z"
+  }
+}

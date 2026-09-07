@@ -272,6 +272,10 @@ type Receipt struct {
 	Environment    string                `json:"environment,omitempty"`
 	ReceivedAt     time.Time             `json:"receivedAt"`
 	ConfigSnapshot ConfigurationSnapshot `json:"configSnapshot,omitempty"`
+	// PrefixID is the canonical identifier of the registered prefix (T20).
+	// When set, the ledger persists it on the job item so quota release (T22)
+	// can be performed without re-reading the SSM configuration.
+	PrefixID string `json:"prefixId,omitempty"`
 }
 
 // Job is the aggregate view of one processing execution bound to a fileId.

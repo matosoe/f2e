@@ -1,0 +1,32 @@
+{
+  "schemaVersion": "f2e-completion/1",
+  "eventId": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+  "jobId": "b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3",
+  "fileId": "b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3",
+  "prefixId": "sistema-a",
+  "source": {
+    "bucket": "f2e-input",
+    "key": "entrada/registros.txt",
+    "versionId": "abc123",
+    "etag": "\"d41d8cd98f00b204e9800998ecf8427e\"",
+    "fileSize": 2048000
+  },
+  "config": {
+    "configId": "c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4",
+    "parameterName": "/f2e/prod/prefixos/sistema-a",
+    "parameterVersion": 7
+  },
+  "status": "COMPLETED",
+  "result": "SUCCESS",
+  "counts": {
+    "recordsRead": 1000,
+    "recordsPublished": 1000,
+    "recordsRejected": 0,
+    "recordsIgnored": 0,
+    "countsComplete": true
+  },
+  "timestamps": {
+    "receivedAt": "2026-09-05T12:00:00Z",
+    "completedAt": "2026-09-05T12:04:30Z"
+  }
+}

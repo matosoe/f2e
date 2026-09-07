@@ -1,0 +1,72 @@
+# buildspec-e2e.yml — AWS CodeBuild specification for the F2E E2E test suite.
+#
+# Designed to run in a CodeBuild project in the same region as the deployed
+# F2E resources so that SQS/Lambda latency reflects real conditions.
+#
+# Required environment variables (set in the CodeBuild project or SecretManager):
+#   F2E_E2E_AWS_REGION         — AWS region where F2E resources are deployed
+#   F2E_E2E_INPUT_BUCKET       — S3 bucket name for F2E input files
+#   F2E_E2E_INTAKE_QUEUE_NAME  — SQS queue name for file intake
+#   F2E_E2E_OUTPUT_QUEUE_NAME  — SQS queue name for output events
+#   F2E_E2E_LEDGER_TABLE       — DynamoDB table for the job ledger
+#   F2E_E2E_INTAKE_DLQ_NAME    — DLQ name for intake failures
+#   F2E_E2E_CHUNK_DLQ_NAME     — DLQ name for chunk failures
+#
+# Optional:
+#   E2E_LOAD_TESTS   — set to "true" to include @load scenarios (timeout 60m)
+#   E2E_TAGS         — custom Godog tag expression (e.g. "@smoke", "@regression")
+#   E2E_METRICS_FILE — output path for the JSON metrics report (default: e2e-metrics.json)
+#
+# IAM permissions required by the CodeBuild service role:
+#   s3:PutObject on the F2E input bucket
+#   sqs:SendMessage, sqs:ReceiveMessage, sqs:DeleteMessageBatch,
+#     sqs:GetQueueUrl, sqs:GetQueueAttributes on intake, output, and DLQ queues
+#   dynamodb:Scan on the ledger table
+#
+# SQS visibility timeout note:
+#   The output queue visibility timeout must be ≥ the Worker Lambda timeout.
+#   Do NOT reduce visibility in isolation; adjust Lambda timeout and queue
+#   visibility together. Recommended: visibility = Lambda timeout × 6.
+version: 0.2
+
+phases:
+  install:
+    runtime-versions:
+      golang: "1.26"
+    commands:
+      - echo "Installing Go tools"
+      - go version
+
+  pre_build:
+    commands:
+      - echo "Verifying E2E target environment"
+      - "[ -n \"$F2E_E2E_AWS_REGION\" ] || (echo 'F2E_E2E_AWS_REGION not set' && exit 1)"
+      - "[ -n \"$F2E_E2E_INPUT_BUCKET\" ] || (echo 'F2E_E2E_INPUT_BUCKET not set' && exit 1)"
+      - "[ -n \"$F2E_E2E_OUTPUT_QUEUE_NAME\" ] || (echo 'F2E_E2E_OUTPUT_QUEUE_NAME not set' && exit 1)"
+      - export F2E_E2E_TARGET=aws
+      - cd e2e && go mod download
+
+  build:
+    commands:
+      - |
+        timeout_min=30
+        if [ "${E2E_LOAD_TESTS:-false}" = "true" ]; then
+          timeout_min=60
+        fi
+        go test -count=1 -v -timeout "${timeout_min}m" ./...
+
+  post_build:
+    commands:
+      - echo "E2E suite completed with exit code $CODEBUILD_BUILD_SUCCEEDING"
+
+artifacts:
+  files:
+    - e2e/e2e-metrics.json
+  name: e2e-metrics-$(date +%Y%m%dT%H%M%SZ)
+  discard-paths: yes
+
+reports:
+  e2e-metrics:
+    files:
+      - "e2e/e2e-metrics.json"
+    file-format: JSON

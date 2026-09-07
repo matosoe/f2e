@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -43,7 +44,7 @@ func init() {
 		slog.Error("global limits initialization failed", "service", "organizer", "error", e)
 		os.Exit(1)
 	}
-	if e = validateGlobalLimits(globalLimits); e != nil {
+	if e = organizer.ValidateGlobalLimits(globalLimits); e != nil {
 		slog.Error("invalid global limits", "service", "organizer", "error", e)
 		os.Exit(1)
 	}
@@ -66,7 +67,12 @@ func handler(ctx context.Context, e events.SQSEvent) (events.SQSEventResponse, e
 		}
 		if err != nil {
 			slog.Error("organizer message failed", "service", "organizer", "sqsMessageId", r.MessageId, "receiveCount", r.Attributes["ApproximateReceiveCount"], "error", err)
-			out.BatchItemFailures = append(out.BatchItemFailures, events.SQSBatchItemFailure{ItemIdentifier: r.MessageId})
+			// ErrQuotaExceeded means the prefix is at capacity. Do not add to
+			// BatchItemFailures: SQS will redeliver automatically via visibility
+			// timeout, giving in-flight jobs time to complete and free their slots.
+			if !errors.Is(err, port.ErrQuotaExceeded) {
+				out.BatchItemFailures = append(out.BatchItemFailures, events.SQSBatchItemFailure{ItemIdentifier: r.MessageId})
+			}
 		}
 	}
 	return out, nil
@@ -113,7 +119,7 @@ func jobsFor(ctx context.Context, body []byte, executionID string) ([]f2e.ChunkJ
 		configSnapshot.GlobalLimitsParameter = globalLimitsParameter
 		configSnapshot.GlobalLimitsVersion = globalLimitsVersion
 		configSnapshot.GlobalLimits = globalLimits
-		if err := validatePrefixConfiguration(prefixConfig, globalLimits); err != nil {
+		if err := organizer.ValidatePrefixConfiguration(prefixConfig, globalLimits); err != nil {
 			return nil, err
 		}
 		configured := service
@@ -136,14 +142,35 @@ func jobsFor(ctx context.Context, body []byte, executionID string) ([]f2e.ChunkJ
 		}
 		fileID := f2e.FileID(object)
 		if configured.Ledger != nil {
-			outcome, admitErr := configured.Ledger.Admit(ctx, f2e.Receipt{ReceiptID: executionID, FileID: fileID, Source: object, Environment: configured.Config.Environment, ReceivedAt: time.Now().UTC(), ConfigSnapshot: configSnapshot})
+			// T22: reserve a quota slot before admission if this prefix has a
+			// maxActiveJobs limit. ErrQuotaExceeded is returned to the caller
+			// which must NOT add the SQS message to BatchItemFailures so it
+			// retries naturally via the visibility timeout.
+			if prefixConfig.PrefixID != "" && prefixConfig.MaxActiveJobs > 0 {
+				if slotErr := configured.Ledger.ReserveSlot(ctx, prefixConfig.PrefixID, prefixConfig.MaxActiveJobs); slotErr != nil {
+					return nil, slotErr
+				}
+			}
+			outcome, admitErr := configured.Ledger.Admit(ctx, f2e.Receipt{ReceiptID: executionID, FileID: fileID, Source: object, Environment: configured.Config.Environment, ReceivedAt: time.Now().UTC(), ConfigSnapshot: configSnapshot, PrefixID: prefixConfig.PrefixID})
 			if admitErr != nil {
+				// Roll back the quota slot we just reserved.
+				if prefixConfig.PrefixID != "" && prefixConfig.MaxActiveJobs > 0 {
+					_ = configured.Ledger.ReleaseSlot(ctx, prefixConfig.PrefixID)
+				}
 				return nil, fmt.Errorf("admit immutable S3 object: %w", admitErr)
 			}
 			if outcome == f2e.AlreadyCompleted {
+				// Deduplication: this slot was reserved optimistically but no new job
+				// is created — release it so the counter stays accurate.
+				if prefixConfig.PrefixID != "" && prefixConfig.MaxActiveJobs > 0 {
+					_ = configured.Ledger.ReleaseSlot(ctx, prefixConfig.PrefixID)
+				}
 				continue
 			}
 			if outcome == f2e.Busy {
+				if prefixConfig.PrefixID != "" && prefixConfig.MaxActiveJobs > 0 {
+					_ = configured.Ledger.ReleaseSlot(ctx, prefixConfig.PrefixID)
+				}
 				return nil, fmt.Errorf("admission for fileId %s is busy", fileID)
 			}
 			if err := configured.Ledger.BeginValidation(ctx, fileID); err != nil {
@@ -172,9 +199,17 @@ func jobsFor(ctx context.Context, body []byte, executionID string) ([]f2e.ChunkJ
 		}
 		for i := range execution.Jobs {
 			execution.Jobs[i].Configuration = f2e.JobConfiguration{
-				BatchSize: prefixConfig.BatchSize, MaxEventBytes: prefixConfig.MaxEventBytes,
-				MaxChunkBytes: prefixConfig.MaxChunkBytes, EventSchemaID: prefixConfig.EventSchemaID,
-				EventSchemaVersion: prefixConfig.EventSchemaVersion, EventFormat: prefixConfig.EventFormat,
+				BatchSize:              prefixConfig.BatchSize,
+				MaxEventBytes:          prefixConfig.MaxEventBytes,
+				MaxChunkBytes:          prefixConfig.MaxChunkBytes,
+				EventSchemaID:          prefixConfig.EventSchemaID,
+				EventSchemaVersion:     prefixConfig.EventSchemaVersion,
+				EventFormat:            prefixConfig.EventFormat,
+				OutputMode:             prefixConfig.OutputMode,
+				MaxEnvelopesPerMessage: prefixConfig.MaxEnvelopesPerMessage,
+				MaxMessageBytes:        prefixConfig.MaxMessageBytes,
+				OutputQueueURL:         prefixConfig.OutputQueueURL,
+				PrefixID:               prefixConfig.PrefixID,
 			}
 			execution.Jobs[i].ConfigSnapshot = configSnapshot
 		}
@@ -182,42 +217,6 @@ func jobsFor(ctx context.Context, body []byte, executionID string) ([]f2e.ChunkJ
 		jobs = append(jobs, execution.Jobs...)
 	}
 	return jobs, nil
-}
-
-func validateGlobalLimits(limits f2e.GlobalLimits) error {
-	if limits.MaxFileBytes < 1024 || limits.MaxChunkBytes < 1024 || limits.MaxFileBytes < limits.MaxChunkBytes ||
-		limits.MaxEventBytes < 1024 || limits.MaxEventBytes > 256*1024 || limits.MaxBatchSize < 1 || limits.MaxBatchSize > 10 ||
-		limits.MaxJSONArraySearchBytes < 1024 || limits.MaxJSONArraySearchBytes > 16*1024*1024 {
-		return fmt.Errorf("invalid numeric global limits")
-	}
-	for _, dataType := range []f2e.DataType{f2e.DataTypeText, f2e.DataTypeJSON, f2e.DataTypeMultiLine} {
-		limit, ok := limits.InputTypes[dataType]
-		if !ok || limit.MaxFileBytes < 1 || limit.MaxFileBytes > limits.MaxFileBytes || limit.MaxRecordBytes < 1 || limit.MaxRecordBytes > int64(limits.MaxEventBytes) {
-			return fmt.Errorf("invalid global limits for dataType %q", dataType)
-		}
-	}
-	return nil
-}
-
-func validatePrefixConfiguration(c f2e.PrefixConfiguration, limits f2e.GlobalLimits) error {
-	if c.DataType != f2e.DataTypeText && c.DataType != f2e.DataTypeJSON && c.DataType != f2e.DataTypeMultiLine {
-		return fmt.Errorf("unsupported data type %q", c.DataType)
-	}
-	typeLimits, knownType := limits.InputTypes[c.DataType]
-	if c.RecordsPerChunk < 1 || c.BatchSize < 1 || c.BatchSize > 10 ||
-		c.MaxEventBytes < 1024 || c.MaxEventBytes > 256*1024 || c.MaxChunkBytes < 1024 ||
-		c.MaxFileBytes < c.MaxChunkBytes || c.JSONArraySearchBytes < 1024 || c.JSONArraySearchBytes > 16*1024*1024 ||
-		c.EventSchemaID == "" || c.EventSchemaVersion == "" || c.EventFormat == "" {
-		return fmt.Errorf("invalid SSM configuration for s3://%s/%s", c.Bucket, c.Prefix)
-	}
-	if !knownType || c.MaxFileBytes > limits.MaxFileBytes || c.MaxFileBytes > typeLimits.MaxFileBytes ||
-		c.MaxChunkBytes > limits.MaxChunkBytes || c.MaxEventBytes > limits.MaxEventBytes || c.BatchSize > limits.MaxBatchSize ||
-		c.JSONArraySearchBytes > limits.MaxJSONArraySearchBytes ||
-		c.MaxRecordLengthBytes > typeLimits.MaxRecordBytes || c.MultiLineLayout.MaxBytesPerRecord > typeLimits.MaxRecordBytes ||
-		c.JSONArrayLayout.MaxBytesPerElement > typeLimits.MaxRecordBytes {
-		return fmt.Errorf("SSM configuration for s3://%s/%s exceeds global limits", c.Bucket, c.Prefix)
-	}
-	return nil
 }
 
 // logSummary logs the organizer summary to stdout

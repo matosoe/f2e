@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"math/rand/v2"
 	"path"
 	"time"
 
@@ -94,6 +93,12 @@ func (s Service) processWithMetrics(ctx context.Context, body []byte, attempt in
 	}
 	if j.Configuration.EventFormat != "" {
 		s.Config.EventFormat = j.Configuration.EventFormat
+	}
+	// T20: per-prefix output queue routing — the job carries its own queue URL
+	// when the prefix has a dedicated output queue; otherwise fall back to the
+	// Lambda environment's default.
+	if j.Configuration.OutputQueueURL != "" {
+		s.Config.OutputQueueURL = j.Configuration.OutputQueueURL
 	}
 	if e := s.valid(j); e != nil {
 		return nil, e
@@ -191,37 +196,82 @@ func (s Service) streamWithMetrics(ctx context.Context, j f2e.ChunkJob, r io.Rea
 	if batchSize == 0 { // keeps direct callers that omit Config.BatchSize compatible.
 		batchSize = 10
 	}
+	concurrency := s.Config.PublishConcurrency
+	if concurrency < 1 {
+		concurrency = 1
+	}
 	batch := make([]port.OutboundMessage, 0, batchSize)
 	counts := f2e.Counts{CountsComplete: true}
 
-	flush := func() error {
-		pending := append([]port.OutboundMessage(nil), batch...)
-		for attempt := 0; attempt < 3; attempt++ {
-			failed, e := s.Queue.Send(ctx, s.Config.OutputQueueURL, pending)
-			if e == nil && len(failed) == 0 {
-				batch = nil
-				return nil
-			}
-			if e != nil && attempt == 2 {
-				return e
-			}
-			if e == nil {
-				next := make([]port.OutboundMessage, 0, len(failed))
-				for _, index := range failed {
-					if index >= 0 && index < len(pending) {
-						next = append(next, pending[index])
-					}
-				}
-				pending = next
-			}
-			delay := time.Duration((1<<attempt)*50+rand.IntN(50)) * time.Millisecond
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(delay):
+	// Determine output mode from the job configuration (T16).
+	outputMode := j.Configuration.OutputMode
+	if outputMode == "" {
+		outputMode = f2e.OutputModeSingle
+	}
+	var packer *bundlePacker
+	if outputMode == f2e.OutputModeBundle {
+		packer = newBundlePacker(j, j.Configuration)
+	}
+
+	// sender dispatches full batches concurrently; production order is preserved
+	// because batches are assembled deterministically before being submitted.
+	sender := newConcurrentSender(ctx, s.Queue, s.Config.OutputQueueURL, concurrency)
+
+	sendBatch := func() error {
+		if err := sender.submit(batch); err != nil {
+			return err
+		}
+		batch = nil
+		return nil
+	}
+
+	// enqueueSingle adds a message to the SQS batch and flushes when full.
+	// This is the original single-envelope path.
+	enqueueSingle := func(msg port.OutboundMessage) error {
+		batch = append(batch, msg)
+		counts.RecordsPublished++
+		if len(batch) == batchSize {
+			return sendBatch()
+		}
+		return nil
+	}
+
+	// enqueueBundle adds an envelope to the packer; any flushed bundle goes to
+	// the SQS batch. The SQS batch is flushed when full.
+	enqueueBundle := func(env f2e.Envelope[f2e.RecordPayload], serialised []byte) error {
+		flushed, err := packer.add(env, serialised)
+		if err != nil {
+			return err
+		}
+		if flushed != nil {
+			batch = append(batch, *flushed)
+			// Bundle messages are logical messages; do not increment RecordsPublished here —
+			// that is done per-envelope inside the packer path below.
+			if len(batch) == batchSize {
+				return sendBatch()
 			}
 		}
-		return fmt.Errorf("output batch partial failure after retries")
+		return nil
+	}
+
+	flush := func() error {
+		if packer != nil {
+			// Flush any remaining items in the packer before the final SQS batch flush.
+			remaining, err := packer.flush()
+			if err != nil {
+				return err
+			}
+			if remaining != nil {
+				batch = append(batch, *remaining)
+			}
+		}
+		if len(batch) > 0 {
+			if err := sendBatch(); err != nil {
+				return err
+			}
+		}
+		// Wait for all in-flight sends to complete.
+		return sender.wait()
 	}
 
 	publish := func(n, off int64, raw string, physicalLength int64) error {
@@ -347,12 +397,14 @@ func (s Service) streamWithMetrics(ctx context.Context, j f2e.ChunkJob, r io.Rea
 		if len(attrs) > 10 {
 			return fmt.Errorf("message attribute count exceeds SQS limit")
 		}
-		batch = append(batch, port.OutboundMessage{Body: string(b), Attributes: attrs})
-		counts.RecordsPublished++
-		if len(batch) == batchSize {
-			return flush()
+
+		if packer != nil {
+			// Bundle mode: accumulate in packer; counts.RecordsPublished is
+			// incremented here so it reflects envelopes queued, not bundles sent.
+			counts.RecordsPublished++
+			return enqueueBundle(env, b)
 		}
-		return nil
+		return enqueueSingle(port.OutboundMessage{Body: string(b), Attributes: attrs})
 	}
 
 	var err error
@@ -396,10 +448,9 @@ func (s Service) streamWithMetrics(ctx context.Context, j f2e.ChunkJob, r io.Rea
 	if err != nil {
 		return f2e.Counts{}, err
 	}
-	if len(batch) > 0 {
-		if err := flush(); err != nil {
-			return f2e.Counts{}, err
-		}
+	// flush handles packer remainder + any pending SQS batch.
+	if err := flush(); err != nil {
+		return f2e.Counts{}, err
 	}
 	return counts, nil
 }

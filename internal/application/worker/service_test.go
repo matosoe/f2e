@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/f2e/f2e/internal/application/organizer"
@@ -45,10 +46,15 @@ type partialQueue struct {
 	calls [][]string
 }
 
-type messageQueue struct{ messages []port.OutboundMessage }
+type messageQueue struct {
+	mu       sync.Mutex
+	messages []port.OutboundMessage
+}
 
 func (q *messageQueue) Send(_ context.Context, _ string, messages []port.OutboundMessage) ([]int, error) {
+	q.mu.Lock()
 	q.messages = append(q.messages, messages...)
+	q.mu.Unlock()
 	return nil, nil
 }
 
@@ -495,6 +501,179 @@ func TestJSONArrayWorkerNestedAndMultiChunk(t *testing.T) {
 	}
 	if len(raws) != 4 {
 		t.Fatalf("expected 4 elements, got %d: %v", len(raws), raws)
+	}
+}
+
+// ── T16: Bundle output mode integration tests ─────────────────────────────────
+
+// bundleJob creates a ChunkJob with OutputMode=bundle and the given bundle settings.
+func bundleJob(maxEnv, maxBytes int) f2e.ChunkJob {
+	return f2e.ChunkJob{
+		SchemaVersion:    f2e.SchemaVersion,
+		FileID:           "f",
+		JobID:            "j",
+		ChunkID:          "00000001",
+		Bucket:           "b",
+		Key:              "k",
+		EndByteInclusive: 11, // "aaa\nbbb\nccc\n"
+		DataType:         f2e.DataTypeText,
+		MaxRecordLengthBytes: 4,
+		Configuration: f2e.JobConfiguration{
+			BatchSize: 10, MaxEventBytes: 256 * 1024,
+			EventSchemaID: "s", EventSchemaVersion: "1", EventFormat: "json",
+			OutputMode:             f2e.OutputModeBundle,
+			MaxEnvelopesPerMessage: maxEnv,
+			MaxMessageBytes:        maxBytes,
+		},
+	}
+}
+
+// TestBundleModePacksAllEnvelopesIntoOneBundleMessage verifies that three
+// records with maxEnvelopes=10 end up in a single SQS message.
+func TestBundleModePacksAllEnvelopesIntoOneBundleMessage(t *testing.T) {
+	q := &queue{}
+	s := Service{
+		Resolver: store{"aaa\nbbb\nccc\n"},
+		Queue:    q,
+		Config:   config.Config{OutputQueueURL: "out", EventSchemaID: "s", EventSchemaVersion: "1", EventFormat: "json"},
+	}
+	job := bundleJob(10, 256*1024)
+	body, _ := json.Marshal(job)
+	if err := s.Process(context.Background(), body); err != nil {
+		t.Fatal(err)
+	}
+	// Expect exactly one SQS batch with one bundle message.
+	if len(q.batches) != 1 || len(q.batches[0]) != 1 {
+		t.Fatalf("want 1 batch with 1 bundle, got %v batches", q.batches)
+	}
+	var bundle f2e.BundleEnvelope
+	if err := json.Unmarshal([]byte(q.batches[0][0]), &bundle); err != nil {
+		t.Fatalf("decode bundle: %v", err)
+	}
+	if bundle.SchemaVersion != f2e.BundleSchemaVersion {
+		t.Fatalf("schemaVersion: %q", bundle.SchemaVersion)
+	}
+	if len(bundle.Items) != 3 {
+		t.Fatalf("want 3 items, got %d", len(bundle.Items))
+	}
+}
+
+// TestBundleModeFlushesOnCountLimit verifies that maxEnvelopes=2 creates
+// two bundle messages from three records.
+func TestBundleModeFlushesOnCountLimit(t *testing.T) {
+	q := &queue{}
+	s := Service{
+		Resolver: store{"aaa\nbbb\nccc\n"},
+		Queue:    q,
+		Config:   config.Config{OutputQueueURL: "out", EventSchemaID: "s", EventSchemaVersion: "1", EventFormat: "json"},
+	}
+	job := bundleJob(2, 256*1024)
+	body, _ := json.Marshal(job)
+	if err := s.Process(context.Background(), body); err != nil {
+		t.Fatal(err)
+	}
+	totalMsgs := 0
+	for _, batch := range q.batches {
+		totalMsgs += len(batch)
+	}
+	if totalMsgs != 2 {
+		t.Fatalf("want 2 SQS messages (2 bundles), got %d", totalMsgs)
+	}
+	// First bundle has 2 items, second has 1.
+	var b1, b2 f2e.BundleEnvelope
+	allBodies := []string{}
+	for _, batch := range q.batches {
+		allBodies = append(allBodies, batch...)
+	}
+	json.Unmarshal([]byte(allBodies[0]), &b1)
+	json.Unmarshal([]byte(allBodies[1]), &b2)
+	if len(b1.Items) != 2 || len(b2.Items) != 1 {
+		t.Fatalf("bundle sizes: b1=%d b2=%d", len(b1.Items), len(b2.Items))
+	}
+}
+
+// TestBundleModeRecordsPublishedCountsEnvelopes verifies that RecordsPublished
+// reflects the number of envelopes (logical records), not the number of bundle messages.
+func TestBundleModeRecordsPublishedCountsEnvelopes(t *testing.T) {
+	job := f2e.ChunkJob{
+		SchemaVersion: f2e.SchemaVersion, FileID: "f", JobID: "j", ChunkID: "00000001",
+		Bucket: "b", Key: "k", EndByteInclusive: 11, DataType: f2e.DataTypeText, MaxRecordLengthBytes: 4,
+		Configuration: f2e.JobConfiguration{
+			OutputMode: f2e.OutputModeBundle, MaxEnvelopesPerMessage: 2, MaxMessageBytes: 256 * 1024,
+			MaxEventBytes: 256 * 1024, EventSchemaID: "s", EventSchemaVersion: "1", EventFormat: "json",
+		},
+	}
+	counts, err := (&Service{Queue: &messageQueue{}}).streamWithMetrics(
+		context.Background(), job, strings.NewReader("aaa\nbbb\nccc\n"), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if counts.RecordsPublished != 3 {
+		t.Fatalf("want RecordsPublished=3, got %d", counts.RecordsPublished)
+	}
+}
+
+// TestBundleModeSingleModeUnchanged verifies that single mode still sends
+// one SQS message per envelope (backward compatibility).
+func TestBundleModeSingleModeUnchanged(t *testing.T) {
+	q := &queue{}
+	s := Service{
+		Resolver: store{"aaa\nbbb\n"},
+		Queue:    q,
+		Config:   config.Config{OutputQueueURL: "out", EventSchemaID: "s", EventSchemaVersion: "1", EventFormat: "json"},
+	}
+	job := f2e.ChunkJob{
+		SchemaVersion: f2e.SchemaVersion, FileID: "f", JobID: "j", ChunkID: "00000001",
+		Bucket: "b", Key: "k", EndByteInclusive: 7, DataType: f2e.DataTypeText, MaxRecordLengthBytes: 4,
+		Configuration: f2e.JobConfiguration{
+			OutputMode: f2e.OutputModeSingle, MaxEventBytes: 256 * 1024,
+			EventSchemaID: "s", EventSchemaVersion: "1", EventFormat: "json",
+		},
+	}
+	body, _ := json.Marshal(job)
+	if err := s.Process(context.Background(), body); err != nil {
+		t.Fatal(err)
+	}
+	totalMsgs := 0
+	for _, batch := range q.batches {
+		totalMsgs += len(batch)
+	}
+	if totalMsgs != 2 {
+		t.Fatalf("single mode: want 2 messages, got %d", totalMsgs)
+	}
+	// Verify message body is a plain Envelope, not a BundleEnvelope.
+	var probe struct{ SchemaVersion string `json:"schemaVersion"` }
+	json.Unmarshal([]byte(q.batches[0][0]), &probe)
+	if probe.SchemaVersion == f2e.BundleSchemaVersion {
+		t.Fatal("single mode emitted a bundle envelope")
+	}
+}
+
+// TestBundleModeRetryPreservesEventIDs verifies that re-running the same
+// chunk in bundle mode produces the same eventIds inside bundles.
+func TestBundleModeRetryPreservesEventIDs(t *testing.T) {
+	q1, q2 := &messageQueue{}, &messageQueue{}
+	job := f2e.ChunkJob{
+		SchemaVersion: f2e.SchemaVersion, FileID: "f", JobID: "j", ChunkID: "00000001",
+		Bucket: "b", Key: "k", EndByteInclusive: 3, DataType: f2e.DataTypeText, MaxRecordLengthBytes: 4,
+		Configuration: f2e.JobConfiguration{
+			OutputMode: f2e.OutputModeBundle, MaxEnvelopesPerMessage: 10, MaxMessageBytes: 256 * 1024,
+			MaxEventBytes: 256 * 1024, EventSchemaID: "s", EventSchemaVersion: "1", EventFormat: "json",
+		},
+	}
+	svc1 := Service{Queue: q1}
+	svc2 := Service{Queue: q2}
+	svc1.streamWithMetrics(context.Background(), job, strings.NewReader("aaa\n"), 0)
+	svc2.streamWithMetrics(context.Background(), job, strings.NewReader("aaa\n"), 0)
+
+	var b1, b2 f2e.BundleEnvelope
+	json.Unmarshal([]byte(q1.messages[0].Body), &b1)
+	json.Unmarshal([]byte(q2.messages[0].Body), &b2)
+	if b1.BundleID != b2.BundleID {
+		t.Fatalf("bundleId differs on retry: %s vs %s", b1.BundleID, b2.BundleID)
+	}
+	if b1.Items[0].Metadata.EventID != b2.Items[0].Metadata.EventID {
+		t.Fatalf("eventId differs on retry")
 	}
 }
 

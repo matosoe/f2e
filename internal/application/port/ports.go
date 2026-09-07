@@ -13,6 +13,12 @@ import (
 // without processing or publishing its records again.
 var ErrAlreadyCompleted = errors.New("chunk already completed")
 
+// ErrQuotaExceeded is returned by ReserveSlot when the prefix has reached its
+// maxActiveJobs limit. The Organizer should return the SQS message to the
+// queue (do not add it to BatchItemFailures) so it can be retried naturally
+// when an active job completes and releases its slot.
+var ErrQuotaExceeded = errors.New("prefix active-job quota exceeded")
+
 // MessageAttribute is an SQS/SNS message attribute.
 type MessageAttribute struct {
 	DataType string
@@ -91,7 +97,50 @@ type JobLedger interface {
 	// FinalizeJob records the terminal result and counts of a job.
 	FinalizeJob(context.Context, string, f2e.JobResult, f2e.Counts) error
 
+	// WriteCompletionIntent atomically writes an outbox record when a job
+	// reaches a terminal state. The intent is created together with the
+	// terminal transition so a crash cannot leave a terminal job without a
+	// pending delivery intent.
+	//
+	// If an intent already exists for this jobId (concurrent terminal from a
+	// retry), the call is a no-op and the existing intent is preserved.
+	WriteCompletionIntent(context.Context, f2e.CompletionIntent) error
+
+	// PendingCompletionIntents returns completion intents that have not been
+	// marked as delivered yet. The publisher (T13) uses this for recovery after
+	// a DynamoDB Streams expiration or a publisher crash.
+	//
+	// The implementation must not return intents whose TTL has already expired
+	// without delivery; the caller is responsible for deciding whether to
+	// re-derive the event from the job item.
+	PendingCompletionIntents(ctx context.Context, limit int) ([]f2e.CompletionIntent, error)
+
+	// MarkIntentDelivered records that a completion intent has been
+	// successfully sent to the completion queue. The publisher calls this only
+	// after SQS confirms the send; a crash between send and mark may cause a
+	// duplicate delivery, which consumers handle via the stable eventId.
+	MarkIntentDelivered(ctx context.Context, jobID string, version int64) error
+
 	Replay(context.Context, string, string, []string) ([]f2e.ChunkJob, error)
+
+	// ReserveSlot atomically increments the active-job counter for prefixID and
+	// returns ErrQuotaExceeded if the counter would exceed maxActiveJobs (>0).
+	// When maxActiveJobs is 0 the call is a no-op (unlimited). The counter is
+	// stored as a separate item so the admission PutItem and the quota update
+	// can be issued in a TransactWriteItems for atomicity.
+	//
+	// The caller must pair every successful ReserveSlot with a corresponding
+	// ReleaseSlot when the job reaches a terminal state, and must call
+	// RecoverQuotaLeaks during startup to release slots for jobs that crashed
+	// before reaching terminal.
+	ReserveSlot(ctx context.Context, prefixID string, maxActiveJobs int) error
+
+	// ReleaseSlot atomically decrements the active-job counter for prefixID.
+	// ReleaseSlot is idempotent: if the counter is already 0 it remains 0.
+	// It must be called exactly once per terminal job state transition, even if
+	// the completion event publication fails. A second call due to a retry or
+	// duplicate terminal is a no-op.
+	ReleaseSlot(ctx context.Context, prefixID string) error
 }
 
 // ErrNotImplemented is returned by phased ledger operations whose persistence
