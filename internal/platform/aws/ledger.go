@@ -416,7 +416,7 @@ func ledgerKey(jobID, sortKey string) map[string]types.AttributeValue {
 // T08 — conditional persistence for the phased lifecycle
 // ---------------------------------------------------------------------------
 //
-// The methods below implement the ADR 0006 state machine with conditional
+// The methods below implement the state machine with conditional
 // writes so terminals never regress, an old attempt never overwrites a new one,
 // and late planning/scheduling never overwrites completion. Every job and chunk
 // item carries a revision counter, an ownership token (random lease) and a

@@ -154,8 +154,7 @@ data "aws_iam_policy_document" "worker" {
     resources = ["*"]
   }
   # Consume from the shared chunk-jobs queue (scoped to this prefix's jobs
-  # via message-level prefixId; IAM isolation requires a per-prefix queue —
-  # see T21 ADR note on ledger isolation).
+  # via message-level prefixId; IAM isolation requires a per-prefix queue).
   statement {
     actions   = ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes", "sqs:ChangeMessageVisibility"]
     resources = [var.chunk_queue_arn]

@@ -5,7 +5,7 @@ import "time"
 type JobStatus string
 
 // Legacy job status constants. These predate the canonical state machine in
-// states.go (ADR 0006) and are retained only so the current DynamoDB ledger and
+// states.go and are retained only so the current DynamoDB ledger and
 // its callers keep compiling without semantic change. They are superseded by
 // JobStateReceived/Validating/Planning/Processing/Completed/Failed/Rejected.
 //

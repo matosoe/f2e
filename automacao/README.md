@@ -2,7 +2,7 @@
 
 Esta pasta é o destino obrigatório de todos os artefatos usados para criar, executar e validar o ambiente local do F2E.
 
-Os scripts shell desta pasta implementam a operação local descrita em [`documentacao/plano_execucao_f2e.md`](../documentacao/plano_execucao_f2e.md). A estrutura inclui:
+Os scripts shell desta pasta implementam a [operação local](../documentacao/operacao_local.md). A estrutura inclui:
 
 - Docker Compose e inicialização idempotente do LocalStack;
 - scripts Bash para subir e parar o ambiente;

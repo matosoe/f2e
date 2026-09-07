@@ -19,8 +19,7 @@
 #   requires attribute-based access control (ABAC) or per-prefix tables.
 #   Using prefixId in the item partition key alone is NOT sufficient for IAM
 #   isolation. Current approach: per-prefix IAM role scoped to the table but
-#   not to individual items. Per-prefix table migration path documented in the
-#   T21 ADR (see documentacao/planos/).
+#   not to individual items.
 #
 # Migration note:
 # Existing Terraform state uses the root-module aws_lambda_function.worker and

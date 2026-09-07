@@ -39,7 +39,7 @@ O F2E suporta três modos de delimitação:
 | `json` | Um elemento do array selecionado em `arrayPath`, com parsing estrutural. |
 | `multi-line` | Linhas físicas agrupadas por marcadores configurados. |
 
-Tipos removidos (`fixed-width`, `jsonl`, `ndjson`, `csv`, `binary`) produzem erro explícito. Para informações sobre migração, consulte [contratos](documentacao/contratos.md) e o [ADR 0005](documentacao/adr/0005-tres-modos-de-delimitacao.md).
+Tipos removidos (`fixed-width`, `jsonl`, `ndjson`, `csv`, `binary`) produzem erro explícito.
 
 Para `text` com arquivos grandes (mais de `F2E_RECORDS_PER_CHUNK` linhas), informe `maxRecordLengthBytes`. Esse limite permite que o Organizer defina as fronteiras dos chunks e que os Workers tratem registros que cruzam uma fronteira sem gerar duplicatas ou lacunas. Arquivos pequenos podem omitir `maxRecordLengthBytes` (modo single-chunk).
 
@@ -140,8 +140,6 @@ pode atingir o limite de 256 KiB antes do tamanho nominal acima.
 }
 ```
 
-A decisão formal está no [ADR 0005](documentacao/adr/0005-tres-modos-de-delimitacao.md) e nos [contratos](documentacao/contratos.md).
-
 ## Evento de saída e rastreabilidade
 
 Cada registro é publicado como um Envelope v2. Ele preserva a origem do arquivo, a posição do registro e o contexto de correlação recebido na entrada.
@@ -162,8 +160,6 @@ Cada registro é publicado como um Envelope v2. Ele preserva a origem do arquivo
 - Use `eventId` para deduplicar tentativas de um mesmo job. Ele muda em um replay explícito.
 - Use `sourceRecordId` para deduplicar o mesmo registro físico, inclusive entre replays.
 - `transactionId`, `correlationId`, `traceId` e `sourceSystem`, quando informados, são propagados até o evento final.
-
-O [JSON Schema normativo](documentacao/schemas/envelope-v2.schema.json) e o [contrato completo](documentacao/contratos.md) definem o payload.
 
 ## Início rápido — ambiente local
 
@@ -219,7 +215,7 @@ Para uma conta AWS real, consulte [Operação na AWS](documentacao/operacao_aws.
 | `terraform/` | Infraestrutura como código para ambientes local, staging e produção. |
 | `automacao/` | LocalStack, scripts de build, execução e validação local. |
 | `e2e/` | Cenários de integração ponta a ponta. |
-| `documentacao/` | Arquitetura, contratos, ADRs, runbooks e decisões técnicas. |
+| `documentacao/` | Guias de operação do ambiente e runbooks. |
 
 O repositório possui dois módulos Go coordenados por `go.work`: o framework na raiz e as funções em `lambdas/`.
 
@@ -238,22 +234,16 @@ prefixo e carregam a configuração selecionada em cada `ChunkJob`.
 | `F2E_MAX_EVENT_BYTES` | `256 KiB` | Limite do body e atributos da mensagem SQS. |
 | `F2E_FILE_CONFIG_PATH` | `/f2e/<ambiente>/file-config` | Raiz das configurações de prefixos no SSM. |
 
-Todos os limites e opções por arquivo estão documentados em [Contratos versionados](documentacao/contratos.md).
-
 ## Documentação
 
-- [Arquitetura da solução](documentacao/arquitetura.md)
-- [Contratos versionados](documentacao/contratos.md)
-- [Especificação do Envelope de Eventos](documentacao/Especificação%20—%20Envelope%20de%20Eventos%20do%20F2E.md)
 - [Operação local](documentacao/operacao_local.md)
 - [Operação na AWS](documentacao/operacao_aws.md)
 - [Runbooks operacionais](documentacao/runbooks.md)
-- [ADRs](documentacao/adr/)
 - [Infraestrutura por ambiente](terraform/environments/README.md)
 
 ## Uso em produção
 
-Antes de implantar, valide carga e concorrência com arquivos reais, defina SLOs, alarmes e capacidade. Também é necessário aprovar contas, regiões, rede, IAM, KMS, classificação de dados, retenções e estratégia de recuperação. O F2E preserva a posição de cada registro na origem, mas o processamento distribuído não oferece ordenação global dos eventos de saída. Para o checklist completo, veja o [plano de adequação corporativa](documentacao/plano_adequacao_corporativa_f2e.md).
+Antes de implantar, valide carga e concorrência com arquivos reais, defina SLOs, alarmes e capacidade. Também é necessário aprovar contas, regiões, rede, IAM, KMS, classificação de dados, retenções e estratégia de recuperação. O F2E preserva a posição de cada registro na origem, mas o processamento distribuído não oferece ordenação global dos eventos de saída.
 
 ## Licença
 

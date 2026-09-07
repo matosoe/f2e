@@ -1,7 +1,7 @@
 // Package f2e defines the domain model for the F2E pipeline state machine.
 //
-// This file formalizes the identities, states and transitions introduced by
-// ADR 0006 (identidades e estados) and section 4.2/4.3 of the evolution plan.
+// This file formalizes the identities, states and transitions used by the
+// pipeline.
 // The canonical job/chunk states below coexist with the legacy JobStatus
 // constants in ledger.go; the latter are kept only for backward compatibility
 // with the existing DynamoDB ledger and are superseded as persistence migrates
@@ -23,8 +23,8 @@ import (
 // record. It depends only on the physical source (fileId) and the record's
 // starting physical byte offset, so it is independent of chunking, SQS bundle
 // grouping and schema/configuration version (which are kept as separate
-// metadata). This is the identity introduced by ADR 0001/0006 and versioned as
-// "v2" relative to the legacy formula in SourceRecordIDV1.
+// metadata). It is versioned as "v2" relative to the legacy formula in
+// SourceRecordIDV1.
 func SourceRecordID(fileID string, byteOffset int64) string {
 	return hashIdentity(fileID + "/" + strconv.FormatInt(byteOffset, 10))
 }
@@ -47,7 +47,7 @@ func hashIdentity(s string) string {
 // ---------------------------------------------------------------------------
 
 // JobStatus (declared in ledger.go) is the lifecycle state of an aggregated job.
-// The canonical flow introduced by ADR 0006 is:
+// The canonical flow is:
 //
 //	RECEIVED -> VALIDATING -> PLANNING -> PROCESSING -> COMPLETED
 //	                    |             |           |
@@ -111,7 +111,7 @@ func (s JobStatus) Terminal() bool {
 // Chunk state machine
 // ---------------------------------------------------------------------------
 
-// ChunkStatus is the lifecycle state of a single chunk. See ADR 0006:
+// ChunkStatus is the lifecycle state of a single chunk:
 //
 //	PENDING -> RUNNING -> COMPLETED
 //	                |

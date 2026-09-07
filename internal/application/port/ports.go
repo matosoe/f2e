@@ -65,7 +65,7 @@ type Queue interface {
 // JobLedger persists the technical state required for reconciliation and replay.
 // Implementations must make every operation idempotent and concurrency-safe.
 //
-// The lifecycle is split into the phases defined by ADR 0006:
+// The lifecycle is split into the following phases:
 // admission (Admit), validation (BeginValidation/RejectJob), planning
 // (BeginPlanning/Plan), scheduling (MarkScheduled/MarkSchedulingFailed),
 // execution (AcquireChunk/StartChunk/CompleteChunk/FailChunk) and completion

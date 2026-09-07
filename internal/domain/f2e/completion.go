@@ -20,7 +20,6 @@ const CompletionEventVersion = "f2e-completion/1"
 // envelopes: the completion event may arrive before all record envelopes have
 // been consumed from the record queue.
 //
-// Schema: documentacao/schemas/completion-v1.schema.json
 type CompletionEvent struct {
 	// SchemaVersion identifies the contract version. Consumers must check this
 	// field and reject unknown versions to avoid silent misinterpretation.
