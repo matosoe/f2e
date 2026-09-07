@@ -99,7 +99,7 @@ func (a *AWS) GetJobByReceiptID(ctx context.Context, receiptID string) (JobSumma
 // getJobByReceiptIDFallback queries the receipt field on the job aggregate
 // when no dedicated receipt-link item exists. It is a best-effort fallback and
 // should not be called in the hot path.
-func (a *AWS) getJobByReceiptIDFallback(ctx context.Context, receiptID string) (JobSummary, error) {
+func (a *AWS) getJobByReceiptIDFallback(_ context.Context, receiptID string) (JobSummary, error) {
 	// A receipt always belongs to a single job; we cannot efficiently look up
 	// without an inverted index. Return a not-found error so the caller can
 	// suggest creating the receipt-link item.
