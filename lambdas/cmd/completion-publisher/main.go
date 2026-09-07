@@ -106,6 +106,26 @@ func handler(ctx context.Context, event events.DynamoDBEvent) error {
 	return nil
 }
 
+// eventHandler accepts both DynamoDB Streams records and the scheduled
+// EventBridge recovery event. Keeping recovery in this Lambda gives it the
+// same idempotency and least-privilege boundaries as stream delivery.
+func eventHandler(ctx context.Context, raw json.RawMessage) error {
+	var scheduled struct {
+		Recover bool `json:"recover"`
+	}
+	if err := json.Unmarshal(raw, &scheduled); err != nil {
+		return fmt.Errorf("decode publisher event: %w", err)
+	}
+	if scheduled.Recover {
+		return RecoverPending(ctx, 100)
+	}
+	var streamEvent events.DynamoDBEvent
+	if err := json.Unmarshal(raw, &streamEvent); err != nil {
+		return fmt.Errorf("decode DynamoDB stream event: %w", err)
+	}
+	return handler(ctx, streamEvent)
+}
+
 // publishIntent sends the completion event to the SQS queue and marks the
 // intent as delivered. A crash after send but before mark results in a
 // duplicate SQS delivery; consumers deduplicate via the stable eventId.
@@ -146,4 +166,4 @@ func RecoverPending(ctx context.Context, limit int) error {
 	return nil
 }
 
-func main() { lambda.Start(handler) }
+func main() { lambda.Start(eventHandler) }

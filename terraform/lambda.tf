@@ -125,6 +125,31 @@ resource "aws_lambda_event_source_mapping" "completion_publisher_streams" {
   }
 }
 
+# DynamoDB Streams retain records for only 24 hours. The scheduled recovery
+# queries the outbox GSI so a publisher crash cannot strand a completion event.
+resource "aws_cloudwatch_event_rule" "completion_publisher_recovery" {
+  name                = "${var.resource_prefix}-${var.environment}-completion-recovery"
+  description         = "Recover undelivered F2E completion intents"
+  schedule_expression = "rate(5 minutes)"
+  tags                = local.tags
+}
+
+resource "aws_cloudwatch_event_target" "completion_publisher_recovery" {
+  rule      = aws_cloudwatch_event_rule.completion_publisher_recovery.name
+  target_id = "completion-publisher-recovery"
+  arn       = aws_lambda_alias.completion_publisher_live.arn
+  input     = jsonencode({ recover = true })
+}
+
+resource "aws_lambda_permission" "completion_publisher_recovery" {
+  statement_id  = "AllowEventBridgeRecovery"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.completion_publisher.function_name
+  qualifier     = aws_lambda_alias.completion_publisher_live.name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.completion_publisher_recovery.arn
+}
+
 resource "aws_lambda_alias" "organizer_live" {
   name             = "live"
   function_name    = aws_lambda_function.organizer.function_name

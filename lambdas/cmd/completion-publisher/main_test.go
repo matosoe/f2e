@@ -27,6 +27,7 @@ func makeIntentAttr(intent f2e.CompletionIntent) map[string]events.DynamoDBAttri
 type stubBackend struct {
 	sent      []string
 	delivered []string
+	pending   []f2e.CompletionIntent
 }
 
 func (s *stubBackend) SendCompletion(_ context.Context, _ string, body string) error {
@@ -40,7 +41,7 @@ func (s *stubBackend) MarkIntentDelivered(_ context.Context, jobID string, _ int
 }
 
 func (s *stubBackend) PendingCompletionIntents(_ context.Context, _ int) ([]f2e.CompletionIntent, error) {
-	return nil, nil
+	return s.pending, nil
 }
 
 // withBackend injects the stub into the package-level publisher for tests.
@@ -160,5 +161,22 @@ func TestHandlerPublishesInsertIntentEvent(t *testing.T) {
 	}
 	if len(stub.delivered) != 1 || stub.delivered[0] != "job-xyz" {
 		t.Fatalf("unexpected delivered: %v", stub.delivered)
+	}
+}
+
+func TestEventHandlerRecoversScheduledIntents(t *testing.T) {
+	now := time.Now().UTC()
+	intent := f2e.CompletionIntent{
+		JobID: "job-recover", Version: 1, Status: f2e.JobStateCompleted,
+		Event: f2e.CompletionEvent{EventID: "recover-event", JobID: "job-recover", Timestamps: f2e.CompletionTimestamps{CompletedAt: &now}},
+	}
+	stub := &stubBackend{pending: []f2e.CompletionIntent{intent}}
+	withBackend(stub, "test-queue")
+
+	if err := eventHandler(context.Background(), json.RawMessage(`{"recover":true}`)); err != nil {
+		t.Fatalf("scheduled recovery: %v", err)
+	}
+	if len(stub.sent) != 1 || len(stub.delivered) != 1 {
+		t.Fatalf("sent=%d delivered=%d, want 1 each", len(stub.sent), len(stub.delivered))
 	}
 }
