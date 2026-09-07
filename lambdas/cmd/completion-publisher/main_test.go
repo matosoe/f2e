@@ -103,20 +103,20 @@ func TestPublishIntentMarshalAndDeliver(t *testing.T) {
 		Status:    f2e.JobStateCompleted,
 		CreatedAt: now,
 		Event: f2e.CompletionEvent{
-				SchemaVersion: f2e.CompletionEventVersion,
-				EventID:       "eid",
-				JobID:         "job-abc",
-				Status:        f2e.JobStateCompleted,
-				Timestamps: f2e.CompletionTimestamps{
-					ReceivedAt:  &now,
-					CompletedAt: &now,
-				},
+			SchemaVersion: f2e.CompletionEventVersion,
+			EventID:       "eid",
+			JobID:         "job-abc",
+			Status:        f2e.JobStateCompleted,
+			Timestamps: f2e.CompletionTimestamps{
+				ReceivedAt:  &now,
+				CompletedAt: &now,
 			},
+		},
 	}
 	stub := &stubBackend{}
 	withBackend(stub, "test-queue")
 	if err := publishIntent(context.Background(), intent); err != nil {
-			t.Fatalf("publishIntent: %v", err)
+		t.Fatalf("publishIntent: %v", err)
 	}
 	if len(stub.sent) != 1 {
 		t.Fatalf("expected 1 sent, got %d", len(stub.sent))
@@ -132,33 +132,33 @@ func TestPublishIntentMarshalAndDeliver(t *testing.T) {
 func TestHandlerPublishesInsertIntentEvent(t *testing.T) {
 	now := time.Now().UTC()
 	intent := f2e.CompletionIntent{
-			JobID:   "job-xyz",
-			Version: 1,
-			Status:  f2e.JobStateCompleted,
-			Event: f2e.CompletionEvent{
-				SchemaVersion: f2e.CompletionEventVersion,
-				EventID:       "eid-xyz",
-				JobID:         "job-xyz",
-				Status:        f2e.JobStateCompleted,
-				Timestamps:    f2e.CompletionTimestamps{CompletedAt: &now},
-			},
+		JobID:   "job-xyz",
+		Version: 1,
+		Status:  f2e.JobStateCompleted,
+		Event: f2e.CompletionEvent{
+			SchemaVersion: f2e.CompletionEventVersion,
+			EventID:       "eid-xyz",
+			JobID:         "job-xyz",
+			Status:        f2e.JobStateCompleted,
+			Timestamps:    f2e.CompletionTimestamps{CompletedAt: &now},
+		},
 	}
 	stub := &stubBackend{}
 	withBackend(stub, "test-queue")
 	ev := events.DynamoDBEvent{Records: []events.DynamoDBEventRecord{{
-			EventName: "INSERT",
-			Change:    events.DynamoDBStreamRecord{NewImage: makeIntentAttr(intent)},
+		EventName: "INSERT",
+		Change:    events.DynamoDBStreamRecord{NewImage: makeIntentAttr(intent)},
 	}}}
 	if err := handler(context.Background(), ev); err != nil {
-			t.Fatalf("handler error: %v", err)
+		t.Fatalf("handler error: %v", err)
 	}
 	if len(stub.sent) != 1 {
-			t.Fatalf("expected 1 send, got %d", len(stub.sent))
+		t.Fatalf("expected 1 send, got %d", len(stub.sent))
 	}
 	if !strings.Contains(stub.sent[0], `"eventId":"eid-xyz"`) {
-			t.Fatalf("wrong eventId in payload: %s", stub.sent[0])
+		t.Fatalf("wrong eventId in payload: %s", stub.sent[0])
 	}
 	if len(stub.delivered) != 1 || stub.delivered[0] != "job-xyz" {
-			t.Fatalf("unexpected delivered: %v", stub.delivered)
+		t.Fatalf("unexpected delivered: %v", stub.delivered)
 	}
 }

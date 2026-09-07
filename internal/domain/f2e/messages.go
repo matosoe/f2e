@@ -357,9 +357,9 @@ type BundleEnvelope struct {
 // ErrEnvelopeTooLarge is returned when a single serialised envelope exceeds
 // MaxMessageBytes. The pipeline never truncates; the caller must reject the record.
 type ErrEnvelopeTooLarge struct {
-	EventID      string
-	ActualBytes  int
-	LimitBytes   int
+	EventID     string
+	ActualBytes int
+	LimitBytes  int
 }
 
 func (e ErrEnvelopeTooLarge) Error() string {

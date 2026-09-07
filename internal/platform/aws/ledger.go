@@ -860,8 +860,8 @@ func (a *AWS) ReserveSlot(ctx context.Context, prefixID string, maxActiveJobs in
 		Key:       quotaKey(prefixID),
 		// Create the counter at 1 if it doesn't exist yet (if_not_exists(activeJobs,0)+1),
 		// but only if the resulting value does not exceed the quota.
-		ConditionExpression:      aws.String("attribute_not_exists(activeJobs) OR activeJobs < :max"),
-		UpdateExpression:         aws.String("SET activeJobs = if_not_exists(activeJobs, :zero) + :one, prefixId = :prefix, updatedAt = :now"),
+		ConditionExpression: aws.String("attribute_not_exists(activeJobs) OR activeJobs < :max"),
+		UpdateExpression:    aws.String("SET activeJobs = if_not_exists(activeJobs, :zero) + :one, prefixId = :prefix, updatedAt = :now"),
 		ExpressionAttributeValues: map[string]types.AttributeValue{
 			":max":    number(int64(maxActiveJobs)),
 			":zero":   number(0),
@@ -924,8 +924,8 @@ func (a *AWS) MarkIntentDelivered(ctx context.Context, jobID string, version int
 		Key:       ledgerKey(jobID, intentSortKey(version)),
 		// Only remove the GSI marker if the intent is still pending; idempotent
 		// if already delivered.
-		ConditionExpression:      aws.String("attribute_exists(pk) AND attribute_exists(intentPending)"),
-		UpdateExpression:         aws.String("REMOVE intentPending SET deliveredAt = :now"),
+		ConditionExpression:       aws.String("attribute_exists(pk) AND attribute_exists(intentPending)"),
+		UpdateExpression:          aws.String("REMOVE intentPending SET deliveredAt = :now"),
 		ExpressionAttributeValues: map[string]types.AttributeValue{":now": text(now)},
 	})
 	if err != nil {

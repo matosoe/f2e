@@ -509,14 +509,14 @@ func TestJSONArrayWorkerNestedAndMultiChunk(t *testing.T) {
 // bundleJob creates a ChunkJob with OutputMode=bundle and the given bundle settings.
 func bundleJob(maxEnv, maxBytes int) f2e.ChunkJob {
 	return f2e.ChunkJob{
-		SchemaVersion:    f2e.SchemaVersion,
-		FileID:           "f",
-		JobID:            "j",
-		ChunkID:          "00000001",
-		Bucket:           "b",
-		Key:              "k",
-		EndByteInclusive: 11, // "aaa\nbbb\nccc\n"
-		DataType:         f2e.DataTypeText,
+		SchemaVersion:        f2e.SchemaVersion,
+		FileID:               "f",
+		JobID:                "j",
+		ChunkID:              "00000001",
+		Bucket:               "b",
+		Key:                  "k",
+		EndByteInclusive:     11, // "aaa\nbbb\nccc\n"
+		DataType:             f2e.DataTypeText,
 		MaxRecordLengthBytes: 4,
 		Configuration: f2e.JobConfiguration{
 			BatchSize: 10, MaxEventBytes: 256 * 1024,
@@ -642,7 +642,9 @@ func TestBundleModeSingleModeUnchanged(t *testing.T) {
 		t.Fatalf("single mode: want 2 messages, got %d", totalMsgs)
 	}
 	// Verify message body is a plain Envelope, not a BundleEnvelope.
-	var probe struct{ SchemaVersion string `json:"schemaVersion"` }
+	var probe struct {
+		SchemaVersion string `json:"schemaVersion"`
+	}
 	json.Unmarshal([]byte(q.batches[0][0]), &probe)
 	if probe.SchemaVersion == f2e.BundleSchemaVersion {
 		t.Fatal("single mode emitted a bundle envelope")

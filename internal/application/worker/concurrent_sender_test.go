@@ -15,9 +15,9 @@ import (
 
 // countingQueue records how many Send calls are in-flight concurrently.
 type countingQueue struct {
-	mu      sync.Mutex
-	calls   int32 // total completed calls
-	maxSeen int32 // peak in-flight concurrency
+	mu       sync.Mutex
+	calls    int32 // total completed calls
+	maxSeen  int32 // peak in-flight concurrency
 	inflight int32
 }
 
@@ -130,4 +130,3 @@ func TestWorkerPublishConcurrencyFourNoRaceDetector(t *testing.T) {
 		t.Fatalf("want 8 records, got %d", len(q.messages))
 	}
 }
-

@@ -27,12 +27,12 @@ import (
 // The dispatcher is safe for concurrent use: multiple scenarios can subscribe
 // and unsubscribe simultaneously.
 type MessageDispatcher struct {
-	client     *AWSClient
-	mu         sync.RWMutex
-	subs       map[string]chan Envelope // keyed by jobId
-	orphanBuf  []orphanMsg             // messages whose jobId has not yet been subscribed
-	stopCh     chan struct{}
-	done       chan struct{}
+	client    *AWSClient
+	mu        sync.RWMutex
+	subs      map[string]chan Envelope // keyed by jobId
+	orphanBuf []orphanMsg              // messages whose jobId has not yet been subscribed
+	stopCh    chan struct{}
+	done      chan struct{}
 }
 
 type orphanMsg struct {

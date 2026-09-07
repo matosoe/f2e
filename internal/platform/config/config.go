@@ -12,16 +12,16 @@ type Config struct {
 	// CompletionQueueURL is the SQS queue where the completion-publisher Lambda
 	// sends technical conclusion events. It is separate from the record-envelope
 	// output queue so consumers can subscribe independently.
-	CompletionQueueURL    string
-	LedgerTable           string
-	Environment           string
-	FileConfigPath        string
-	GlobalLimitsParameter string
-	RecordsPerChunk, BatchSize, MaxReceiveCount int
-	LedgerRetentionDays                         int
-	MaxEventBytes                               int
-	JSONArraySearchBytes                        int
-	MaxFileBytes, MaxChunkBytes                 int64
+	CompletionQueueURL                             string
+	LedgerTable                                    string
+	Environment                                    string
+	FileConfigPath                                 string
+	GlobalLimitsParameter                          string
+	RecordsPerChunk, BatchSize, MaxReceiveCount    int
+	LedgerRetentionDays                            int
+	MaxEventBytes                                  int
+	JSONArraySearchBytes                           int
+	MaxFileBytes, MaxChunkBytes                    int64
 	EventSchemaID, EventSchemaVersion, EventFormat string
 	// PublishConcurrency is the maximum number of SQS SendMessageBatch calls
 	// that may be in-flight simultaneously within a single chunk processing.

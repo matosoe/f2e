@@ -24,18 +24,18 @@ func (p PhaseTimer) ElapsedMs() int64 {
 // APICounters accumulates raw AWS API call and message counts for one scenario.
 // All fields are updated atomically so they can be incremented from any goroutine.
 type APICounters struct {
-	S3PutCount        int64 // PutObject calls
-	SQSSendCount      int64 // SendMessage calls (intake)
-	SQSReceiveCount   int64 // ReceiveMessage calls (output)
-	SQSDeleteBatch    int64 // DeleteMessageBatch calls (output)
-	SQSGetAttrsCount  int64 // GetQueueAttributes calls (approximate count polling)
-	MessagesReceived  int64 // total SQS messages received across all ReceiveMessage calls
-	MessagesDeleted   int64 // total SQS messages deleted across all DeleteMessageBatch calls
-	EmptyReceives     int64 // ReceiveMessage calls that returned zero messages
+	S3PutCount       int64 // PutObject calls
+	SQSSendCount     int64 // SendMessage calls (intake)
+	SQSReceiveCount  int64 // ReceiveMessage calls (output)
+	SQSDeleteBatch   int64 // DeleteMessageBatch calls (output)
+	SQSGetAttrsCount int64 // GetQueueAttributes calls (approximate count polling)
+	MessagesReceived int64 // total SQS messages received across all ReceiveMessage calls
+	MessagesDeleted  int64 // total SQS messages deleted across all DeleteMessageBatch calls
+	EmptyReceives    int64 // ReceiveMessage calls that returned zero messages
 }
 
-func (c *APICounters) incS3Put()                       { atomic.AddInt64(&c.S3PutCount, 1) }
-func (c *APICounters) incSQSSend()                     { atomic.AddInt64(&c.SQSSendCount, 1) }
+func (c *APICounters) incS3Put()   { atomic.AddInt64(&c.S3PutCount, 1) }
+func (c *APICounters) incSQSSend() { atomic.AddInt64(&c.SQSSendCount, 1) }
 func (c *APICounters) incSQSReceive(msgs, empty int64) {
 	atomic.AddInt64(&c.SQSReceiveCount, 1)
 	atomic.AddInt64(&c.MessagesReceived, msgs)

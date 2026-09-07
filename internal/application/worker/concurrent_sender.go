@@ -26,7 +26,7 @@ type concurrentSender struct {
 	cancel   context.CancelFunc
 	queue    port.Queue
 	url      string
-	sem      chan struct{}      // limits in-flight goroutines
+	sem      chan struct{} // limits in-flight goroutines
 	wg       sync.WaitGroup
 	mu       sync.Mutex
 	firstErr error

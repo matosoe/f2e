@@ -1,4 +1,4 @@
-﻿// Package lineio provides a line reader for the F2E three-mode pipeline.
+// Package lineio provides a line reader for the F2E three-mode pipeline.
 //
 // Terminator contracts (section 4.1 of the evolution plan):
 //   - CR (\r), LF (\n), and CRLF (\r\n) each terminate one logical record.

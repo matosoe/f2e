@@ -97,10 +97,10 @@ func TestQuotaReleasedOnRejectAgainstLocalStack(t *testing.T) {
 		t.Fatalf("reserve: %v", err)
 	}
 	outcome, err := client.Admit(t.Context(), f2e.Receipt{
-		ReceiptID: "rcv-quota-reject",
-		FileID:    fileID,
-		Source:    f2e.ObjectIdentity{Bucket: "b", Key: "k", VersionID: "v", ETag: "e"},
-		PrefixID:  prefixID,
+		ReceiptID:  "rcv-quota-reject",
+		FileID:     fileID,
+		Source:     f2e.ObjectIdentity{Bucket: "b", Key: "k", VersionID: "v", ETag: "e"},
+		PrefixID:   prefixID,
 		ReceivedAt: time.Now().UTC(),
 	})
 	if err != nil {
