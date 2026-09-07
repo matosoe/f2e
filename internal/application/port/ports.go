@@ -19,6 +19,16 @@ var ErrAlreadyCompleted = errors.New("chunk already completed")
 // when an active job completes and releases its slot.
 var ErrQuotaExceeded = errors.New("prefix active-job quota exceeded")
 
+// WaitingAdmission is an immutable S3 notification held outside SQS while a
+// prefix has no available active-job slot. Its ordering key is assigned by the
+// ledger, not by delivery order from the standard intake queue.
+type WaitingAdmission struct {
+	FileID   string
+	PrefixID string
+	Body     string
+	QueuedAt string
+}
+
 // MessageAttribute is an SQS/SNS message attribute.
 type MessageAttribute struct {
 	DataType string
@@ -141,6 +151,16 @@ type JobLedger interface {
 	// the completion event publication fails. A second call due to a retry or
 	// duplicate terminal is a no-op.
 	ReleaseSlot(ctx context.Context, prefixID string) error
+
+	// EnqueueWaitingAdmission durably records an admission that could not obtain
+	// quota. Repeated S3/SQS deliveries for the same physical file are a no-op.
+	EnqueueWaitingAdmission(ctx context.Context, admission WaitingAdmission) error
+	// ClaimWaitingAdmissions returns the oldest waiting admission for each
+	// prefix and marks it RELEASING. The caller must either remove it after a
+	// successful admission or return it to WAITING.
+	ClaimWaitingAdmissions(ctx context.Context, limit int) ([]WaitingAdmission, error)
+	CompleteWaitingAdmission(ctx context.Context, fileID string) error
+	ReturnWaitingAdmission(ctx context.Context, fileID string) error
 }
 
 // ErrNotImplemented is returned by phased ledger operations whose persistence

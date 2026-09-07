@@ -41,8 +41,8 @@ data "aws_iam_policy_document" "organizer" {
     resources = ["${aws_s3_bucket.input.arn}/*"]
   }
   statement {
-    actions   = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:Query", "dynamodb:UpdateItem"]
-    resources = [aws_dynamodb_table.job_ledger.arn]
+    actions   = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem", "dynamodb:Query", "dynamodb:UpdateItem"]
+    resources = [aws_dynamodb_table.job_ledger.arn, "${aws_dynamodb_table.job_ledger.arn}/index/waiting-admissions-index"]
   }
   statement {
     actions = ["ssm:GetParameter", "ssm:GetParametersByPath"]

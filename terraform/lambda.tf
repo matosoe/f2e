@@ -150,6 +150,32 @@ resource "aws_lambda_permission" "completion_publisher_recovery" {
   source_arn    = aws_cloudwatch_event_rule.completion_publisher_recovery.arn
 }
 
+# Fair quota recovery: the Organizer claims the oldest WAITING item per
+# prefix, retries its normal admission path and returns it to WAITING when the
+# quota remains full. No Lambda invocation waits for a slot.
+resource "aws_cloudwatch_event_rule" "organizer_waiting_recovery" {
+  name                = "${var.resource_prefix}-${var.environment}-waiting-admission-recovery"
+  description         = "Release fair F2E admissions waiting for prefix quota"
+  schedule_expression = "rate(1 minute)"
+  tags                = local.tags
+}
+
+resource "aws_cloudwatch_event_target" "organizer_waiting_recovery" {
+  rule      = aws_cloudwatch_event_rule.organizer_waiting_recovery.name
+  target_id = "organizer-waiting-recovery"
+  arn       = aws_lambda_alias.organizer_live.arn
+  input     = jsonencode({ releaseWaiting = true })
+}
+
+resource "aws_lambda_permission" "organizer_waiting_recovery" {
+  statement_id  = "AllowEventBridgeWaitingAdmissionRecovery"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.organizer.function_name
+  qualifier     = aws_lambda_alias.organizer_live.name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.organizer_waiting_recovery.arn
+}
+
 resource "aws_lambda_alias" "organizer_live" {
   name             = "live"
   function_name    = aws_lambda_function.organizer.function_name

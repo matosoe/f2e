@@ -30,6 +30,25 @@ resource "aws_dynamodb_table" "job_ledger" {
     projection_type = "ALL"
   }
 
+  # Waiting admissions are queued when a prefix has exhausted maxActiveJobs.
+  # The single marker keeps the scheduler query small; queuedAt provides a
+  # stable FIFO order and the Organizer releases at most one item per prefix.
+  attribute {
+    name = "waitingAdmission"
+    type = "S"
+  }
+  attribute {
+    name = "queuedAt"
+    type = "S"
+  }
+
+  global_secondary_index {
+    name            = "waiting-admissions-index"
+    hash_key        = "waitingAdmission"
+    range_key       = "queuedAt"
+    projection_type = "ALL"
+  }
+
   # DynamoDB Streams feeds the completion-publisher Lambda (T13). NEW_AND_OLD_IMAGES
   # is required so the publisher can read the intent payload even when the item
   # already existed before the Streams window.

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"time"
 
@@ -58,7 +59,25 @@ func init() {
 		service.Ledger = a
 	}
 }
-func handler(ctx context.Context, e events.SQSEvent) (events.SQSEventResponse, error) {
+
+// handler accepts both the SQS intake event and the small EventBridge recovery
+// event. Keeping both paths in the Organizer makes the PoC operationally
+// small: there is one admission implementation and no extra queue consumer.
+func handler(ctx context.Context, raw json.RawMessage) (any, error) {
+	var scheduled struct {
+		ReleaseWaiting bool `json:"releaseWaiting"`
+	}
+	if err := json.Unmarshal(raw, &scheduled); err == nil && scheduled.ReleaseWaiting {
+		return nil, releaseWaiting(ctx)
+	}
+	var e events.SQSEvent
+	if err := json.Unmarshal(raw, &e); err != nil {
+		return nil, fmt.Errorf("decode organizer event: %w", err)
+	}
+	return handleSQSEvent(ctx, e)
+}
+
+func handleSQSEvent(ctx context.Context, e events.SQSEvent) (events.SQSEventResponse, error) {
 	out := events.SQSEventResponse{}
 	for _, r := range e.Records {
 		jobs, err := jobsFor(ctx, []byte(r.Body), r.MessageId)
@@ -67,15 +86,43 @@ func handler(ctx context.Context, e events.SQSEvent) (events.SQSEventResponse, e
 		}
 		if err != nil {
 			slog.Error("organizer message failed", "service", "organizer", "sqsMessageId", r.MessageId, "receiveCount", r.Attributes["ApproximateReceiveCount"], "error", err)
-			// ErrQuotaExceeded means the prefix is at capacity. Do not add to
-			// BatchItemFailures: SQS will redeliver automatically via visibility
-			// timeout, giving in-flight jobs time to complete and free their slots.
+			// A quota miss is normally converted into a durable WAITING admission
+			// by jobsFor. Keep this guard for non-S3 callers that still surface it.
 			if !errors.Is(err, port.ErrQuotaExceeded) {
 				out.BatchItemFailures = append(out.BatchItemFailures, events.SQSBatchItemFailure{ItemIdentifier: r.MessageId})
 			}
 		}
 	}
 	return out, nil
+}
+
+func releaseWaiting(ctx context.Context) error {
+	if service.Ledger == nil {
+		return nil
+	}
+	waiting, err := service.Ledger.ClaimWaitingAdmissions(ctx, 25)
+	if err != nil {
+		return err
+	}
+	for _, item := range waiting {
+		jobs, admissionErr := jobsFor(ctx, []byte(item.Body), "waiting-"+item.FileID)
+		if admissionErr == nil {
+			admissionErr = service.Publish(ctx, jobs)
+		}
+		if admissionErr == nil {
+			if err := service.Ledger.CompleteWaitingAdmission(ctx, item.FileID); err != nil {
+				return fmt.Errorf("complete waiting admission %s: %w", item.FileID, err)
+			}
+			continue
+		}
+		if err := service.Ledger.ReturnWaitingAdmission(ctx, item.FileID); err != nil {
+			return fmt.Errorf("return waiting admission %s: %w", item.FileID, err)
+		}
+		if !errors.Is(admissionErr, port.ErrQuotaExceeded) {
+			slog.Error("waiting admission deferred", "service", "organizer", "fileId", item.FileID, "prefixId", item.PrefixID, "error", admissionErr)
+		}
+	}
+	return nil
 }
 
 // jobsFor accepts either an explicit OrganizerRequest or an S3 event whose
@@ -142,12 +189,22 @@ func jobsFor(ctx context.Context, body []byte, executionID string) ([]f2e.ChunkJ
 		}
 		fileID := f2e.FileID(object)
 		if configured.Ledger != nil {
-			// T22: reserve a quota slot before admission if this prefix has a
-			// maxActiveJobs limit. ErrQuotaExceeded is returned to the caller
-			// which must NOT add the SQS message to BatchItemFailures so it
-			// retries naturally via the visibility timeout.
+			// A quota miss becomes a durable FIFO admission record. This acks the
+			// intake message, avoiding retry/DLQ churn while preserving the oldest
+			// queued file for each prefix.
 			if prefixConfig.PrefixID != "" && prefixConfig.MaxActiveJobs > 0 {
 				if slotErr := configured.Ledger.ReserveSlot(ctx, prefixConfig.PrefixID, prefixConfig.MaxActiveJobs); slotErr != nil {
+					if errors.Is(slotErr, port.ErrQuotaExceeded) {
+						waitingBody, bodyErr := singleS3Notification(reference)
+						if bodyErr != nil {
+							return nil, bodyErr
+						}
+						if waitErr := configured.Ledger.EnqueueWaitingAdmission(ctx, port.WaitingAdmission{FileID: fileID, PrefixID: prefixConfig.PrefixID, Body: string(waitingBody)}); waitErr != nil {
+							return nil, fmt.Errorf("queue saturated admission: %w", waitErr)
+						}
+						slog.Info("admission queued for quota", "service", "organizer", "fileId", fileID, "prefixId", prefixConfig.PrefixID)
+						return nil, port.ErrQuotaExceeded
+					}
 					return nil, slotErr
 				}
 			}
@@ -217,6 +274,17 @@ func jobsFor(ctx context.Context, body []byte, executionID string) ([]f2e.ChunkJ
 		jobs = append(jobs, execution.Jobs...)
 	}
 	return jobs, nil
+}
+
+func singleS3Notification(reference f2e.FileReference) ([]byte, error) {
+	return json.Marshal(s3event.Notification{Records: []s3event.Record{func() s3event.Record {
+		var record s3event.Record
+		record.EventName = "ObjectCreated:Put"
+		record.S3.Bucket.Name = reference.Bucket
+		record.S3.Object.Key = url.QueryEscape(reference.Key)
+		record.S3.Object.VersionID = reference.VersionID
+		return record
+	}()}})
 }
 
 // logSummary logs the organizer summary to stdout
