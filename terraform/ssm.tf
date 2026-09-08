@@ -13,8 +13,12 @@ resource "aws_ssm_parameter" "global_limits" {
 resource "aws_ssm_parameter" "file_configuration" {
   for_each = local.file_configurations
 
-  name  = "${local.file_config_path}/${var.f2e_input_bucket}/${each.key}"
-  type  = "String"
-  value = jsonencode(each.value)
-  tags  = local.tags
+  name = "${local.file_config_path}/${var.f2e_input_bucket}/${each.key}"
+  type = "String"
+  value = jsonencode(merge(each.value, {
+    prefixId       = each.key
+    outputQueueURL = module.prefix[each.key].output_queue_url
+    chunkQueueURL  = module.prefix[each.key].chunk_queue_url
+  }))
+  tags = local.tags
 }

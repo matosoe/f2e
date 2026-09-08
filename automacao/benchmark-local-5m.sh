@@ -18,7 +18,8 @@ sample_seconds="${BENCHMARK_SAMPLE_SECONDS:-2}"
 run_id="$(date -u +%Y%m%dT%H%M%SZ)"
 result_dir="${BENCHMARK_RESULTS_DIR:-$root/resultados/benchmark-local-5m/$run_id}"
 data_file="${BENCHMARK_DATA_FILE:-$root/dados/benchmark-${records}x${record_length}.txt}"
-object_key="benchmark-text/${run_id}-${records}x${record_length}.txt"
+prefix="example-text/benchmark"
+object_key="${prefix}/${run_id}-${records}x${record_length}.txt"
 endpoint="http://localhost:4566"
 region="us-east-1"
 bucket="f2e-input"
@@ -109,21 +110,24 @@ provision_start="$(now_ms)"
 "$root/subir-ambiente.sh"
 provision_ms="$(elapsed_ms "$provision_start")"
 
-# A dedicated prefix keeps benchmark tuning out of functional E2E scenarios.
-config=$(jq -cn \
-  --arg bucket "$bucket" --arg prefix "benchmark-text/" --arg mode "$output_mode" \
+# Retain the Terraform-managed prefixId and chunkQueueURL so this benchmark
+# exercises the exclusive queue instead of the retired shared queue.
+config_path="/f2e/local/file-config/${bucket}/example-text"
+base_config="$(aws_local_no_pathconv ssm get-parameter --name "$config_path" --query Parameter.Value --output text)"
+config=$(jq -c \
+  --arg mode "$output_mode" \
   --argjson chunk "$records_per_chunk" --argjson length "$record_length" --argjson envelopes "$max_envelopes" --argjson messageBytes "$max_message_bytes" \
-  '{bucket:$bucket,prefix:$prefix,dataType:"text",recordsPerChunk:$chunk,batchSize:10,maxEventBytes:262144,maxFileBytes:10737418240,maxChunkBytes:67108864,jsonArraySearchBytes:1048576,maxRecordLengthBytes:$length,eventSchemaId:"f2e-record",eventSchemaVersion:"1",eventFormat:"json",outputMode:$mode,maxEnvelopesPerMessage:$envelopes,maxMessageBytes:$messageBytes}')
-# Git Bash otherwise rewrites an SSM name beginning with / into a Windows path.
-aws_local_no_pathconv ssm put-parameter --name /f2e/local/file-config/f2e-input/benchmark-text --type String --value "$config" --overwrite >/dev/null
+  '. + {recordsPerChunk:$chunk,maxRecordLengthBytes:$length,outputMode:$mode,maxEnvelopesPerMessage:$envelopes,maxMessageBytes:$messageBytes}' <<<"$base_config")
+aws_local_no_pathconv ssm put-parameter --name "$config_path" --type String --value "$config" --overwrite >/dev/null
 
 # update-function-configuration replaces the Variables map, so merge first.
-worker_env="$(aws_local lambda get-function-configuration --function-name f2e-worker --query Environment.Variables --output json)"
+worker_name="f2e-local-example-text-worker"
+worker_env="$(aws_local lambda get-function-configuration --function-name "$worker_name" --query Environment.Variables --output json)"
 worker_env="$(jq -c --arg concurrency "$publish_concurrency" '. + {F2E_PUBLISH_CONCURRENCY:$concurrency}' <<<"$worker_env")"
-aws_local lambda update-function-configuration --function-name f2e-worker --environment "{\"Variables\":$worker_env}" >/dev/null
-aws_local lambda wait function-updated-v2 --function-name f2e-worker
+aws_local lambda update-function-configuration --function-name "$worker_name" --environment "{\"Variables\":$worker_env}" >/dev/null
+aws_local lambda wait function-updated-v2 --function-name "$worker_name"
 
-for q in file-intake chunk-jobs output-events file-intake-dlq chunk-jobs-dlq; do
+for q in file-intake f2e-local-example-text-chunks f2e-local-example-text-output file-intake-dlq f2e-local-example-text-chunks-dlq; do
   aws_local sqs purge-queue --queue-url "$(queue_url "$q")" >/dev/null 2>&1 || true
 done
 
@@ -174,9 +178,9 @@ records_published="$(jq -r '.recordsPublished.N // .recordsProduced.N // "0"' <<
 records_read="$(jq -r '.recordsRead.N // "0"' <<<"$job")"
 records_rejected="$(jq -r '.recordsRejected.N // "0"' <<<"$job")"
 records_ignored="$(jq -r '.recordsIgnored.N // "0"' <<<"$job")"
-output_messages="$(queue_count output-events)"
+output_messages="$(queue_count f2e-local-example-text-output)"
 intake_dlq="$(queue_count file-intake-dlq)"
-chunk_dlq="$(queue_count chunk-jobs-dlq)"
+chunk_dlq="$(queue_count f2e-local-example-text-chunks-dlq)"
 
 peak_cpu="$(awk -F, 'NR>1 && $3+0>max{max=$3+0} END{printf "%.2f", max+0}' "$resource_csv")"
 peak_memory_pct="$(awk -F, 'NR>1 && $4+0>max{max=$4+0} END{printf "%.2f", max+0}' "$resource_csv")"

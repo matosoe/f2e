@@ -2,6 +2,7 @@
 package worker
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -111,18 +112,37 @@ func (s Service) processWithMetrics(ctx context.Context, body []byte, attempt in
 			return nil, fmt.Errorf("start chunk ledger: %w", err)
 		}
 	}
-	readStart := j.StartByte
-	if j.MaxRecordLengthBytes > 0 && readStart > 0 && j.DataType != f2e.DataTypeJSON {
-		readStart -= j.MaxRecordLengthBytes
-		if readStart < 0 {
-			readStart = 0
-		}
-	}
-	r, e := s.Resolver.OpenChunkRange(ctx, j, readStart, j.EndByteInclusive)
+	readStart, readEnd, e := chunkReadRange(j)
 	if e != nil {
 		return nil, e
 	}
-	counts, err := s.streamWithMetrics(ctx, j, r, readStart)
+	r, e := s.Resolver.OpenChunkRange(ctx, j, readStart, readEnd)
+	if e != nil {
+		return nil, e
+	}
+	var source io.Reader = r
+	// Text chunks use nominal ranges. Validate both discoverable line boundaries
+	// before streaming anything, so a bad maxRecordLengthBytes cannot publish a
+	// partial chunk.
+	if j.DataType == f2e.DataTypeText && j.MaxRecordLengthBytes > 0 {
+		data, readErr := io.ReadAll(r)
+		if readErr != nil {
+			_ = r.Close()
+			return nil, fmt.Errorf("read chunk boundaries: %w", readErr)
+		}
+		if err := validateTextBoundaries(j, readStart, readEnd, data); err != nil {
+			_ = r.Close()
+			return nil, err
+		}
+		// lineio intentionally requires a terminator. EOF is nevertheless a
+		// valid final boundary for the nominal-range contract, so add a synthetic
+		// LF only to the in-memory parsing view (never to the source object).
+		if readEnd == j.FileSize-1 && len(data) > 0 && data[len(data)-1] != '\n' && data[len(data)-1] != '\r' {
+			data = append(data, '\n')
+		}
+		source = bytes.NewReader(data)
+	}
+	counts, err := s.streamWithMetrics(ctx, j, source, readStart)
 	closeErr := r.Close()
 	if err != nil {
 		return nil, fmt.Errorf("process job %s chunk %s: %w", j.JobID, j.ChunkID, err)
@@ -143,17 +163,73 @@ func (s Service) processWithMetrics(ctx context.Context, body []byte, attempt in
 		StartByte:            j.StartByte,
 		EndByte:              j.EndByteInclusive,
 		Attempt:              attempt,
-		BytesProcessed:       j.EndByteInclusive - readStart + 1,
+		BytesProcessed:       readEnd - readStart + 1,
 		RecordsProcessed:     counts.RecordsRead,
 		ProcessingTimeMillis: duration,
 		TPS:                  f2e.CalculateTPS(counts.RecordsRead, duration),
 	}
 	if s.Ledger != nil {
-		if err := s.Ledger.CompleteChunk(ctx, f2e.ChunkResult{JobID: j.JobID, ChunkID: j.ChunkID, Attempt: attempt, RecordsProduced: counts.RecordsPublished, BytesProcessed: j.EndByteInclusive - readStart + 1, OccurredAt: time.Now().UTC(), Counts: counts}); err != nil {
+		if err := s.Ledger.CompleteChunk(ctx, f2e.ChunkResult{JobID: j.JobID, ChunkID: j.ChunkID, Attempt: attempt, RecordsProduced: counts.RecordsPublished, BytesProcessed: readEnd - readStart + 1, OccurredAt: time.Now().UTC(), Counts: counts}); err != nil {
 			return nil, fmt.Errorf("complete chunk ledger: %w", err)
 		}
 	}
 	return result, nil
+}
+
+func chunkReadRange(j f2e.ChunkJob) (int64, int64, error) {
+	if j.DataType != f2e.DataTypeText || j.MaxRecordLengthBytes == 0 {
+		return j.StartByte, j.EndByteInclusive, nil
+	}
+	// Jobs created before nominal-range planning did not carry FileSize. Keep
+	// them processable during rollout; all newly planned text jobs include it.
+	if j.FileSize < 1 {
+		return j.StartByte, j.EndByteInclusive, nil
+	}
+	overlap := 9 * j.MaxRecordLengthBytes
+	if overlap/j.MaxRecordLengthBytes != 9 {
+		return 0, 0, fmt.Errorf("text chunk overlap overflow")
+	}
+	start := j.StartByte - overlap
+	if start < 0 {
+		start = 0
+	}
+	end := j.EndByteInclusive + overlap
+	if end >= j.FileSize {
+		end = j.FileSize - 1
+	}
+	return start, end, nil
+}
+
+func validateTextBoundaries(j f2e.ChunkJob, readStart, readEnd int64, data []byte) error {
+	// A line may start at byte zero or immediately after LF/CR. In the latter
+	// case the left overlap must contain a terminator. EOF is an equally valid
+	// right boundary for a final record without a newline.
+	if j.FileSize < 1 {
+		return nil
+	}
+	if j.StartByte > 0 && !hasLineTerminator(data[:j.StartByte-readStart]) {
+		return boundaryError(j, "start", j.StartByte, readEnd-readStart+1)
+	}
+	if j.EndByteInclusive < j.FileSize-1 {
+		offset := j.EndByteInclusive + 1 - readStart
+		if offset < 0 || offset > int64(len(data)) || !hasLineTerminator(data[offset:]) {
+			return boundaryError(j, "end", j.EndByteInclusive, readEnd-readStart+1)
+		}
+	}
+	return nil
+}
+
+func hasLineTerminator(data []byte) bool {
+	for _, b := range data {
+		if b == '\n' || b == '\r' {
+			return true
+		}
+	}
+	return false
+}
+
+func boundaryError(j f2e.ChunkJob, side string, offset, searched int64) error {
+	return fmt.Errorf("data contract error: jobId=%s chunkId=%s boundary=%s nominalOffset=%d maxRecordLengthBytes=%d bytesSearched=%d; record exceeds 9x declared maximum", j.JobID, j.ChunkID, side, offset, j.MaxRecordLengthBytes, searched)
 }
 
 // logChunkSummary logs the chunk processing summary

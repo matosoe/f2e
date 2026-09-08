@@ -11,7 +11,37 @@ locals {
   name_prefix = "${var.resource_prefix}-${var.environment}-${var.prefix_id}"
 }
 
-# ── Output queue ──────────────────────────────────────────────────────────────
+# ── Exclusive chunk queue and output queue ───────────────────────────────────
+
+resource "aws_sqs_queue" "chunk_dlq" {
+  name                       = "${local.name_prefix}-chunks-dlq"
+  visibility_timeout_seconds = var.sqs_visibility_timeout
+  receive_wait_time_seconds  = 1
+  message_retention_seconds  = var.sqs_dlq_retention_seconds
+  sqs_managed_sse_enabled    = var.kms_key_arn == "" ? true : null
+  kms_master_key_id          = var.kms_key_arn != "" ? var.kms_key_arn : null
+  tags                       = var.tags
+}
+
+resource "aws_sqs_queue" "chunk" {
+  name                       = "${local.name_prefix}-chunks"
+  visibility_timeout_seconds = var.sqs_visibility_timeout
+  receive_wait_time_seconds  = 1
+  message_retention_seconds  = var.sqs_retention_seconds
+  max_message_size           = 262144
+  sqs_managed_sse_enabled    = var.kms_key_arn == "" ? true : null
+  kms_master_key_id          = var.kms_key_arn != "" ? var.kms_key_arn : null
+  redrive_policy = jsonencode({
+    deadLetterTargetArn = aws_sqs_queue.chunk_dlq.arn
+    maxReceiveCount     = var.sqs_max_receive_count
+  })
+  tags = var.tags
+}
+
+resource "aws_sqs_queue_redrive_allow_policy" "chunk" {
+  queue_url            = aws_sqs_queue.chunk_dlq.id
+  redrive_allow_policy = jsonencode({ redrivePermission = "byQueue", sourceQueueArns = [aws_sqs_queue.chunk.arn] })
+}
 
 resource "aws_sqs_queue" "output_dlq" {
   name                       = "${local.name_prefix}-output-dlq"
@@ -153,11 +183,10 @@ data "aws_iam_policy_document" "worker" {
     actions   = ["xray:PutTraceSegments", "xray:PutTelemetryRecords"]
     resources = ["*"]
   }
-  # Consume from the shared chunk-jobs queue (scoped to this prefix's jobs
-  # via message-level prefixId; IAM isolation requires a per-prefix queue).
+  # Each prefix consumes only its own chunk queue.
   statement {
     actions   = ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes", "sqs:ChangeMessageVisibility"]
-    resources = [var.chunk_queue_arn]
+    resources = [aws_sqs_queue.chunk.arn]
   }
   # Publish to THIS prefix's dedicated output queue only.
   statement {
@@ -222,9 +251,9 @@ resource "aws_lambda_function" "worker" {
   reserved_concurrent_executions = var.worker_reserved_concurrency
 }
 
-# Event-source mapping: shared chunk-jobs queue → this prefix's Worker.
+# Event-source mapping: exclusive prefix chunk queue → this prefix's Worker.
 resource "aws_lambda_event_source_mapping" "worker" {
-  event_source_arn                   = var.chunk_queue_arn
+  event_source_arn                   = aws_sqs_queue.chunk.arn
   function_name                      = aws_lambda_function.worker.arn
   batch_size                         = var.sqs_batch_size
   maximum_batching_window_in_seconds = 0

@@ -16,15 +16,25 @@ lambda_zip_dir = "../.build"
 
 # Lambda runtime supported by LocalStack 3.x
 lambda_runtime   = "provided.al2"
-lambda_timeout   = 300
+lambda_timeout   = 60
 lambda_memory_mb = 256
 
-f2e_input_bucket      = "f2e-input"
-f2e_record_length     = 100
-f2e_records_per_chunk = 1000
-f2e_batch_size        = 10
+f2e_input_bucket           = "f2e-input"
+f2e_record_length          = 100
+f2e_records_per_chunk      = 1000
+f2e_batch_size             = 10
+f2e_target_chunk_bytes     = 0
+worker_publish_concurrency = 1
 
 sqs_visibility_timeout = 1800
 sqs_max_receive_count  = 3
 organizer_batch_size   = 1
 worker_batch_size      = 1
+
+# LocalStack must receive the same explicit SQS poller caps as AWS. Use 8
+# initially; set 16 in the benchmark matrix when the host has capacity.
+prefix_worker_config = {
+  example-text       = { maximum_concurrency = 8, memory_mb = 256 }
+  example-json       = { maximum_concurrency = 8, memory_mb = 256 }
+  example-multi-line = { maximum_concurrency = 8, memory_mb = 256 }
+}

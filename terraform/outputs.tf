@@ -85,3 +85,8 @@ output "prefix_worker_function_arns" {
   description = "Map of prefixId → Worker Lambda ARN for each registered prefix."
   value       = { for k, m in module.prefix : k => m.worker_function_arn }
 }
+
+output "prefix_chunk_queue_urls" {
+  description = "Map of prefixId → exclusive chunk queue URL."
+  value       = { for k, m in module.prefix : k => m.chunk_queue_url }
+}

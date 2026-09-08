@@ -332,6 +332,47 @@ func (s rangedStore) GetRange(_ context.Context, _ f2e.ObjectIdentity, start, en
 	return io.NopCloser(strings.NewReader(s.data[start : end+1])), nil
 }
 
+func TestNominalTextChunksDiscoverBoundariesAndPublishEachRecordOnce(t *testing.T) {
+	data := "one\r\ntwo\r\nthree\r\nfour" // EOF without final newline is valid.
+	q := &queue{}
+	s := Service{Resolver: rangedStore{data}, Queue: q, Config: config.Config{OutputQueueURL: "out", EventSchemaID: "s", EventSchemaVersion: "1", EventFormat: "json"}}
+	jobs := []f2e.ChunkJob{
+		{SchemaVersion: f2e.SchemaVersion, FileID: "f", JobID: "j", ChunkID: "1", Bucket: "b", Key: "k", StartByte: 0, EndByteInclusive: 8, FileSize: int64(len(data)), MaxRecordLengthBytes: 5, DataType: f2e.DataTypeText},
+		{SchemaVersion: f2e.SchemaVersion, FileID: "f", JobID: "j", ChunkID: "2", Bucket: "b", Key: "k", StartByte: 9, EndByteInclusive: int64(len(data) - 1), FileSize: int64(len(data)), MaxRecordLengthBytes: 5, DataType: f2e.DataTypeText},
+	}
+	for _, job := range jobs {
+		body, _ := json.Marshal(job)
+		if err := s.Process(context.Background(), body); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var raws []string
+	for _, batch := range q.batches {
+		for _, body := range batch {
+			var env f2e.Envelope[f2e.RecordPayload]
+			_ = json.Unmarshal([]byte(body), &env)
+			raws = append(raws, env.Data.Raw)
+		}
+	}
+	if strings.Join(raws, ",") != "one,two,three,four" {
+		t.Fatalf("records=%v", raws)
+	}
+}
+
+func TestNominalTextChunkFailsBeforePublishingWhenBoundaryExceedsNineTimesLimit(t *testing.T) {
+	data := strings.Repeat("x", 100) + "\nnext\n"
+	q := &queue{}
+	job := f2e.ChunkJob{SchemaVersion: f2e.SchemaVersion, FileID: "f", JobID: "j", ChunkID: "1", Bucket: "b", Key: "k", StartByte: 50, EndByteInclusive: int64(len(data) - 1), FileSize: int64(len(data)), MaxRecordLengthBytes: 10, DataType: f2e.DataTypeText}
+	body, _ := json.Marshal(job)
+	err := (Service{Resolver: rangedStore{data}, Queue: q, Config: config.Config{OutputQueueURL: "out", EventSchemaID: "s", EventSchemaVersion: "1", EventFormat: "json"}}).Process(context.Background(), body)
+	if err == nil || !strings.Contains(err.Error(), "data contract error") {
+		t.Fatalf("err=%v", err)
+	}
+	if len(q.batches) != 0 {
+		t.Fatalf("published before boundary validation: %v", q.batches)
+	}
+}
+
 func TestMultiLineChunkEmitsJoinedRecords(t *testing.T) {
 	// Single chunk covering the whole file; no padding.
 	data := "1abc\n2def\n1xyz\n2uvw\n"

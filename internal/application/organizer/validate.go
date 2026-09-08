@@ -71,5 +71,14 @@ func ValidatePrefixConfiguration(c f2e.PrefixConfiguration, limits f2e.GlobalLim
 			return fmt.Errorf("invalid SSM configuration for s3://%s/%s: outputQueueURL must start with https://sqs. or http:// (localstack)", c.Bucket, c.Prefix)
 		}
 	}
+	if c.ChunkQueueURL != "" && !strings.HasPrefix(c.ChunkQueueURL, "https://sqs.") && !strings.HasPrefix(c.ChunkQueueURL, "http://") {
+		return fmt.Errorf("invalid SSM configuration for s3://%s/%s: chunkQueueURL must start with https://sqs. or http:// (localstack)", c.Bucket, c.Prefix)
+	}
+	if c.PrefixID != "" && c.ChunkQueueURL == "" {
+		return fmt.Errorf("invalid SSM configuration for s3://%s/%s: registered prefix requires chunkQueueURL", c.Bucket, c.Prefix)
+	}
+	if c.TargetChunkBytes != 0 && (c.TargetChunkBytes < 5*1024*1024 || c.TargetChunkBytes > 100*1024*1024 || c.TargetChunkBytes > c.MaxChunkBytes) {
+		return fmt.Errorf("invalid SSM configuration for s3://%s/%s: targetChunkBytes must be between 5 MiB and min(100 MiB, maxChunkBytes)", c.Bucket, c.Prefix)
+	}
 	return nil
 }

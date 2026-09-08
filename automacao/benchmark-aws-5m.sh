@@ -9,9 +9,10 @@ tfvars="${F2E_AWS_TFVARS:-$terraform_dir/environments/aws.local.tfvars}"
 record_length="${BENCHMARK_RECORD_LENGTH:-100}"
 smoke_records_per_chunk="${BENCHMARK_SMOKE_RECORDS_PER_CHUNK:-1000}"
 full_records_per_chunk="${BENCHMARK_FULL_RECORDS_PER_CHUNK:-50000}"
+target_chunk_bytes="${BENCHMARK_TARGET_CHUNK_BYTES:-5242880}"
 worker_concurrency="${BENCHMARK_WORKER_CONCURRENCY:-10}"
 worker_memory_mb="${BENCHMARK_WORKER_MEMORY_MB:-1024}"
-lambda_timeout="${BENCHMARK_LAMBDA_TIMEOUT:-300}"
+lambda_timeout="${BENCHMARK_LAMBDA_TIMEOUT:-60}"
 sqs_visibility_timeout="${BENCHMARK_SQS_VISIBILITY_TIMEOUT:-1800}"
 publish_concurrency="${BENCHMARK_PUBLISH_CONCURRENCY:-1}"
 timeout_seconds="${BENCHMARK_TIMEOUT_SECONDS:-14400}"
@@ -22,11 +23,13 @@ result_dir="${BENCHMARK_RESULTS_DIR:-$root/resultados/benchmark-aws-5m/$run_id}"
 prefix_id="example-text"
 prefix="${prefix_id}/"
 
-for value in "$record_length" "$smoke_records_per_chunk" "$full_records_per_chunk" "$worker_concurrency" "$worker_memory_mb" "$lambda_timeout" "$sqs_visibility_timeout" "$publish_concurrency" "$timeout_seconds" "$poll_seconds"; do
+for value in "$record_length" "$smoke_records_per_chunk" "$full_records_per_chunk" "$target_chunk_bytes" "$worker_concurrency" "$worker_memory_mb" "$lambda_timeout" "$sqs_visibility_timeout" "$publish_concurrency" "$timeout_seconds" "$poll_seconds"; do
   [[ "$value" =~ ^[1-9][0-9]*$ ]] || { echo "Os parâmetros numéricos devem ser inteiros positivos." >&2; exit 2; }
 done
 [[ "$worker_concurrency" -ge 2 ]] || { echo "BENCHMARK_WORKER_CONCURRENCY deve ser >= 2." >&2; exit 2; }
+[[ "$worker_concurrency" -le 16 ]] || { echo "BENCHMARK_WORKER_CONCURRENCY deve ser <= 16 para a matriz P1." >&2; exit 2; }
 [[ "$publish_concurrency" -le 16 ]] || { echo "BENCHMARK_PUBLISH_CONCURRENCY deve ser <= 16." >&2; exit 2; }
+[[ "$target_chunk_bytes" -ge 5242880 && "$target_chunk_bytes" -le 104857600 ]] || { echo "BENCHMARK_TARGET_CHUNK_BYTES deve ficar entre 5 e 100 MiB." >&2; exit 2; }
 [[ "$keep_environment" == 0 || "$keep_environment" == 1 ]] || { echo "BENCHMARK_KEEP_ENVIRONMENT deve ser 0 ou 1." >&2; exit 2; }
 for command in aws go jq terraform; do
   command -v "$command" >/dev/null || { echo "$command não encontrado no PATH." >&2; exit 1; }
@@ -66,6 +69,14 @@ environment="$(sed -nE 's/^[[:space:]]*environment[[:space:]]*=[[:space:]]*"([^"
 [[ -n "$expected_account" && "$account" == "$expected_account" ]] || { echo "Conta AWS ativa ($account) difere de aws_account_id ($expected_account)." >&2; exit 1; }
 [[ "$environment" == "development" ]] || { echo "Benchmark recusado fora de environment=development." >&2; exit 1; }
 
+# P1: check the regional Lambda quota before provisioning. MaximumConcurrency
+# caps the SQS poller; it is not a reservation and must fit the unreserved pool.
+regional_quota="$(aws service-quotas get-service-quota --service-code lambda --quota-code L-B99A9384 --query Quota.Value --output text 2>/dev/null || true)"
+[[ "$regional_quota" =~ ^[0-9]+(\.[0-9]+)?$ ]] || { echo "Não foi possível consultar a cota regional de concorrência Lambda (L-B99A9384)." >&2; exit 1; }
+quota_integer="${regional_quota%%.*}"
+[[ "$quota_integer" -ge "$worker_concurrency" ]] || { echo "Concorrência solicitada ($worker_concurrency) excede a cota regional Lambda ($regional_quota)." >&2; exit 1; }
+echo "Cota regional Lambda: $regional_quota; teto solicitado do mapping: $worker_concurrency; reserva do Worker: nenhuma."
+
 echo "=== F2E AWS benchmark, single envelope: $run_id ==="
 echo "Conta: $account; resultados: $result_dir"
 
@@ -89,9 +100,9 @@ provision_ms="$(elapsed_ms "$provision_start")"
 region="$(aws_region)"
 bucket="$(tf_output input_bucket)"
 ledger_table="$(tf_output ledger_table_name)"
-chunk_queue_url="$(tf_output chunk_jobs_queue_url)"
+chunk_queue_url="$(terraform -chdir="$terraform_dir" output -json prefix_chunk_queue_urls | jq -r --arg id "$prefix_id" '.[$id]' | tr -d '\r')"
 intake_dlq_name="$(tf_output file_intake_dlq_name)"
-chunk_dlq_name="$(tf_output chunk_jobs_dlq_name)"
+chunk_dlq_name="${chunk_queue_url##*/}-dlq"
 intake_dlq_url="$(aws_cli sqs get-queue-url --queue-name "$intake_dlq_name" --query QueueUrl --output text)"
 chunk_dlq_url="$(aws_cli sqs get-queue-url --queue-name "$chunk_dlq_name" --query QueueUrl --output text)"
 chunk_queue_arn="$(aws_cli sqs get-queue-attributes --queue-url "$chunk_queue_url" --attribute-names QueueArn --query Attributes.QueueArn --output text)"
@@ -102,9 +113,9 @@ output_queue_name="${output_queue_url##*/}"
 log_group="/aws/lambda/$(sed -nE 's/^[[:space:]]*resource_prefix[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' "$tfvars" | tail -1)-${environment}-worker"
 ssm_path="$(terraform -chdir="$terraform_dir" output -raw ssm_file_config_path)/${bucket}/${prefix_id}"
 
-# The repository currently has a legacy Worker and one Worker per prefix on the
-# shared chunk queue. Disable every non-target mapping so the measured cap is
-# exactly ten target Workers, without cross-prefix message stealing.
+# The target Worker is the sole consumer of its exclusive prefix chunk queue.
+# Any additional mapping is an infrastructure error, not something the
+# benchmark silently disables.
 mappings="$(aws_cli lambda list-event-source-mappings --event-source-arn "$chunk_queue_arn" --output json)"
 target_mapping=""
 wait_mapping_state() {
@@ -127,8 +138,8 @@ while IFS=$'\t' read -r uuid function_arn; do
     aws_cli lambda update-event-source-mapping --uuid "$uuid" --enabled --scaling-config "MaximumConcurrency=$worker_concurrency" >/dev/null
     wait_mapping_state "$uuid" Enabled
   else
-    aws_cli lambda update-event-source-mapping --uuid "$uuid" --no-enabled >/dev/null
-    wait_mapping_state "$uuid" Disabled
+    echo "Fila exclusiva $chunk_queue_url possui consumidor inesperado: $function_arn" >&2
+    exit 1
   fi
 done < <(jq -r '.EventSourceMappings[] | [.UUID,.FunctionArn] | @tsv' <<<"$mappings")
 [[ -n "$target_mapping" ]] || { echo "Event-source mapping do Worker $worker_name não encontrado." >&2; exit 1; }
@@ -223,8 +234,8 @@ run_case() {
 
   echo "=== Caso $label: $records linhas ==="
   benchmark_config="$(jq -c \
-    --argjson chunk "$case_records_per_chunk" --argjson recordLength "$record_length" \
-    '. + {recordsPerChunk:$chunk,maxRecordLengthBytes:$recordLength,outputMode:"single",maxEnvelopesPerMessage:1}' <<<"$current_config")"
+    --argjson chunk "$case_records_per_chunk" --argjson targetChunkBytes "$target_chunk_bytes" --argjson recordLength "$record_length" \
+    '. + {recordsPerChunk:$chunk,targetChunkBytes:$targetChunkBytes,maxRecordLengthBytes:$recordLength,outputMode:"single",maxEnvelopesPerMessage:1}' <<<"$current_config")"
   aws_cli_no_pathconv ssm put-parameter --name "$ssm_path" --type String --value "$benchmark_config" --overwrite >/dev/null
   generation_start="$(now_ms)"
   if [[ -f "$data_file" && -f "$data_file.manifest.json" ]] &&

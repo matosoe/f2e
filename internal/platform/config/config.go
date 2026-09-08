@@ -21,7 +21,7 @@ type Config struct {
 	LedgerRetentionDays                            int
 	MaxEventBytes                                  int
 	JSONArraySearchBytes                           int
-	MaxFileBytes, MaxChunkBytes                    int64
+	MaxFileBytes, MaxChunkBytes, TargetChunkBytes  int64
 	EventSchemaID, EventSchemaVersion, EventFormat string
 	// PublishConcurrency is the maximum number of SQS SendMessageBatch calls
 	// that may be in-flight simultaneously within a single chunk processing.
@@ -60,10 +60,13 @@ func Load() (Config, error) {
 	if c.MaxChunkBytes, err = integer64("F2E_MAX_CHUNK_BYTES", 64*1024*1024); err != nil {
 		return c, err
 	}
+	if c.TargetChunkBytes, err = integer64("F2E_TARGET_CHUNK_BYTES", 0); err != nil {
+		return c, err
+	}
 	if c.PublishConcurrency, err = integer("F2E_PUBLISH_CONCURRENCY", 1); err != nil {
 		return c, err
 	}
-	if c.RecordsPerChunk < 1 || c.BatchSize < 1 || c.BatchSize > 10 || c.MaxReceiveCount < 1 || c.LedgerRetentionDays < 1 || c.MaxEventBytes < 1024 || c.MaxEventBytes > 256*1024 || c.JSONArraySearchBytes < 1024 || c.JSONArraySearchBytes > 16*1024*1024 || c.MaxChunkBytes < 1024 || c.MaxFileBytes < c.MaxChunkBytes {
+	if c.RecordsPerChunk < 1 || c.BatchSize < 1 || c.BatchSize > 10 || c.MaxReceiveCount < 1 || c.LedgerRetentionDays < 1 || c.MaxEventBytes < 1024 || c.MaxEventBytes > 256*1024 || c.JSONArraySearchBytes < 1024 || c.JSONArraySearchBytes > 16*1024*1024 || c.MaxChunkBytes < 1024 || c.MaxFileBytes < c.MaxChunkBytes || (c.TargetChunkBytes != 0 && (c.TargetChunkBytes < 5*1024*1024 || c.TargetChunkBytes > 100*1024*1024 || c.TargetChunkBytes > c.MaxChunkBytes)) {
 		return c, fmt.Errorf("invalid F2E numeric configuration")
 	}
 	if c.PublishConcurrency < 1 {

@@ -14,6 +14,8 @@ locals {
     F2E_MAX_EVENT_BYTES         = tostring(var.f2e_max_event_bytes)
     F2E_MAX_FILE_BYTES          = tostring(var.f2e_max_file_bytes)
     F2E_MAX_CHUNK_BYTES         = tostring(var.f2e_max_chunk_bytes)
+    F2E_TARGET_CHUNK_BYTES      = tostring(var.f2e_target_chunk_bytes)
+    F2E_PUBLISH_CONCURRENCY     = tostring(var.worker_publish_concurrency)
     F2E_MAX_RECEIVE_COUNT       = tostring(var.sqs_max_receive_count)
     F2E_JSON_ARRAY_SEARCH_BYTES = tostring(var.f2e_json_array_search_bytes)
     F2E_INTAKE_QUEUE_URL        = aws_sqs_queue.file_intake.url
@@ -42,6 +44,7 @@ locals {
     maxEventBytes        = var.f2e_max_event_bytes
     maxFileBytes         = var.f2e_max_file_bytes
     maxChunkBytes        = var.f2e_max_chunk_bytes
+    targetChunkBytes     = var.f2e_target_chunk_bytes
     jsonArraySearchBytes = var.f2e_json_array_search_bytes
     maxRecordLengthBytes = 0
     eventSchemaId        = "f2e-record"

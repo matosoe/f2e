@@ -2,16 +2,16 @@
 #
 # For every entry in locals.file_configurations we instantiate one
 # f2e-prefix module that creates:
-#   - A dedicated SQS output queue (+DLQ)
+#   - Dedicated SQS chunk and output queues (each with a DLQ)
 #   - A dedicated Worker Lambda with its IAM role and event-source mapping
 #
-# The shared resources (Organizer, S3 bucket, chunk-jobs queue, DynamoDB
+# The shared resources (Organizer, S3 bucket, DynamoDB
 # ledger, completion-publisher) remain in the root module.
 #
 # Isolation levels (T21 acceptance criteria):
-# - SQS: each prefix has its own output queue; Workers from prefix A cannot
-#   publish to prefix B's queue because IAM policies are scoped to the per-
-#   prefix queue ARN.
+# - SQS: each prefix has its own chunk and output queues. A Worker has exactly
+#   one eligible chunk queue, so prefixes cannot steal or discard each other's
+#   work; publishing IAM remains scoped to the prefix output queue.
 # - Lambda concurrency: setting reserved_concurrency > 0 per prefix removes
 #   that many units from the account pool, giving prefix B a hard guarantee
 #   that prefix A workloads cannot starve it (and vice versa).
@@ -39,7 +39,7 @@ locals {
   prefix_worker_effective = {
     for k, cfg in local.file_configurations : k => {
       reserved_concurrency = try(var.prefix_worker_config[k].reserved_concurrency, -1)
-      maximum_concurrency  = try(var.prefix_worker_config[k].maximum_concurrency, null)
+      maximum_concurrency  = try(var.prefix_worker_config[k].maximum_concurrency, var.worker_maximum_concurrency)
       memory_mb            = try(var.prefix_worker_config[k].memory_mb, 1024)
     }
   }
@@ -54,6 +54,8 @@ locals {
     F2E_MAX_EVENT_BYTES         = tostring(var.f2e_max_event_bytes)
     F2E_MAX_FILE_BYTES          = tostring(var.f2e_max_file_bytes)
     F2E_MAX_CHUNK_BYTES         = tostring(var.f2e_max_chunk_bytes)
+    F2E_TARGET_CHUNK_BYTES      = tostring(var.f2e_target_chunk_bytes)
+    F2E_PUBLISH_CONCURRENCY     = tostring(var.worker_publish_concurrency)
     F2E_MAX_RECEIVE_COUNT       = tostring(var.sqs_max_receive_count)
     F2E_JSON_ARRAY_SEARCH_BYTES = tostring(var.f2e_json_array_search_bytes)
     F2E_INTAKE_QUEUE_URL        = aws_sqs_queue.file_intake.url
@@ -83,7 +85,6 @@ module "prefix" {
 
   # Shared infrastructure references.
   input_bucket_arn = aws_s3_bucket.input.arn
-  chunk_queue_arn  = aws_sqs_queue.chunk_jobs.arn
   ledger_table_arn = aws_dynamodb_table.job_ledger.arn
   # Each prefix shares the shared-Worker log group for now; operators may
   # split log groups once Terraform migration is complete.

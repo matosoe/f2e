@@ -21,7 +21,7 @@ S3 ObjectCreated ou OrganizerRequest
           Lambda Organizer ──► DynamoDB job-ledger
                  │
                  ▼
-            SQS chunk-jobs
+            SQS chunks por prefixo
                  │
                  ▼
            Lambda Worker ──► SQS output-events ──► consumidores
@@ -85,6 +85,7 @@ O valor de cada parâmetro é um JSON completo. Exemplo para texto:
 | `bucket` e `prefix` | Chave de seleção da configuração. O prefixo é relativo ao bucket e termina em `/`. |
 | `dataType` | `text`, `json` ou `multi-line`. |
 | `recordsPerChunk` | Granularidade do planejamento; valores menores geram mais chunks e disponibilizam mais paralelismo. |
+| `targetChunkBytes` | Tamanho nominal do chunk de texto: `0` calcula cerca de 100 chunks por arquivo; valores explícitos ficam entre 5 e 100 MiB. `maxRecordLengthBytes` continua sendo somente o limite de validação/fronteira. |
 | `batchSize` | Quantidade de eventos enviada por chamada `SendMessageBatch`, entre 1 e 10. |
 | `maxEventBytes` | Limite serializado de cada evento, entre 1 KiB e 256 KiB. |
 | `maxFileBytes` | Maior arquivo aceito pelo prefixo. |

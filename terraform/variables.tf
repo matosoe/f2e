@@ -180,6 +180,26 @@ variable "f2e_max_chunk_bytes" {
   }
 }
 
+variable "f2e_target_chunk_bytes" {
+  type        = number
+  default     = 0
+  description = "Nominal text chunk size in bytes. Zero automatically targets about 100 chunks per file; otherwise it must be 5–100 MiB and no greater than f2e_max_chunk_bytes."
+  validation {
+    condition     = var.f2e_target_chunk_bytes == 0 || (var.f2e_target_chunk_bytes >= 5242880 && var.f2e_target_chunk_bytes <= 104857600 && var.f2e_target_chunk_bytes <= var.f2e_max_chunk_bytes)
+    error_message = "f2e_target_chunk_bytes must be zero or between 5 MiB and min(100 MiB, f2e_max_chunk_bytes)."
+  }
+}
+
+variable "worker_publish_concurrency" {
+  type        = number
+  default     = 1
+  description = "Maximum concurrent SendMessageBatch calls per Worker invocation."
+  validation {
+    condition     = var.worker_publish_concurrency >= 1 && var.worker_publish_concurrency <= 16
+    error_message = "worker_publish_concurrency must be between 1 and 16."
+  }
+}
+
 variable "f2e_json_array_search_bytes" {
   type    = number
   default = 1048576
@@ -305,7 +325,7 @@ Per-prefix Worker Lambda configuration overrides.
 Keys must match entries in locals.file_configurations.
 Each value is an object with optional fields:
   reserved_concurrency  - isolated concurrency units (>0); -1 = unreserved (default).
-  maximum_concurrency   - max SQS poller concurrency; null = no limit (default).
+  maximum_concurrency   - max SQS poller concurrency; when omitted, worker_maximum_concurrency is used.
   memory_mb             - Lambda memory in MiB (default 1024).
 EOF
   type = map(object({

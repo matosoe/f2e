@@ -75,14 +75,34 @@ func TestPlanRejectsLegacyDataTypes(t *testing.T) {
 	}
 }
 
-func TestVariableJobsCarryTrailingPadding(t *testing.T) {
+func TestVariableJobsPlanBalancedNominalRangesWithoutContentReads(t *testing.T) {
 	s := Service{Store: rangeStore{"aa\nbbb\ncccc\nd\n"}, Config: config.Config{RecordsPerChunk: 2}}
 	jobs, err := s.Plan(context.Background(), f2e.OrganizerRequest{SchemaVersion: f2e.SchemaVersion, Files: []f2e.FileRequest{{Bucket: "b", Key: "records", DataType: f2e.DataTypeText, MaxRecordLengthBytes: 5}}})
-	if err != nil || len(jobs) != 2 {
+	if err != nil || len(jobs) != 1 {
 		t.Fatalf("jobs=%+v err=%v", jobs, err)
 	}
-	if jobs[0].StartByte != 0 || jobs[0].EndByteInclusive != 11 || jobs[0].TrailingPaddingBytes != 2 || jobs[1].StartByte != 10 || jobs[1].MaxRecordLengthBytes != 5 {
+	if jobs[0].StartByte != 0 || jobs[0].EndByteInclusive != 13 || jobs[0].TrailingPaddingBytes != 0 || jobs[0].MaxRecordLengthBytes != 5 {
 		t.Fatalf("jobs=%+v", jobs)
+	}
+}
+
+func TestVariableJobsTargetsOneHundredBalancedChunksWithoutRangeReads(t *testing.T) {
+	const size = int64(500 * 1024 * 1024)
+	s := Service{Store: sizedHead{size: size}, Config: config.Config{MaxChunkBytes: 64 * 1024 * 1024}}
+	jobs, err := s.Plan(context.Background(), f2e.OrganizerRequest{SchemaVersion: f2e.SchemaVersion, Files: []f2e.FileRequest{{Bucket: "b", Key: "records", DataType: f2e.DataTypeText, MaxRecordLengthBytes: 64}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs) != 100 {
+		t.Fatalf("got %d chunks, want 100", len(jobs))
+	}
+	for i, job := range jobs {
+		if job.EndByteInclusive-job.StartByte+1 != size/100 {
+			t.Fatalf("chunk %d is not balanced: %+v", i, job)
+		}
+		if i > 0 && job.StartByte != jobs[i-1].EndByteInclusive+1 {
+			t.Fatalf("chunks are not contiguous: previous=%+v current=%+v", jobs[i-1], job)
+		}
 	}
 }
 
@@ -181,6 +201,15 @@ func TestMultiLineJobsRejectsEmptyBreakMarker(t *testing.T) {
 }
 
 type fakeHead struct{}
+
+type sizedHead struct{ size int64 }
+
+func (s sizedHead) Head(_ context.Context, bucket, key string) (f2e.ObjectIdentity, error) {
+	return f2e.ObjectIdentity{Bucket: bucket, Key: key, Size: s.size, ETag: "etag"}, nil
+}
+func (sizedHead) GetRange(context.Context, f2e.ObjectIdentity, int64, int64) (io.ReadCloser, error) {
+	return nil, nil
+}
 
 func (fakeHead) Head(_ context.Context, bucket, key string) (f2e.ObjectIdentity, error) {
 	return f2e.ObjectIdentity{Bucket: bucket, Key: key, Size: 250, ETag: "etag"}, nil

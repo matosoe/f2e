@@ -119,56 +119,57 @@ func (s Service) Plan(ctx context.Context, request f2e.OrganizerRequest) ([]f2e.
 	return jobs, nil
 }
 
-// variableJobs divides a line-delimited object into nominal ranges. Each range
-// is extended only far enough to finish the record crossing its end.
-func (s Service) variableJobs(ctx context.Context, file f2e.FileRequest, size int64, etag, versionID, executionID string) ([]f2e.ChunkJob, error) {
+// variableJobs plans only nominal, balanced byte ranges. It deliberately does
+// not read object content: Workers own boundary discovery, which keeps planning
+// bounded even for files with thousands of chunks.
+func (s Service) variableJobs(_ context.Context, file f2e.FileRequest, size int64, etag, versionID, executionID string) ([]f2e.ChunkJob, error) {
 	if size == 0 {
 		return nil, fmt.Errorf("empty object")
 	}
 	if file.MaxRecordLengthBytes < 1 {
 		return nil, fmt.Errorf("invalid maximum record length")
 	}
-	nominalSize := int64(s.Config.RecordsPerChunk) * file.MaxRecordLengthBytes
-	if nominalSize < file.MaxRecordLengthBytes {
-		return nil, fmt.Errorf("variable chunk size overflow")
-	}
-	if nominalSize > s.maxChunkBytes() {
-		return nil, fmt.Errorf("variable chunk size %d exceeds maximum %d", nominalSize, s.maxChunkBytes())
+	chunkCount, err := s.textChunkCount(size)
+	if err != nil {
+		return nil, err
 	}
 	fileID := fileID(file.Bucket, file.Key, versionID, etag, size)
-	var jobs []f2e.ChunkJob
-	for start, chunk := int64(0), int64(1); start < size; start, chunk = start+nominalSize, chunk+1 {
-		ownedEnd := start + nominalSize - 1
-		if ownedEnd >= size {
-			ownedEnd = size - 1
-		}
-		padding := int64(0)
-		if ownedEnd < size-1 {
-			lookEnd := ownedEnd + file.MaxRecordLengthBytes
-			if lookEnd >= size {
-				lookEnd = size - 1
-			}
-			r, err := s.Store.GetRange(ctx, f2e.ObjectIdentity{Bucket: file.Bucket, Key: file.Key, VersionID: versionID, ETag: etag, Size: size}, ownedEnd+1, lookEnd)
-			if err != nil {
-				return nil, fmt.Errorf("read variable-record padding: %w", err)
-			}
-			data, err := io.ReadAll(r)
-			closeErr := r.Close()
-			if err != nil {
-				return nil, err
-			}
-			if closeErr != nil {
-				return nil, closeErr
-			}
-			termPadding, ok := firstLineTerminatorPadding(data)
-			if !ok {
-				return nil, fmt.Errorf("record after byte %d exceeds maxRecordLengthBytes %d", ownedEnd, file.MaxRecordLengthBytes)
-			}
-			padding = int64(termPadding)
-		}
-		jobs = append(jobs, f2e.ChunkJob{SchemaVersion: f2e.SchemaVersion, JobID: executionID, FileID: fileID, ChunkID: fmt.Sprintf("%08d", chunk), Bucket: file.Bucket, Key: file.Key, PresignedURL: file.PresignedURL, ETag: etag, VersionID: versionID, FileSize: size, StartByte: start, EndByteInclusive: ownedEnd + padding, MaxRecordLengthBytes: file.MaxRecordLengthBytes, TrailingPaddingBytes: padding, DataType: file.DataType, Context: file.Context})
+	jobs := make([]f2e.ChunkJob, 0, chunkCount)
+	for chunk := int64(0); chunk < chunkCount; chunk++ {
+		start := size * chunk / chunkCount
+		end := size*(chunk+1)/chunkCount - 1
+		jobs = append(jobs, f2e.ChunkJob{SchemaVersion: f2e.SchemaVersion, JobID: executionID, FileID: fileID, ChunkID: fmt.Sprintf("%08d", chunk+1), Bucket: file.Bucket, Key: file.Key, PresignedURL: file.PresignedURL, ETag: etag, VersionID: versionID, FileSize: size, StartByte: start, EndByteInclusive: end, MaxRecordLengthBytes: file.MaxRecordLengthBytes, DataType: file.DataType, Context: file.Context})
 	}
 	return jobs, nil
+}
+
+const (
+	minimumTargetChunkBytes int64 = 5 * 1024 * 1024
+	maximumTargetChunkBytes int64 = 100 * 1024 * 1024
+	automaticChunkCount     int64 = 100
+)
+
+func (s Service) textChunkCount(size int64) (int64, error) {
+	if size < minimumTargetChunkBytes {
+		return 1, nil
+	}
+	maxChunk := s.maxChunkBytes()
+	if maxChunk < minimumTargetChunkBytes {
+		return 0, fmt.Errorf("max chunk size %d is below the 5 MiB text chunk minimum", maxChunk)
+	}
+	minCount := (size + maxChunk - 1) / maxChunk
+	maxCount := size / minimumTargetChunkBytes
+	desired := automaticChunkCount
+	if s.Config.TargetChunkBytes > 0 {
+		desired = (size + s.Config.TargetChunkBytes - 1) / s.Config.TargetChunkBytes
+	}
+	if desired < minCount {
+		desired = minCount
+	}
+	if desired > maxCount {
+		desired = maxCount
+	}
+	return desired, nil
 }
 func (s Service) validType(t f2e.DataType) bool {
 	switch t {
@@ -193,21 +194,6 @@ func (s Service) maxChunkBytes() int64 {
 		return s.Config.MaxChunkBytes
 	}
 	return 64 * 1024 * 1024
-}
-
-func firstLineTerminatorPadding(data []byte) (int, bool) {
-	for i := 0; i < len(data); i++ {
-		switch data[i] {
-		case '\n':
-			return i + 1, true
-		case '\r':
-			if i+1 < len(data) && data[i+1] == '\n' {
-				return i + 2, true
-			}
-			return i + 1, true
-		}
-	}
-	return 0, false
 }
 
 // nextBreakOffset scans data line-by-line using CR, LF, and CRLF terminators
@@ -410,11 +396,12 @@ func (s Service) Publish(ctx context.Context, jobs []f2e.ChunkJob) error {
 	}
 	messages := make([]port.OutboundMessage, 0, 10)
 	messageJobs := make([]f2e.ChunkJob, 0, 10)
+	queueURL := ""
 	flush := func() error {
 		pending := append([]port.OutboundMessage(nil), messages...)
 		pendingJobs := append([]f2e.ChunkJob(nil), messageJobs...)
 		for attempt := 0; attempt < 3; attempt++ {
-			failed, err := s.Queue.Send(ctx, s.Config.ChunkQueueURL, pending)
+			failed, err := s.Queue.Send(ctx, queueURL, pending)
 			if err == nil && len(failed) == 0 {
 				if s.Ledger != nil {
 					if err := s.Ledger.MarkChunksScheduled(ctx, pendingJobs); err != nil {
@@ -464,6 +451,19 @@ func (s Service) Publish(ctx context.Context, jobs []f2e.ChunkJob) error {
 		return fmt.Errorf("chunk batch partial failure after retries")
 	}
 	for _, j := range jobsToPublish {
+		jobQueueURL := j.Configuration.ChunkQueueURL
+		if jobQueueURL == "" {
+			jobQueueURL = s.Config.ChunkQueueURL
+		}
+		if jobQueueURL == "" {
+			return finish(fmt.Errorf("chunk %s has no chunk queue URL", j.ChunkID))
+		}
+		if len(messages) > 0 && queueURL != jobQueueURL {
+			if err := flush(); err != nil {
+				return finish(err)
+			}
+		}
+		queueURL = jobQueueURL
 		b, e := json.Marshal(j)
 		if e != nil {
 			return finish(e)

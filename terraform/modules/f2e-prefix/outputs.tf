@@ -3,6 +3,14 @@ output "output_queue_url" {
   value       = aws_sqs_queue.output.url
 }
 
+output "chunk_queue_url" {
+  value = aws_sqs_queue.chunk.url
+}
+
+output "chunk_queue_arn" {
+  value = aws_sqs_queue.chunk.arn
+}
+
 output "output_queue_arn" {
   description = "ARN of the per-prefix SQS output queue."
   value       = aws_sqs_queue.output.arn

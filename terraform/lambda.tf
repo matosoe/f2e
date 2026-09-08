@@ -197,10 +197,5 @@ resource "aws_lambda_event_source_mapping" "organizer_intake" {
   function_response_types = ["ReportBatchItemFailures"]
 }
 
-resource "aws_lambda_event_source_mapping" "worker_chunk" {
-  event_source_arn        = aws_sqs_queue.chunk_jobs.arn
-  function_name           = aws_lambda_alias.worker_live.arn
-  batch_size              = var.worker_batch_size
-  function_response_types = ["ReportBatchItemFailures"]
-  scaling_config { maximum_concurrency = var.worker_maximum_concurrency }
-}
+# Chunk consumers are created in module.prefix, one exclusive queue per
+# registered prefix. Do not attach the legacy Worker to the shared queue.

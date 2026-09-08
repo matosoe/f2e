@@ -46,6 +46,7 @@ func basePrefixConfig() f2e.PrefixConfiguration {
 func TestValidatePrefixConfiguration_ValidPrefixIDAndQueueURL(t *testing.T) {
 	cfg := basePrefixConfig()
 	cfg.PrefixID = "my-prefix-01"
+	cfg.ChunkQueueURL = "https://sqs.us-east-1.amazonaws.com/123456789012/chunks"
 	cfg.OutputQueueURL = "https://sqs.us-east-1.amazonaws.com/123456789012/my-queue"
 	if err := ValidatePrefixConfiguration(cfg, baseGlobalLimits()); err != nil {
 		t.Fatalf("unexpected error for valid prefixId+outputQueueURL: %v", err)
@@ -81,6 +82,7 @@ func TestValidatePrefixConfiguration_InvalidPrefixIDSlash(t *testing.T) {
 func TestValidatePrefixConfiguration_ValidPrefixIDWithDashAndUnderscore(t *testing.T) {
 	cfg := basePrefixConfig()
 	cfg.PrefixID = "prefix_01-v2"
+	cfg.ChunkQueueURL = "https://sqs.us-east-1.amazonaws.com/123456789012/chunks"
 	if err := ValidatePrefixConfiguration(cfg, baseGlobalLimits()); err != nil {
 		t.Fatalf("unexpected error for dash/underscore prefixId: %v", err)
 	}

@@ -1,9 +1,8 @@
 # ── Module: f2e-prefix ────────────────────────────────────────────────────────
 #
-# Creates the per-prefix SQS output queue, dedicated Worker Lambda with its
-# IAM role, and the event-source mapping that binds the shared chunk-jobs queue
-# to this Worker. The Organizer Lambda is shared and reads the prefix's SSM
-# configuration, which carries this queue's URL via outputQueueURL (T20).
+# Creates exclusive per-prefix chunk/output queues, a dedicated Worker Lambda
+# and the event-source mapping. The shared Organizer reads both queue URLs from
+# the prefix SSM configuration and sends each chunk only to its owner queue.
 #
 # Usage (root module):
 #
@@ -61,11 +60,6 @@ variable "kms_key_arn" {
 
 variable "input_bucket_arn" {
   description = "ARN of the shared S3 input bucket."
-  type        = string
-}
-
-variable "chunk_queue_arn" {
-  description = "ARN of the shared chunk-jobs SQS queue."
   type        = string
 }
 

@@ -34,7 +34,7 @@ data "aws_iam_policy_document" "organizer" {
   }
   statement {
     actions   = ["sqs:SendMessage"]
-    resources = [aws_sqs_queue.chunk_jobs.arn]
+    resources = [for m in module.prefix : m.chunk_queue_arn]
   }
   statement {
     actions   = ["s3:GetObject", "s3:GetObjectVersion"]

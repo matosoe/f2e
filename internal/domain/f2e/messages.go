@@ -104,14 +104,17 @@ const (
 // prefix. It combines the file contract with the tunable limits that used to
 // be defined only at Lambda startup.
 type PrefixConfiguration struct {
-	Bucket               string          `json:"bucket"`
-	Prefix               string          `json:"prefix"`
-	DataType             DataType        `json:"dataType"`
-	RecordsPerChunk      int             `json:"recordsPerChunk"`
-	BatchSize            int             `json:"batchSize"`
-	MaxEventBytes        int             `json:"maxEventBytes"`
-	MaxFileBytes         int64           `json:"maxFileBytes"`
-	MaxChunkBytes        int64           `json:"maxChunkBytes"`
+	Bucket          string   `json:"bucket"`
+	Prefix          string   `json:"prefix"`
+	DataType        DataType `json:"dataType"`
+	RecordsPerChunk int      `json:"recordsPerChunk"`
+	BatchSize       int      `json:"batchSize"`
+	MaxEventBytes   int      `json:"maxEventBytes"`
+	MaxFileBytes    int64    `json:"maxFileBytes"`
+	MaxChunkBytes   int64    `json:"maxChunkBytes"`
+	// TargetChunkBytes is the nominal text chunk size. Zero selects the
+	// automatic planner, which targets approximately 100 chunks per file.
+	TargetChunkBytes     int64           `json:"targetChunkBytes,omitempty"`
 	JSONArraySearchBytes int             `json:"jsonArraySearchBytes"`
 	MaxRecordLengthBytes int64           `json:"maxRecordLengthBytes,omitempty"`
 	MultiLineLayout      MultiLineLayout `json:"multiLineLayout,omitempty"`
@@ -150,6 +153,10 @@ type PrefixConfiguration struct {
 	// Workers that process files from this prefix. When empty the system-wide
 	// OutputQueueURL from Lambda environment is used instead.
 	OutputQueueURL string `json:"outputQueueURL,omitempty"`
+	// ChunkQueueURL routes this prefix to its exclusive chunk queue. It is
+	// mandatory for registered prefixes so no Worker can steal another prefix's
+	// work from a shared queue.
+	ChunkQueueURL string `json:"chunkQueueURL,omitempty"`
 	// AllowedSourceARNs is the set of IAM principal ARNs (role, user, or
 	// service) that are permitted to submit OrganizerRequests for files under
 	// this prefix. An empty slice means the prefix is open (legacy behaviour).
@@ -213,6 +220,7 @@ type JobConfiguration struct {
 	BatchSize          int    `json:"batchSize"`
 	MaxEventBytes      int    `json:"maxEventBytes"`
 	MaxChunkBytes      int64  `json:"maxChunkBytes"`
+	TargetChunkBytes   int64  `json:"targetChunkBytes,omitempty"`
 	EventSchemaID      string `json:"eventSchemaId"`
 	EventSchemaVersion string `json:"eventSchemaVersion"`
 	EventFormat        string `json:"eventFormat"`
@@ -239,7 +247,8 @@ type JobConfiguration struct {
 	OutputQueueURL string `json:"outputQueueURL,omitempty"`
 	// PrefixID is the canonical identifier of the registered prefix that owns
 	// this job. Empty for legacy/unregistered prefixes.
-	PrefixID string `json:"prefixId,omitempty"`
+	PrefixID      string `json:"prefixId,omitempty"`
+	ChunkQueueURL string `json:"chunkQueueURL,omitempty"`
 }
 
 // OrganizerRequest is the explicit input contract accepted by the organizer.

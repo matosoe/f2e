@@ -175,6 +175,7 @@ func jobsFor(ctx context.Context, body []byte, executionID string) ([]f2e.ChunkJ
 		configured.Config.MaxEventBytes = prefixConfig.MaxEventBytes
 		configured.Config.MaxFileBytes = prefixConfig.MaxFileBytes
 		configured.Config.MaxChunkBytes = prefixConfig.MaxChunkBytes
+		configured.Config.TargetChunkBytes = prefixConfig.TargetChunkBytes
 		configured.Config.JSONArraySearchBytes = prefixConfig.JSONArraySearchBytes
 		configured.Config.EventSchemaID = prefixConfig.EventSchemaID
 		configured.Config.EventSchemaVersion = prefixConfig.EventSchemaVersion
@@ -259,6 +260,7 @@ func jobsFor(ctx context.Context, body []byte, executionID string) ([]f2e.ChunkJ
 				BatchSize:              prefixConfig.BatchSize,
 				MaxEventBytes:          prefixConfig.MaxEventBytes,
 				MaxChunkBytes:          prefixConfig.MaxChunkBytes,
+				TargetChunkBytes:       prefixConfig.TargetChunkBytes,
 				EventSchemaID:          prefixConfig.EventSchemaID,
 				EventSchemaVersion:     prefixConfig.EventSchemaVersion,
 				EventFormat:            prefixConfig.EventFormat,
@@ -267,6 +269,7 @@ func jobsFor(ctx context.Context, body []byte, executionID string) ([]f2e.ChunkJ
 				MaxMessageBytes:        prefixConfig.MaxMessageBytes,
 				OutputQueueURL:         prefixConfig.OutputQueueURL,
 				PrefixID:               prefixConfig.PrefixID,
+				ChunkQueueURL:          prefixConfig.ChunkQueueURL,
 			}
 			execution.Jobs[i].ConfigSnapshot = configSnapshot
 		}

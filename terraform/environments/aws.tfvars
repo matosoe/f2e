@@ -17,7 +17,7 @@ aws_region     = "us-east-1"
 lambda_zip_dir = "../.build"
 
 lambda_runtime   = "provided.al2023"
-lambda_timeout   = 300
+lambda_timeout   = 60
 lambda_memory_mb = 512
 
 # Change to a globally unique bucket name for AWS deployments.
