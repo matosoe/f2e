@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"os"
+	"runtime"
 	"strconv"
 	"time"
 
@@ -40,28 +41,41 @@ func init() {
 func handler(ctx context.Context, e events.SQSEvent) (events.SQSEventResponse, error) {
 	started := time.Now()
 	startUserCPU, startSystemCPU, cpuAvailable := processmetrics.CPUTime()
+	var gcBefore runtime.MemStats
+	runtime.ReadMemStats(&gcBefore)
 	defer func() {
 		wallSeconds := time.Since(started).Seconds()
 		endUserCPU, endSystemCPU, endAvailable := processmetrics.CPUTime()
 		if !cpuAvailable || !endAvailable {
 			slog.Info("worker invocation resources", "service", "worker", "durationMs", wallSeconds*1000, "cpuAvailable", false)
-			return
+		} else {
+			userCPU := endUserCPU - startUserCPU
+			systemCPU := endSystemCPU - startSystemCPU
+			totalCPU := userCPU + systemCPU
+			utilization := 0.0
+			if wallSeconds > 0 {
+				utilization = totalCPU / wallSeconds * 100
+			}
+			slog.Info("worker invocation resources",
+				"service", "worker",
+				"durationMs", wallSeconds*1000,
+				"cpuAvailable", true,
+				"cpuUserMs", userCPU*1000,
+				"cpuSystemMs", systemCPU*1000,
+				"cpuTotalMs", totalCPU*1000,
+				"cpuUtilizationPercent", utilization,
+			)
 		}
-		userCPU := endUserCPU - startUserCPU
-		systemCPU := endSystemCPU - startSystemCPU
-		totalCPU := userCPU + systemCPU
-		utilization := 0.0
-		if wallSeconds > 0 {
-			utilization = totalCPU / wallSeconds * 100
-		}
-		slog.Info("worker invocation resources",
+
+		var gcAfter runtime.MemStats
+		runtime.ReadMemStats(&gcAfter)
+		slog.Info("worker invocation gc",
 			"service", "worker",
-			"durationMs", wallSeconds*1000,
-			"cpuAvailable", true,
-			"cpuUserMs", userCPU*1000,
-			"cpuSystemMs", systemCPU*1000,
-			"cpuTotalMs", totalCPU*1000,
-			"cpuUtilizationPercent", utilization,
+			"gcCycles", gcAfter.NumGC-gcBefore.NumGC,
+			"gcPauseTotalMs", float64(gcAfter.PauseTotalNs-gcBefore.PauseTotalNs)/float64(time.Millisecond),
+			"heapAllocBytes", gcAfter.HeapAlloc,
+			"heapSysBytes", gcAfter.HeapSys,
+			"gomaxprocs", runtime.GOMAXPROCS(0),
 		)
 	}()
 	out := events.SQSEventResponse{}

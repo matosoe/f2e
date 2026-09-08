@@ -428,6 +428,16 @@ Critério de aceite: escolher a menor memória que preserve estabilidade e tenha
 melhor resultado de custo/latência, mantendo p99 abaixo da margem operacional
 do timeout de 60 segundos.
 
+Estado: matriz equivalente ao Power Tuning implementada em
+[`../automacao/benchmark-p3-memory.sh`](../automacao/benchmark-p3-memory.sh) e
+executada na AWS em 8 de setembro de 2026. Nenhuma configuração foi elegível:
+128 e 256 MiB foram rejeitados pelo preflight, e as cargas de 512 e 1.024 MiB
+não concluíram com chunks de aproximadamente 5 MiB e publicação serial. Em
+1.024 MiB, as nove invocações expiraram em 60 segundos mesmo com pico de apenas
+64 MB. O item fica bloqueado até reduzir a duração/trabalho por invocação; não
+houve promoção de memória. Resultados e ressalvas estão em
+[`benchmark/p3-right-sizing-memoria.md`](benchmark/p3-right-sizing-memoria.md).
+
 ### 11. Enxugar o binário e comparar `arm64`
 
 O runtime correto já está em uso: `provided.al2023`. O build atual usa
@@ -672,8 +682,10 @@ A memória do Docker não precisa ser aumentada neste momento: o pico medido foi
 aproximadamente 5,3 GiB dos 15,39 GiB disponíveis. A prioridade deve ser corrigir
 o paralelismo efetivo e reduzir o overhead de publicação.
 
-O benchmark AWS é representativo dos serviços gerenciados, mas a execução
-válida foi um único ponto por configuração. Os valores de 128/256 MB,
-`arm64`, `GOMAXPROCS=1`, `GOMEMLIMIT` e maior concorrência interna são
-hipóteses do plano, não resultados comprovados. A configuração final de
-produção deve ser escolhida após repetições, análise de dispersão e custo.
+O benchmark AWS é representativo dos serviços gerenciados. A matriz P3.10
+demonstrou que 128/256 MB não comportam o chunk atual dentro do timeout e que
+nem 512/1.024 MB concluíram a massa de capacidade com publicação interna
+serial. `arm64`, `GOMAXPROCS=1`, `GOMEMLIMIT` e maior concorrência interna
+continuam hipóteses do plano, não resultados comprovados. A configuração final
+de produção deve ser escolhida somente depois de corrigir a duração por chunk
+e repetir as medições com integridade, dispersão e custo comparáveis.

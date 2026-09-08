@@ -28,7 +28,14 @@ valores antes de executar.
   `environment = "development"`.
 - `benchmark-aws-5m.sh` executa, fora da suíte funcional, o cenário de uma
   mensagem por linha com 10 Workers: valida primeiro 10 mil linhas e só então
-  processa 5 milhões, coletando CPU, memória e métricas CloudWatch.
+  processa 5 milhões, coletando CPU, memória, init, GC e métricas CloudWatch.
+  O mesmo harness aceita `BENCHMARK_OUTPUT_MODE=bundle`,
+  `BENCHMARK_MAX_ENVELOPES_PER_MESSAGE=0` e
+  `BENCHMARK_MAX_MESSAGE_BYTES=256000` para preencher mensagens até o teto de
+  250 KiB sem limite de envelopes por quantidade.
+- `benchmark-p3-memory.sh` executa a matriz P3.10 em 128, 256, 512 e 1.024
+  MiB, três vezes por ponto, e grava o relatório comparativo em
+  `documentacao/benchmark/`.
 
 Defina `F2E_AWS_TFVARS=/caminho/para/outro.tfvars` para usar outro arquivo de
 variáveis. Consulte [Operação na AWS](../documentacao/operacao_aws.md) para o
