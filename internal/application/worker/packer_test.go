@@ -2,6 +2,7 @@ package worker
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -81,6 +82,47 @@ func TestPackerFlushOnCountLimit(t *testing.T) {
 	}
 	if len(finalBundle.Items) != 1 {
 		t.Fatalf("final bundle items: want 1, got %d", len(finalBundle.Items))
+	}
+}
+
+func TestPackerRespectsExplicitSingleEnvelopeLimit(t *testing.T) {
+	p := newBundlePacker(newTestJob(), newBundleCfg(1, 256*1024))
+	env1 := makeEnvelope(strings.Repeat("a", 64))
+	env2 := makeEnvelope(strings.Repeat("b", 64))
+	if msg, err := p.add(env1); err != nil || msg != nil {
+		t.Fatalf("first add: msg=%v err=%v", msg, err)
+	}
+	msg, err := p.add(env2)
+	if err != nil || msg == nil {
+		t.Fatalf("second add: msg=%v err=%v", msg, err)
+	}
+	var bundle f2e.BundleEnvelope
+	if err := json.Unmarshal([]byte(msg.Body), &bundle); err != nil {
+		t.Fatal(err)
+	}
+	if len(bundle.Items) != 1 {
+		t.Fatalf("items: want 1, got %d", len(bundle.Items))
+	}
+}
+
+func TestPackerWithoutCountLimitFillsByBytes(t *testing.T) {
+	p := newBundlePacker(newTestJob(), newBundleCfg(0, 256*1024))
+	for i := 0; i < 101; i++ {
+		env := makeEnvelope(fmt.Sprintf("%064d", i))
+		if msg, err := p.add(env); err != nil || msg != nil {
+			t.Fatalf("add %d: msg=%v err=%v", i, msg, err)
+		}
+	}
+	msg, err := p.flush()
+	if err != nil || msg == nil {
+		t.Fatalf("flush: msg=%v err=%v", msg, err)
+	}
+	var bundle f2e.BundleEnvelope
+	if err := json.Unmarshal([]byte(msg.Body), &bundle); err != nil {
+		t.Fatal(err)
+	}
+	if len(bundle.Items) != 101 {
+		t.Fatalf("items: want 101, got %d", len(bundle.Items))
 	}
 }
 

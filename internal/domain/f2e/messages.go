@@ -134,8 +134,9 @@ type PrefixConfiguration struct {
 	// Set "bundle" to opt in to multi-envelope packing (requires consumer upgrade).
 	OutputMode OutputMode `json:"outputMode,omitempty"`
 	// MaxEnvelopesPerMessage is the maximum number of envelopes in one bundle
-	// message. Ignored in single mode. Must be ≥ 1 when bundle mode is active.
-	// Default (0) means use the system default of 100 in bundle mode.
+	// message. Ignored in single mode. A positive value is a client-selected
+	// cap (1 produces one envelope per physical message). Zero means no count
+	// cap: the Worker packs until the configured byte ceiling is reached.
 	MaxEnvelopesPerMessage int `json:"maxEnvelopesPerMessage,omitempty"`
 	// MaxMessageBytes is the maximum total byte size of one bundle message
 	// (serialized JSON). Ignored in single mode. Must be ≤ MaxEventBytes when set.
@@ -231,7 +232,7 @@ type JobConfiguration struct {
 	// existing per-envelope contract; "bundle" opts into BundleEnvelope packing.
 	OutputMode OutputMode `json:"outputMode,omitempty"`
 	// MaxEnvelopesPerMessage is the maximum number of envelopes per bundle
-	// message. 0 means use the system default (100).
+	// message. 0 means pack until the byte ceiling is reached.
 	MaxEnvelopesPerMessage int `json:"maxEnvelopesPerMessage,omitempty"`
 	// MaxMessageBytes is the ceiling for a serialised bundle message in bytes.
 	// 0 means use MaxEventBytes. A single envelope that exceeds this limit

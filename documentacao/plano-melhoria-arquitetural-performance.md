@@ -358,14 +358,22 @@ ou duplicação lógica, inclusive durante retries.
 
 ### 8. Tornar o empacotamento adaptativo
 
-O empacotamento deve respeitar simultaneamente quantidade e bytes. Os limites
-de `maxEnvelopesPerMessage` e dez entradas por batch são máximos, não metas a
-serem sempre preenchidas. Os tetos conservadores são 250 KiB por mensagem
-física e 240 KiB para um lote com múltiplas mensagens.
+O empacotamento deve respeitar simultaneamente quantidade e bytes. Quando
+`maxEnvelopesPerMessage` estiver preenchido com valor positivo, ele é um teto
+explícito do cliente: `1`, por exemplo, produz exatamente um envelope por
+mensagem física. Quando o campo estiver vazio ou for `0`, não existe teto por
+quantidade e o Worker deve preencher cada envelope até o máximo permitido por
+bytes. Em ambos os casos, os tetos de segurança continuam sendo 250 KiB por
+mensagem física, 240 KiB para um lote com múltiplas mensagens e dez entradas
+por batch.
 
 Ações:
 
 - calcular dinamicamente o orçamento restante do bundle e do lote;
+- tratar `maxEnvelopesPerMessage > 0` como limite configurado, sem tentar
+  preenchê-lo além do teto de bytes;
+- com `maxEnvelopesPerMessage` ausente ou `0`, continuar adicionando envelopes
+  enquanto couberem no orçamento de bytes;
 - fechar o bundle antes do envelope que faria a mensagem ultrapassar 250 KiB;
 - fechar o batch antes da mensagem que faria o agregado ultrapassar 240 KiB,
   mesmo que o batch tenha menos de dez entradas;
@@ -375,9 +383,9 @@ Ações:
 - registrar mensagens por lote, batches abaixo de dez entradas e mensagens
   grandes enviadas sozinhas.
 
-Critério de aceite: o empacotamento deve maximizar eventos por chamada sem
-produzir requisições inválidas, respeitando os dois orçamentos em qualquer
-combinação de envelopes.
+Critério de aceite: o empacotamento deve respeitar a quantidade explicitamente
+configurada pelo cliente; sem essa configuração, deve maximizar eventos por
+mensagem até o limite de bytes, sem produzir requisições inválidas.
 
 ### 9. Aplicar backpressure
 

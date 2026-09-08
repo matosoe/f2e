@@ -23,10 +23,6 @@ import (
 	"github.com/f2e/f2e/internal/domain/f2e"
 )
 
-const (
-	defaultMaxEnvelopesPerMessage = 100
-)
-
 // bundlePacker accumulates envelopes and flushes complete bundles.
 // It is not safe for concurrent use; each streamWithMetrics goroutine owns one.
 type bundlePacker struct {
@@ -39,9 +35,6 @@ type bundlePacker struct {
 
 func newBundlePacker(job f2e.ChunkJob, cfg f2e.JobConfiguration) *bundlePacker {
 	maxEnv := cfg.MaxEnvelopesPerMessage
-	if maxEnv <= 0 {
-		maxEnv = defaultMaxEnvelopesPerMessage
-	}
 	maxBytes := cfg.MaxMessageBytes
 	if maxBytes <= 0 || maxBytes > port.MaxPhysicalMessageBytes {
 		maxBytes = port.MaxPhysicalMessageBytes
@@ -71,7 +64,10 @@ func (p *bundlePacker) add(env f2e.Envelope[f2e.RecordPayload]) (*port.OutboundM
 
 	// Flush if adding this envelope would exceed either limit.
 	var flushed *port.OutboundMessage
-	if len(p.items) > 0 && (len(p.items) >= p.maxEnvelopes || !p.fits(append(p.items, env))) {
+	// A positive setting is an explicit client cap, including one envelope per
+	// message. When omitted, bytes are the only packing constraint, so the
+	// worker uses the complete physical-message budget.
+	if len(p.items) > 0 && ((p.maxEnvelopes > 0 && len(p.items) >= p.maxEnvelopes) || !p.fits(append(p.items, env))) {
 		msg, err := p.flush()
 		if err != nil {
 			return nil, err

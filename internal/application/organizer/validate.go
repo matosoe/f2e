@@ -50,7 +50,7 @@ func ValidatePrefixConfiguration(c f2e.PrefixConfiguration, limits f2e.GlobalLim
 		// default; no extra fields required
 	case f2e.OutputModeBundle:
 		if c.MaxEnvelopesPerMessage < 0 {
-			return fmt.Errorf("invalid SSM configuration for s3://%s/%s: maxEnvelopesPerMessage must be ≥ 0 (0 = system default)", c.Bucket, c.Prefix)
+			return fmt.Errorf("invalid SSM configuration for s3://%s/%s: maxEnvelopesPerMessage must be ≥ 0 (0 = optimize by byte limit)", c.Bucket, c.Prefix)
 		}
 		if c.MaxMessageBytes != 0 && (c.MaxMessageBytes < 1024 || c.MaxMessageBytes > c.MaxEventBytes) {
 			return fmt.Errorf("invalid SSM configuration for s3://%s/%s: maxMessageBytes must be in [1024, maxEventBytes] when set", c.Bucket, c.Prefix)
