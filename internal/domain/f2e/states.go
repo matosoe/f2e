@@ -186,13 +186,14 @@ const (
 // messagesPublished is a separate measure (it depends on single/bundle mode).
 // Re-sends do not increase logical totals.
 type Counts struct {
-	RecordsRead          int64
-	RecordsPublished     int64
-	RecordsRejected      int64
-	RecordsIgnored       int64
-	MessagesPublished    int64
-	PhysicalLinesIgnored int64
-	Reasons              map[RejectionReason]int64
+	RecordsRead           int64
+	RecordsPublished      int64
+	RecordsRejected       int64
+	RecordsIgnored        int64
+	MessagesPublished     int64
+	SendMessageBatchCalls int64
+	PhysicalLinesIgnored  int64
+	Reasons               map[RejectionReason]int64
 	// CountsComplete is false when a failed file cannot prove a final count and
 	// only partial progress is known.
 	CountsComplete bool
@@ -211,6 +212,7 @@ const (
 	RejectionUnsupportedType   RejectionReason = "UNSUPPORTED_TYPE"
 	RejectionProcessorRejected RejectionReason = "PROCESSOR_REJECTED"
 	RejectionInvalidDecision   RejectionReason = "INVALID_DECISION"
+	RejectionMessageTooLarge   RejectionReason = "MESSAGE_TOO_LARGE"
 	IgnoreProcessorFiltered    RejectionReason = "PROCESSOR_FILTERED"
 	IgnoreMultiLineHeader      RejectionReason = "MULTILINE_HEADER"
 	IgnoreMultiLineTrailer     RejectionReason = "MULTILINE_TRAILER"

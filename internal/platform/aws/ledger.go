@@ -61,13 +61,14 @@ func transitionEntry(from, to, at, reason string) types.AttributeValue {
 // countsMap encodes Counts into a nested DynamoDB map written to the job item.
 func countsMap(c f2e.Counts) types.AttributeValue {
 	values := map[string]types.AttributeValue{
-		"recordsRead":          number(c.RecordsRead),
-		"recordsPublished":     number(c.RecordsPublished),
-		"recordsRejected":      number(c.RecordsRejected),
-		"recordsIgnored":       number(c.RecordsIgnored),
-		"messagesPublished":    number(c.MessagesPublished),
-		"physicalLinesIgnored": number(c.PhysicalLinesIgnored),
-		"countsComplete":       boolAttr(c.CountsComplete),
+		"recordsRead":           number(c.RecordsRead),
+		"recordsPublished":      number(c.RecordsPublished),
+		"recordsRejected":       number(c.RecordsRejected),
+		"recordsIgnored":        number(c.RecordsIgnored),
+		"messagesPublished":     number(c.MessagesPublished),
+		"sendMessageBatchCalls": number(c.SendMessageBatchCalls),
+		"physicalLinesIgnored":  number(c.PhysicalLinesIgnored),
+		"countsComplete":        boolAttr(c.CountsComplete),
 	}
 	reasons := map[string]types.AttributeValue{}
 	for reason, count := range c.Reasons {
@@ -334,9 +335,9 @@ func (a *AWS) CompleteChunk(ctx context.Context, result f2e.ChunkResult) error {
 	if status == string(f2e.ChunkStateCompleted) {
 		return nil
 	}
-	jobUpdate := "SET #s = :running ADD completedChunks :one, recordsProduced :records, recordsRead :read, recordsPublished :published, recordsRejected :rejected, recordsIgnored :ignored, messagesPublished :messages, physicalLinesIgnored :physicalIgnored"
+	jobUpdate := "SET #s = :running ADD completedChunks :one, recordsProduced :records, recordsRead :read, recordsPublished :published, recordsRejected :rejected, recordsIgnored :ignored, messagesPublished :messages, sendMessageBatchCalls :sendCalls, physicalLinesIgnored :physicalIgnored"
 	jobNames := map[string]string{"#s": "status"}
-	jobValues := map[string]types.AttributeValue{":one": number(1), ":records": number(counts.RecordsPublished), ":read": number(counts.RecordsRead), ":published": number(counts.RecordsPublished), ":rejected": number(counts.RecordsRejected), ":ignored": number(counts.RecordsIgnored), ":messages": number(counts.MessagesPublished), ":physicalIgnored": number(counts.PhysicalLinesIgnored), ":pending": text(string(f2e.JobPending)), ":scheduled": text(string(f2e.JobScheduled)), ":running": text(string(f2e.JobRunning))}
+	jobValues := map[string]types.AttributeValue{":one": number(1), ":records": number(counts.RecordsPublished), ":read": number(counts.RecordsRead), ":published": number(counts.RecordsPublished), ":rejected": number(counts.RecordsRejected), ":ignored": number(counts.RecordsIgnored), ":messages": number(counts.MessagesPublished), ":sendCalls": number(counts.SendMessageBatchCalls), ":physicalIgnored": number(counts.PhysicalLinesIgnored), ":pending": text(string(f2e.JobPending)), ":scheduled": text(string(f2e.JobScheduled)), ":running": text(string(f2e.JobRunning))}
 	i := 0
 	for reason, count := range counts.Reasons {
 		if count == 0 {

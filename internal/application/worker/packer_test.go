@@ -19,15 +19,6 @@ func makeEnvelope(eventID string) f2e.Envelope[f2e.RecordPayload] {
 	}
 }
 
-func serialise(t *testing.T, env f2e.Envelope[f2e.RecordPayload]) []byte {
-	t.Helper()
-	b, err := json.Marshal(env)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return b
-}
-
 func newTestJob() f2e.ChunkJob {
 	return f2e.ChunkJob{JobID: "job1", ChunkID: "chunk1"}
 }
@@ -49,17 +40,17 @@ func TestPackerFlushOnCountLimit(t *testing.T) {
 	env2 := makeEnvelope(strings.Repeat("b", 64))
 	env3 := makeEnvelope(strings.Repeat("c", 64))
 
-	msg1, err := p.add(env1, serialise(t, env1))
+	msg1, err := p.add(env1)
 	if err != nil || msg1 != nil {
 		t.Fatalf("first add: want nil msg, got msg=%v err=%v", msg1, err)
 	}
 	// Second add fills the bundle (maxEnvelopes=2); no flush yet (flush happens when third comes).
-	msg2, err := p.add(env2, serialise(t, env2))
+	msg2, err := p.add(env2)
 	if err != nil || msg2 != nil {
 		t.Fatalf("second add: want nil msg, got msg=%v err=%v", msg2, err)
 	}
 	// Third add triggers flush of the previous two.
-	msg3, err := p.add(env3, serialise(t, env3))
+	msg3, err := p.add(env3)
 	if err != nil {
 		t.Fatalf("third add: unexpected error %v", err)
 	}
@@ -96,26 +87,22 @@ func TestPackerFlushOnCountLimit(t *testing.T) {
 // TestPackerFlushOnBytesLimit checks that a bundle is flushed when adding an envelope
 // would exceed maxMessageBytes.
 func TestPackerFlushOnBytesLimit(t *testing.T) {
-	env := makeEnvelope(strings.Repeat("a", 64))
-	raw := serialise(t, env)
-	// Set maxMessageBytes so two envelopes fit but three do not.
-	// Each serialised envelope is len(raw) bytes; overhead is bundleOverheadBytes.
-	// twoFit = overhead + len + 1 (comma) + len; so maxBytes = overhead + 2*len + 1
-	maxBytes := bundleOverheadBytes + 2*len(raw) + 1
-	p := newBundlePacker(newTestJob(), newBundleCfg(100, maxBytes))
-
 	env1 := makeEnvelope(strings.Repeat("a", 64))
 	env2 := makeEnvelope(strings.Repeat("b", 64))
 	env3 := makeEnvelope(strings.Repeat("c", 64))
+	probe := newBundlePacker(newTestJob(), newBundleCfg(100, 256*1024))
+	// Use the real serialized bundle, including attributes, as the boundary.
+	maxBytes := probe.messageSize([]f2e.Envelope[f2e.RecordPayload]{env1, env2})
+	p := newBundlePacker(newTestJob(), newBundleCfg(100, maxBytes))
 
-	if _, err := p.add(env1, serialise(t, env1)); err != nil {
+	if _, err := p.add(env1); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := p.add(env2, serialise(t, env2)); err != nil {
+	if _, err := p.add(env2); err != nil {
 		t.Fatal(err)
 	}
 	// Third add should trigger a flush.
-	msg, err := p.add(env3, serialise(t, env3))
+	msg, err := p.add(env3)
 	if err != nil {
 		t.Fatalf("third add: %v", err)
 	}
@@ -135,12 +122,12 @@ func TestPackerFlushOnBytesLimit(t *testing.T) {
 // returns ErrEnvelopeTooLarge without data loss.
 func TestPackerEnvelopeTooLarge(t *testing.T) {
 	env := makeEnvelope(strings.Repeat("a", 64))
-	raw := serialise(t, env)
-	// Force maxMessageBytes below what the envelope alone would occupy.
-	maxBytes := bundleOverheadBytes + len(raw) - 1
+	// Force maxMessageBytes below what the complete physical message occupies.
+	probe := newBundlePacker(newTestJob(), newBundleCfg(100, 256*1024))
+	maxBytes := probe.messageSize([]f2e.Envelope[f2e.RecordPayload]{env}) - 1
 	p := newBundlePacker(newTestJob(), newBundleCfg(100, maxBytes))
 
-	_, err := p.add(env, raw)
+	_, err := p.add(env)
 	var tooLarge f2e.ErrEnvelopeTooLarge
 	if err == nil {
 		t.Fatal("expected ErrEnvelopeTooLarge, got nil")
@@ -183,7 +170,7 @@ func TestPackerFlushEmptyReturnsNil(t *testing.T) {
 func TestPackerBundleAttributesPresent(t *testing.T) {
 	p := newBundlePacker(newTestJob(), newBundleCfg(10, 256*1024))
 	env := makeEnvelope(strings.Repeat("a", 64))
-	if _, err := p.add(env, serialise(t, env)); err != nil {
+	if _, err := p.add(env); err != nil {
 		t.Fatal(err)
 	}
 	msg, err := p.flush()

@@ -3,6 +3,7 @@ package aws
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -19,10 +20,28 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	sqsTypes "github.com/aws/aws-sdk-go-v2/service/sqs/types"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
+	"github.com/aws/smithy-go"
 	"github.com/f2e/f2e/internal/application/port"
 	"github.com/f2e/f2e/internal/domain/f2e"
 	"github.com/f2e/f2e/internal/platform/config"
 )
+
+type permanentSendError struct{ error }
+
+func (permanentSendError) Permanent() bool { return true }
+
+func classifySendError(err error) error {
+	var apiErr smithy.APIError
+	if !errors.As(err, &apiErr) {
+		return err
+	}
+	switch apiErr.ErrorCode() {
+	case "BatchRequestTooLong", "InvalidBatchEntryId", "InvalidMessageContents", "TooManyEntriesInBatchRequest", "UnsupportedOperation":
+		return permanentSendError{err}
+	default:
+		return err
+	}
+}
 
 type AWS struct {
 	S3                    *s3.Client
@@ -105,6 +124,18 @@ func (a *AWS) Send(ctx context.Context, url string, messages []port.OutboundMess
 	if len(messages) == 0 {
 		return nil, nil
 	}
+	if len(messages) > port.MaxMessagesPerBatch {
+		return nil, fmt.Errorf("SendMessageBatch has %d entries, exceeds %d", len(messages), port.MaxMessagesPerBatch)
+	}
+	if len(messages) > 1 {
+		total := 0
+		for _, message := range messages {
+			total += port.OutboundMessageSize(message)
+		}
+		if total > port.MaxMultiMessageBatchBytes {
+			return nil, fmt.Errorf("SendMessageBatch size %d exceeds conservative %d byte budget", total, port.MaxMultiMessageBatchBytes)
+		}
+	}
 	entries := make([]sqsTypes.SendMessageBatchRequestEntry, len(messages))
 	for i, message := range messages {
 		if err := validateOutboundMessage(message); err != nil {
@@ -124,7 +155,7 @@ func (a *AWS) Send(ctx context.Context, url string, messages []port.OutboundMess
 	}
 	out, e := a.SQS.SendMessageBatch(ctx, &sqs.SendMessageBatchInput{QueueUrl: &url, Entries: entries})
 	if e != nil {
-		return nil, e
+		return nil, classifySendError(e)
 	}
 	failed := make([]int, 0, len(out.Failed))
 	for _, f := range out.Failed {
@@ -145,7 +176,7 @@ func validateOutboundMessage(message port.OutboundMessage) error {
 	if len(message.Attributes) > 10 {
 		return fmt.Errorf("more than 10 message attributes")
 	}
-	size := len(message.Body)
+	size := port.OutboundMessageSize(message)
 	for name, attribute := range message.Attributes {
 		if !messageAttributeName.MatchString(name) || strings.HasPrefix(strings.ToLower(name), "aws.") || strings.HasPrefix(strings.ToLower(name), "amazon.") {
 			return fmt.Errorf("invalid message attribute name %q", name)
@@ -153,10 +184,9 @@ func validateOutboundMessage(message port.OutboundMessage) error {
 		if attribute.DataType != "String" || attribute.Value == "" {
 			return fmt.Errorf("invalid message attribute %q", name)
 		}
-		size += len(name) + len(attribute.DataType) + len(attribute.Value)
 	}
-	if size > 256*1024 {
-		return fmt.Errorf("message and attributes exceed 256 KiB: %d", size)
+	if size > port.MaxPhysicalMessageBytes {
+		return fmt.Errorf("message and attributes exceed 250 KiB budget: %d", size)
 	}
 	return nil
 }

@@ -40,6 +40,28 @@ type MessageAttribute struct {
 type OutboundMessage struct {
 	Body       string
 	Attributes map[string]MessageAttribute
+	// LogicalEvents is the number of logical output events carried by this
+	// physical message. Zero means one (the single-envelope mode).
+	LogicalEvents int
+}
+
+const (
+	// SQS accepts 256 KiB, but F2E deliberately reserves headroom for the
+	// request encoding and broker metadata.
+	MaxPhysicalMessageBytes   = 250 * 1024
+	MaxMultiMessageBatchBytes = 240 * 1024
+	MaxMessagesPerBatch       = 10
+)
+
+// OutboundMessageSize returns a conservative UTF-8 byte budget for an SQS
+// message. Besides the body, SQS counts attribute names, types and values; the
+// fixed allowance covers their wire representation and entry metadata.
+func OutboundMessageSize(message OutboundMessage) int {
+	size := len(message.Body) + 64
+	for name, attribute := range message.Attributes {
+		size += len(name) + len(attribute.DataType) + len(attribute.Value) + 32
+	}
+	return size
 }
 
 type ObjectStore interface {

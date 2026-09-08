@@ -229,8 +229,6 @@ func (s Service) streamWithMetrics(ctx context.Context, j f2e.ChunkJob, r io.Rea
 	// This is the original single-envelope path.
 	enqueueSingle := func(msg port.OutboundMessage) error {
 		batch = append(batch, msg)
-		counts.RecordsPublished++
-		counts.MessagesPublished++
 		if len(batch) == batchSize {
 			return sendBatch()
 		}
@@ -240,15 +238,12 @@ func (s Service) streamWithMetrics(ctx context.Context, j f2e.ChunkJob, r io.Rea
 	// enqueueBundle adds an envelope to the packer; any flushed bundle goes to
 	// the SQS batch. The SQS batch is flushed when full.
 	enqueueBundle := func(env f2e.Envelope[f2e.RecordPayload], serialised []byte) error {
-		flushed, err := packer.add(env, serialised)
+		flushed, err := packer.add(env)
 		if err != nil {
 			return err
 		}
 		if flushed != nil {
 			batch = append(batch, *flushed)
-			counts.MessagesPublished++
-			// Bundle messages are logical messages; do not increment RecordsPublished here —
-			// that is done per-envelope inside the packer path below.
 			if len(batch) == batchSize {
 				return sendBatch()
 			}
@@ -265,7 +260,6 @@ func (s Service) streamWithMetrics(ctx context.Context, j f2e.ChunkJob, r io.Rea
 			}
 			if remaining != nil {
 				batch = append(batch, *remaining)
-				counts.MessagesPublished++
 			}
 		}
 		if len(batch) > 0 {
@@ -274,7 +268,11 @@ func (s Service) streamWithMetrics(ctx context.Context, j f2e.ChunkJob, r io.Rea
 			}
 		}
 		// Wait for all in-flight sends to complete.
-		return sender.wait()
+		if err := sender.wait(); err != nil {
+			return err
+		}
+		counts.MessagesPublished, counts.RecordsPublished, counts.SendMessageBatchCalls = sender.counts()
+		return nil
 	}
 
 	publish := func(n, off int64, raw string, physicalLength int64) error {
@@ -380,7 +378,10 @@ func (s Service) streamWithMetrics(ctx context.Context, j f2e.ChunkJob, r io.Rea
 		if maxEventBytes == 0 {
 			maxEventBytes = 256 * 1024
 		}
-		if len(b) > maxEventBytes {
+		// A configured limit below the SQS safety budget remains a hard
+		// contract. At/above that budget, let the physical-message check below
+		// reject this individual record with ledger-reconcilable context.
+		if len(b) > maxEventBytes && maxEventBytes < port.MaxPhysicalMessageBytes {
 			return fmt.Errorf("serialized event exceeds limit: %d > %d bytes", len(b), maxEventBytes)
 		}
 		attrs := map[string]port.MessageAttribute{
@@ -402,12 +403,32 @@ func (s Service) streamWithMetrics(ctx context.Context, j f2e.ChunkJob, r io.Rea
 		}
 
 		if packer != nil {
-			// Bundle mode: accumulate in packer; counts.RecordsPublished is
-			// incremented here so it reflects envelopes queued, not bundles sent.
-			counts.RecordsPublished++
-			return enqueueBundle(env, b)
+			if err := enqueueBundle(env, b); err != nil {
+				var tooLarge f2e.ErrEnvelopeTooLarge
+				if errors.As(err, &tooLarge) {
+					slog.Warn("record rejected: physical SQS message exceeds budget", "service", "worker", "jobId", j.JobID, "chunkId", j.ChunkID, "eventId", tooLarge.EventID, "actualBytes", tooLarge.ActualBytes, "limitBytes", tooLarge.LimitBytes)
+					counts.RecordsRejected++
+					if counts.Reasons == nil {
+						counts.Reasons = make(map[f2e.RejectionReason]int64)
+					}
+					counts.Reasons[f2e.RejectionMessageTooLarge]++
+					return nil
+				}
+				return err
+			}
+			return nil
 		}
-		return enqueueSingle(port.OutboundMessage{Body: string(b), Attributes: attrs})
+		message := port.OutboundMessage{Body: string(b), Attributes: attrs, LogicalEvents: 1}
+		if port.OutboundMessageSize(message) > port.MaxPhysicalMessageBytes {
+			slog.Warn("record rejected: physical SQS message exceeds budget", "service", "worker", "jobId", j.JobID, "chunkId", j.ChunkID, "eventId", env.Metadata.EventID, "actualBytes", port.OutboundMessageSize(message), "limitBytes", port.MaxPhysicalMessageBytes)
+			counts.RecordsRejected++
+			if counts.Reasons == nil {
+				counts.Reasons = make(map[f2e.RejectionReason]int64)
+			}
+			counts.Reasons[f2e.RejectionMessageTooLarge]++
+			return nil
+		}
+		return enqueueSingle(message)
 	}
 
 	var err error

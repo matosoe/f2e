@@ -4,14 +4,65 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/f2e/f2e/internal/application/port"
 	"github.com/f2e/f2e/internal/domain/f2e"
 	"github.com/f2e/f2e/internal/platform/config"
 )
+
+func TestSplitSendBatchesHonorsSQSByteAndEntryBudgets(t *testing.T) {
+	// Multibyte bytes and attributes both participate in the budget.
+	large := port.OutboundMessage{Body: strings.Repeat("界", 81_900), Attributes: map[string]port.MessageAttribute{"ação": {DataType: "String", Value: "✓"}}}
+	small := port.OutboundMessage{Body: "x"}
+	batches := splitSendBatches(append([]port.OutboundMessage{large, small}, make([]port.OutboundMessage, 10)...))
+	for _, batch := range batches {
+		if len(batch) > port.MaxMessagesPerBatch {
+			t.Fatalf("entries=%d", len(batch))
+		}
+		if len(batch) > 1 && batchSize(batch) > port.MaxMultiMessageBatchBytes {
+			t.Fatalf("batch bytes=%d", batchSize(batch))
+		}
+		for _, message := range batch {
+			if port.OutboundMessageSize(message) > port.MaxPhysicalMessageBytes {
+				t.Fatalf("message bytes=%d", port.OutboundMessageSize(message))
+			}
+		}
+	}
+	if len(batches[0]) != 1 {
+		t.Fatalf("large valid message must be isolated, got %d entries", len(batches[0]))
+	}
+}
+
+type rootFailureQueue struct{}
+
+func (q *rootFailureQueue) Send(ctx context.Context, _ string, messages []port.OutboundMessage) ([]int, error) {
+	if messages[0].Body == "a" {
+		time.Sleep(20 * time.Millisecond)
+		return nil, errors.New("BatchRequestTooLong")
+	}
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func TestConcurrentSenderPreservesRootErrorOverCancellation(t *testing.T) {
+	q := &rootFailureQueue{}
+	cs := newConcurrentSender(context.Background(), q, "url", 2)
+	if err := cs.submit([]port.OutboundMessage{{Body: "a"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cs.submit([]port.OutboundMessage{{Body: "b"}}); err != nil {
+		t.Fatal(err)
+	}
+	err := cs.wait()
+	if err == nil || !strings.Contains(err.Error(), "BatchRequestTooLong") {
+		t.Fatalf("want root API error, got %v", err)
+	}
+}
 
 // countingQueue records how many Send calls are in-flight concurrently.
 type countingQueue struct {

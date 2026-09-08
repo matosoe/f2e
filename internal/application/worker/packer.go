@@ -25,10 +25,6 @@ import (
 
 const (
 	defaultMaxEnvelopesPerMessage = 100
-	// bundleOverheadBytes is a conservative estimate of the JSON wrapper added
-	// around the items array in a BundleEnvelope: schema version, bundleId, jobId,
-	// chunkId keys and punctuation. Used when pre-checking whether an envelope fits.
-	bundleOverheadBytes = 256
 )
 
 // bundlePacker accumulates envelopes and flushes complete bundles.
@@ -38,8 +34,7 @@ type bundlePacker struct {
 	maxEnvelopes    int
 	maxMessageBytes int
 
-	items    []f2e.Envelope[f2e.RecordPayload]
-	itemSize int // running byte count of serialised items (without outer wrapper)
+	items []f2e.Envelope[f2e.RecordPayload]
 }
 
 func newBundlePacker(job f2e.ChunkJob, cfg f2e.JobConfiguration) *bundlePacker {
@@ -48,11 +43,8 @@ func newBundlePacker(job f2e.ChunkJob, cfg f2e.JobConfiguration) *bundlePacker {
 		maxEnv = defaultMaxEnvelopesPerMessage
 	}
 	maxBytes := cfg.MaxMessageBytes
-	if maxBytes <= 0 {
-		maxBytes = cfg.MaxEventBytes
-		if maxBytes <= 0 {
-			maxBytes = 256 * 1024
-		}
+	if maxBytes <= 0 || maxBytes > port.MaxPhysicalMessageBytes {
+		maxBytes = port.MaxPhysicalMessageBytes
 	}
 	return &bundlePacker{
 		job:             job,
@@ -66,37 +58,48 @@ func newBundlePacker(job f2e.ChunkJob, cfg f2e.JobConfiguration) *bundlePacker {
 // If adding it would exceed the limits, flush is called first (with the
 // current contents) and then the envelope is placed in the fresh bundle.
 // Returns the OutboundMessage if a flush occurred, otherwise nil.
-func (p *bundlePacker) add(env f2e.Envelope[f2e.RecordPayload], serialised []byte) (*port.OutboundMessage, error) {
-	envelopeBytes := len(serialised)
-	// A comma separator between items adds 1 byte for all items after the first.
-	sizeWithComma := envelopeBytes
-	if len(p.items) > 0 {
-		sizeWithComma++
-	}
-
-	// A single envelope that cannot fit in an empty bundle is an explicit error.
-	if bundleOverheadBytes+envelopeBytes > p.maxMessageBytes {
+func (p *bundlePacker) add(env f2e.Envelope[f2e.RecordPayload]) (*port.OutboundMessage, error) {
+	// Marshal the real candidate instead of relying on wrapper estimates. This
+	// accounts for UTF-8 and every JSON field in the physical body.
+	if !p.fits([]f2e.Envelope[f2e.RecordPayload]{env}) {
 		return nil, f2e.ErrEnvelopeTooLarge{
 			EventID:     env.Metadata.EventID,
-			ActualBytes: bundleOverheadBytes + envelopeBytes,
+			ActualBytes: p.messageSize([]f2e.Envelope[f2e.RecordPayload]{env}),
 			LimitBytes:  p.maxMessageBytes,
 		}
 	}
 
 	// Flush if adding this envelope would exceed either limit.
 	var flushed *port.OutboundMessage
-	if len(p.items) > 0 && (len(p.items) >= p.maxEnvelopes || bundleOverheadBytes+p.itemSize+sizeWithComma > p.maxMessageBytes) {
+	if len(p.items) > 0 && (len(p.items) >= p.maxEnvelopes || !p.fits(append(p.items, env))) {
 		msg, err := p.flush()
 		if err != nil {
 			return nil, err
 		}
 		flushed = msg
-		sizeWithComma = envelopeBytes // first item in new bundle — no comma
 	}
 
 	p.items = append(p.items, env)
-	p.itemSize += sizeWithComma
 	return flushed, nil
+}
+
+func (p *bundlePacker) messageSize(items []f2e.Envelope[f2e.RecordPayload]) int {
+	b, err := json.Marshal(f2e.BundleEnvelope{SchemaVersion: f2e.BundleSchemaVersion, BundleID: bundleID(items), JobID: p.job.JobID, ChunkID: p.job.ChunkID, Items: items})
+	if err != nil {
+		return p.maxMessageBytes + 1
+	}
+	return port.OutboundMessageSize(port.OutboundMessage{Body: string(b), Attributes: bundleAttributes(bundleID(items))})
+}
+
+func (p *bundlePacker) fits(items []f2e.Envelope[f2e.RecordPayload]) bool {
+	return p.messageSize(items) <= p.maxMessageBytes
+}
+
+func bundleAttributes(id string) map[string]port.MessageAttribute {
+	return map[string]port.MessageAttribute{
+		"schema":        {DataType: "String", Value: f2e.BundleSchemaVersion},
+		"f2e-bundle-id": {DataType: "String", Value: id},
+	}
 }
 
 // flush serialises the current bundle into an OutboundMessage and resets the packer.
@@ -117,19 +120,16 @@ func (p *bundlePacker) flush() (*port.OutboundMessage, error) {
 		return nil, fmt.Errorf("marshal bundle: %w", err)
 	}
 	// Final size check after serialisation (the estimate may differ slightly).
-	if len(b) > p.maxMessageBytes {
+	if port.OutboundMessageSize(port.OutboundMessage{Body: string(b), Attributes: bundleAttributes(bundle.BundleID)}) > p.maxMessageBytes {
 		// This should be unreachable due to the pre-check above, but guard anyway.
 		return nil, fmt.Errorf("bundle serialised to %d bytes, exceeds maxMessageBytes %d", len(b), p.maxMessageBytes)
 	}
 	msg := &port.OutboundMessage{
-		Body: string(b),
-		Attributes: map[string]port.MessageAttribute{
-			"schema":        {DataType: "String", Value: f2e.BundleSchemaVersion},
-			"f2e-bundle-id": {DataType: "String", Value: bundle.BundleID},
-		},
+		Body:          string(b),
+		Attributes:    bundleAttributes(bundle.BundleID),
+		LogicalEvents: len(p.items),
 	}
 	p.items = nil
-	p.itemSize = 0
 	return msg, nil
 }
 

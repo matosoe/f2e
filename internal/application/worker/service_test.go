@@ -80,12 +80,15 @@ func TestPartialBatchRetriesOnlyFailedMessages(t *testing.T) {
 	q := &partialQueue{}
 	s := Service{Resolver: store{"aaa\nbbb\n"}, Queue: q, Config: config.Config{BatchSize: 2, OutputQueueURL: "out", EventSchemaID: "test", EventSchemaVersion: "1", EventFormat: "json"}}
 	job := f2e.ChunkJob{SchemaVersion: f2e.SchemaVersion, FileID: "f", JobID: "j", ChunkID: "1", Bucket: "b", Key: "k", EndByteInclusive: 7, DataType: f2e.DataTypeText, MaxRecordLengthBytes: 4}
-	body, _ := json.Marshal(job)
-	if err := s.Process(context.Background(), body); err != nil {
+	counts, err := s.streamWithMetrics(context.Background(), job, strings.NewReader("aaa\nbbb\n"), 0)
+	if err != nil {
 		t.Fatal(err)
 	}
 	if len(q.calls) != 2 || len(q.calls[0]) != 2 || len(q.calls[1]) != 1 || q.calls[1][0] != q.calls[0][1] {
 		t.Fatalf("calls=%v", q.calls)
+	}
+	if counts.RecordsPublished != 2 || counts.MessagesPublished != 2 || counts.SendMessageBatchCalls != 2 {
+		t.Fatalf("retry counters=%+v", counts)
 	}
 }
 
