@@ -20,7 +20,12 @@ aws sts get-caller-identity >/dev/null || {
 
 "$root/build-lambdas.sh"
 terraform -chdir="$terraform_dir" init -input=false
-terraform -chdir="$terraform_dir" apply -input=false -auto-approve -var-file="$tfvars"
+terraform_args=(-input=false -auto-approve -var-file="$tfvars")
+if [[ -n "${F2E_AWS_OVERRIDE_TFVARS:-}" ]]; then
+  [[ -f "$F2E_AWS_OVERRIDE_TFVARS" ]] || { echo "Arquivo de override AWS não encontrado: $F2E_AWS_OVERRIDE_TFVARS" >&2; exit 1; }
+  terraform_args+=(-var-file="$F2E_AWS_OVERRIDE_TFVARS")
+fi
+terraform -chdir="$terraform_dir" apply "${terraform_args[@]}"
 
 echo 'Ambiente AWS disponível. Ele foi mantido em execução para inspeção manual.'
 bucket="$(terraform -chdir="$terraform_dir" output -raw input_bucket)"

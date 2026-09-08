@@ -87,7 +87,8 @@ module "prefix" {
   ledger_table_arn = aws_dynamodb_table.job_ledger.arn
   # Each prefix shares the shared-Worker log group for now; operators may
   # split log groups once Terraform migration is complete.
-  log_group_arn = aws_cloudwatch_log_group.worker.arn
+  log_group_arn  = aws_cloudwatch_log_group.worker.arn
+  log_group_name = aws_cloudwatch_log_group.worker.name
 
   # Worker binary: shared ZIP, per-prefix configuration via env vars + SSM.
   worker_zip = local.worker_zip

@@ -26,6 +26,9 @@ valores antes de executar.
 - `executar-e2e-aws.sh` sobe o ambiente, executa a suíte E2E em AWS real e o
   destrói ao terminar, inclusive se os testes falharem. Ele aceita somente
   `environment = "development"`.
+- `benchmark-aws-5m.sh` executa, fora da suíte funcional, o cenário de uma
+  mensagem por linha com 10 Workers: valida primeiro 10 mil linhas e só então
+  processa 5 milhões, coletando CPU, memória e métricas CloudWatch.
 
 Defina `F2E_AWS_TFVARS=/caminho/para/outro.tfvars` para usar outro arquivo de
 variáveis. Consulte [Operação na AWS](../documentacao/operacao_aws.md) para o

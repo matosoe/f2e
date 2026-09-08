@@ -3,6 +3,7 @@ package aws
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -81,6 +82,39 @@ func countsMap(c f2e.Counts) types.AttributeValue {
 func conditionalConflict(err error) bool {
 	var ccf *types.ConditionalCheckFailedException
 	return errors.As(err, &ccf)
+}
+
+func transactionConflict(err error) bool {
+	var canceled *types.TransactionCanceledException
+	if !errors.As(err, &canceled) {
+		return false
+	}
+	for _, reason := range canceled.CancellationReasons {
+		if aws.ToString(reason.Code) == "TransactionConflict" {
+			return true
+		}
+	}
+	return false
+}
+
+func waitForLedgerRetry(ctx context.Context, attempt int) error {
+	delay := 25 * time.Millisecond * time.Duration(1<<attempt)
+	if delay > time.Second {
+		delay = time.Second
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func completeChunkToken(jobID, chunkID string, attempt, conflictRetry int) string {
+	digest := sha256.Sum256([]byte(jobID + "\x00" + chunkID + "\x00" + strconv.Itoa(attempt) + "\x00" + strconv.Itoa(conflictRetry)))
+	return fmt.Sprintf("%x", digest[:18])
 }
 
 func (a *AWS) Replay(ctx context.Context, sourceJobID, newJobID string, chunkIDs []string) ([]f2e.ChunkJob, error) {
@@ -314,10 +348,23 @@ func (a *AWS) CompleteChunk(ctx context.Context, result f2e.ChunkResult) error {
 		jobValues[value] = number(count)
 		i++
 	}
-	_, err = a.DynamoDB.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{TransactItems: []types.TransactWriteItem{
+	transaction := &dynamodb.TransactWriteItemsInput{TransactItems: []types.TransactWriteItem{
 		{Update: &types.Update{TableName: aws.String(a.LedgerTable), Key: ledgerKey(result.JobID, "CHUNK#"+result.ChunkID), ConditionExpression: aws.String("#s = :running AND attempt = :attempt"), UpdateExpression: aws.String("SET #s = :completed, recordsProduced = :records, bytesProcessed = :bytes, counts = :counts, completedAt = :now, revision = if_not_exists(revision, :zero) + :one"), ExpressionAttributeNames: map[string]string{"#s": "status"}, ExpressionAttributeValues: map[string]types.AttributeValue{":completed": text(string(f2e.ChunkStateCompleted)), ":running": text(string(f2e.ChunkStateRunning)), ":attempt": number(int64(result.Attempt)), ":records": number(counts.RecordsPublished), ":counts": countsMap(counts), ":bytes": number(result.BytesProcessed), ":now": text(result.OccurredAt.Format(time.RFC3339Nano)), ":zero": number(0), ":one": number(1)}}},
 		{Update: &types.Update{TableName: aws.String(a.LedgerTable), Key: ledgerKey(result.JobID, "JOB"), ConditionExpression: aws.String("#s = :pending OR #s = :scheduled OR #s = :running"), UpdateExpression: aws.String(jobUpdate), ExpressionAttributeNames: jobNames, ExpressionAttributeValues: jobValues}},
-	}})
+	}}
+	for retry := 0; retry < 8; retry++ {
+		// A transaction canceled with an explicit TransactionConflict applied no
+		// writes. Give that outer retry a fresh token; the SDK still reuses it for
+		// transport-level retries where the commit outcome may be unknown.
+		transaction.ClientRequestToken = aws.String(completeChunkToken(result.JobID, result.ChunkID, result.Attempt, retry))
+		_, err = a.DynamoDB.TransactWriteItems(ctx, transaction)
+		if err == nil || !transactionConflict(err) {
+			break
+		}
+		if waitErr := waitForLedgerRetry(ctx, retry); waitErr != nil {
+			return waitErr
+		}
+	}
 	if err != nil {
 		status, readErr := a.chunkStatus(ctx, result.JobID, result.ChunkID)
 		if readErr != nil || status != string(f2e.ChunkStateCompleted) {

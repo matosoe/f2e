@@ -205,6 +205,11 @@ resource "aws_lambda_function" "worker" {
   timeout          = var.worker_timeout_seconds
   tags             = var.tags
 
+  logging_config {
+    log_format = "JSON"
+    log_group  = var.log_group_name
+  }
+
   # T20: inject per-prefix output queue URL so the Worker knows where to send.
   environment {
     variables = merge(var.worker_env, {

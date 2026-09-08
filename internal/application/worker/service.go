@@ -230,6 +230,7 @@ func (s Service) streamWithMetrics(ctx context.Context, j f2e.ChunkJob, r io.Rea
 	enqueueSingle := func(msg port.OutboundMessage) error {
 		batch = append(batch, msg)
 		counts.RecordsPublished++
+		counts.MessagesPublished++
 		if len(batch) == batchSize {
 			return sendBatch()
 		}
@@ -245,6 +246,7 @@ func (s Service) streamWithMetrics(ctx context.Context, j f2e.ChunkJob, r io.Rea
 		}
 		if flushed != nil {
 			batch = append(batch, *flushed)
+			counts.MessagesPublished++
 			// Bundle messages are logical messages; do not increment RecordsPublished here —
 			// that is done per-envelope inside the packer path below.
 			if len(batch) == batchSize {
@@ -263,6 +265,7 @@ func (s Service) streamWithMetrics(ctx context.Context, j f2e.ChunkJob, r io.Rea
 			}
 			if remaining != nil {
 				batch = append(batch, *remaining)
+				counts.MessagesPublished++
 			}
 		}
 		if len(batch) > 0 {

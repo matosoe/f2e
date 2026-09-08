@@ -79,6 +79,11 @@ variable "log_group_arn" {
   type        = string
 }
 
+variable "log_group_name" {
+  description = "Name of the CloudWatch log group shared by the Worker Lambdas."
+  type        = string
+}
+
 # ── Worker Lambda configuration ───────────────────────────────────────────────
 
 variable "worker_zip" {

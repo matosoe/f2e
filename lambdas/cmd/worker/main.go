@@ -7,12 +7,14 @@ import (
 	"log/slog"
 	"os"
 	"strconv"
+	"time"
 
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/f2e/f2e/internal/application/worker"
 	awsclient "github.com/f2e/f2e/internal/platform/aws"
 	"github.com/f2e/f2e/internal/platform/config"
+	"github.com/f2e/f2e/internal/platform/processmetrics"
 )
 
 var service worker.Service
@@ -36,6 +38,32 @@ func init() {
 	}
 }
 func handler(ctx context.Context, e events.SQSEvent) (events.SQSEventResponse, error) {
+	started := time.Now()
+	startUserCPU, startSystemCPU, cpuAvailable := processmetrics.CPUTime()
+	defer func() {
+		wallSeconds := time.Since(started).Seconds()
+		endUserCPU, endSystemCPU, endAvailable := processmetrics.CPUTime()
+		if !cpuAvailable || !endAvailable {
+			slog.Info("worker invocation resources", "service", "worker", "durationMs", wallSeconds*1000, "cpuAvailable", false)
+			return
+		}
+		userCPU := endUserCPU - startUserCPU
+		systemCPU := endSystemCPU - startSystemCPU
+		totalCPU := userCPU + systemCPU
+		utilization := 0.0
+		if wallSeconds > 0 {
+			utilization = totalCPU / wallSeconds * 100
+		}
+		slog.Info("worker invocation resources",
+			"service", "worker",
+			"durationMs", wallSeconds*1000,
+			"cpuAvailable", true,
+			"cpuUserMs", userCPU*1000,
+			"cpuSystemMs", systemCPU*1000,
+			"cpuTotalMs", totalCPU*1000,
+			"cpuUtilizationPercent", utilization,
+		)
+	}()
 	out := events.SQSEventResponse{}
 	for _, r := range e.Records {
 		attempt, _ := strconv.Atoi(r.Attributes["ApproximateReceiveCount"])
