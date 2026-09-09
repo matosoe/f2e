@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/f2e/f2e/internal/application/port"
 	"github.com/f2e/f2e/internal/domain/f2e"
 )
 
@@ -33,6 +34,14 @@ func newBundleCfg(maxEnv, maxBytes int) f2e.JobConfiguration {
 	}
 }
 
+func addEnvelope(p *bundlePacker, env f2e.Envelope[f2e.RecordPayload]) (*port.OutboundMessage, error) {
+	b, err := json.Marshal(env)
+	if err != nil {
+		return nil, err
+	}
+	return p.add(env, b)
+}
+
 // TestPackerFlushOnCountLimit checks that a bundle is flushed when maxEnvelopes is reached.
 func TestPackerFlushOnCountLimit(t *testing.T) {
 	p := newBundlePacker(newTestJob(), newBundleCfg(2, 256*1024))
@@ -41,17 +50,17 @@ func TestPackerFlushOnCountLimit(t *testing.T) {
 	env2 := makeEnvelope(strings.Repeat("b", 64))
 	env3 := makeEnvelope(strings.Repeat("c", 64))
 
-	msg1, err := p.add(env1)
+	msg1, err := addEnvelope(p, env1)
 	if err != nil || msg1 != nil {
 		t.Fatalf("first add: want nil msg, got msg=%v err=%v", msg1, err)
 	}
 	// Second add fills the bundle (maxEnvelopes=2); no flush yet (flush happens when third comes).
-	msg2, err := p.add(env2)
+	msg2, err := addEnvelope(p, env2)
 	if err != nil || msg2 != nil {
 		t.Fatalf("second add: want nil msg, got msg=%v err=%v", msg2, err)
 	}
 	// Third add triggers flush of the previous two.
-	msg3, err := p.add(env3)
+	msg3, err := addEnvelope(p, env3)
 	if err != nil {
 		t.Fatalf("third add: unexpected error %v", err)
 	}
@@ -89,10 +98,10 @@ func TestPackerRespectsExplicitSingleEnvelopeLimit(t *testing.T) {
 	p := newBundlePacker(newTestJob(), newBundleCfg(1, 256*1024))
 	env1 := makeEnvelope(strings.Repeat("a", 64))
 	env2 := makeEnvelope(strings.Repeat("b", 64))
-	if msg, err := p.add(env1); err != nil || msg != nil {
+	if msg, err := addEnvelope(p, env1); err != nil || msg != nil {
 		t.Fatalf("first add: msg=%v err=%v", msg, err)
 	}
-	msg, err := p.add(env2)
+	msg, err := addEnvelope(p, env2)
 	if err != nil || msg == nil {
 		t.Fatalf("second add: msg=%v err=%v", msg, err)
 	}
@@ -109,7 +118,7 @@ func TestPackerWithoutCountLimitFillsByBytes(t *testing.T) {
 	p := newBundlePacker(newTestJob(), newBundleCfg(0, 256*1024))
 	for i := 0; i < 101; i++ {
 		env := makeEnvelope(fmt.Sprintf("%064d", i))
-		if msg, err := p.add(env); err != nil || msg != nil {
+		if msg, err := addEnvelope(p, env); err != nil || msg != nil {
 			t.Fatalf("add %d: msg=%v err=%v", i, msg, err)
 		}
 	}
@@ -134,17 +143,25 @@ func TestPackerFlushOnBytesLimit(t *testing.T) {
 	env3 := makeEnvelope(strings.Repeat("c", 64))
 	probe := newBundlePacker(newTestJob(), newBundleCfg(100, 256*1024))
 	// Use the real serialized bundle, including attributes, as the boundary.
-	maxBytes := probe.messageSize([]f2e.Envelope[f2e.RecordPayload]{env1, env2})
-	p := newBundlePacker(newTestJob(), newBundleCfg(100, maxBytes))
-
-	if _, err := p.add(env1); err != nil {
+	encoded1, err := json.Marshal(env1)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := p.add(env2); err != nil {
+	encoded2, err := json.Marshal(env2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	maxBytes := probe.emptyMessageSize + len(encoded1) + len(encoded2) + 1
+	p := newBundlePacker(newTestJob(), newBundleCfg(100, maxBytes))
+
+	if _, err := addEnvelope(p, env1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := addEnvelope(p, env2); err != nil {
 		t.Fatal(err)
 	}
 	// Third add should trigger a flush.
-	msg, err := p.add(env3)
+	msg, err := addEnvelope(p, env3)
 	if err != nil {
 		t.Fatalf("third add: %v", err)
 	}
@@ -166,10 +183,14 @@ func TestPackerEnvelopeTooLarge(t *testing.T) {
 	env := makeEnvelope(strings.Repeat("a", 64))
 	// Force maxMessageBytes below what the complete physical message occupies.
 	probe := newBundlePacker(newTestJob(), newBundleCfg(100, 256*1024))
-	maxBytes := probe.messageSize([]f2e.Envelope[f2e.RecordPayload]{env}) - 1
+	encoded, err := json.Marshal(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	maxBytes := probe.emptyMessageSize + len(encoded) - 1
 	p := newBundlePacker(newTestJob(), newBundleCfg(100, maxBytes))
 
-	_, err := p.add(env)
+	_, err = addEnvelope(p, env)
 	var tooLarge f2e.ErrEnvelopeTooLarge
 	if err == nil {
 		t.Fatal("expected ErrEnvelopeTooLarge, got nil")
@@ -212,7 +233,7 @@ func TestPackerFlushEmptyReturnsNil(t *testing.T) {
 func TestPackerBundleAttributesPresent(t *testing.T) {
 	p := newBundlePacker(newTestJob(), newBundleCfg(10, 256*1024))
 	env := makeEnvelope(strings.Repeat("a", 64))
-	if _, err := p.add(env); err != nil {
+	if _, err := addEnvelope(p, env); err != nil {
 		t.Fatal(err)
 	}
 	msg, err := p.flush()

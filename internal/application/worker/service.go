@@ -314,7 +314,7 @@ func (s Service) streamWithMetrics(ctx context.Context, j f2e.ChunkJob, r io.Rea
 	// enqueueBundle adds an envelope to the packer; any flushed bundle goes to
 	// the SQS batch. The SQS batch is flushed when full.
 	enqueueBundle := func(env f2e.Envelope[f2e.RecordPayload], serialised []byte) error {
-		flushed, err := packer.add(env)
+		flushed, err := packer.add(env, serialised)
 		if err != nil {
 			return err
 		}

@@ -46,3 +46,7 @@ BENCHMARK_MAX_MESSAGE_BYTES=24000 \
 Para um ensaio rápido do próprio harness, use por exemplo
 `BENCHMARK_RECORDS=10000`. A massa é reutilizada apenas quando o manifesto
 confirma quantidade, largura e tamanho esperados.
+
+Para executar a matriz local apartada de memória × CPU, com smoke de 10 mil
+linhas seguido de 5 milhões por perfil, consulte
+[Benchmark local — matriz memória × CPU](benchmark-local-memory-matrix.md).
