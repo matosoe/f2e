@@ -2,6 +2,8 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")" && pwd)"
+project_tools="$root/../.build/tools"
+[[ -d "$project_tools" ]] && export PATH="$project_tools:$PATH"
 terraform_dir="$root/../terraform"
 tfvars="${F2E_AWS_TFVARS:-$terraform_dir/environments/aws.local.tfvars}"
 
