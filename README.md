@@ -237,6 +237,8 @@ prefixo e carregam a configuração selecionada em cada `ChunkJob`.
 
 ## Documentação
 
+- [Arquitetura](documentacao/arquitetura.md)
+- [Blueprint arquitetural](documentacao/blueprint_arquitetural.md)
 - [Operação local](documentacao/operacao_local.md)
 - [Operação na AWS](documentacao/operacao_aws.md)
 - [Runbooks operacionais](documentacao/runbooks.md)
