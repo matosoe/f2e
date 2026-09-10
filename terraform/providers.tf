@@ -32,4 +32,14 @@ provider "aws" {
       ssm        = endpoints.value
     }
   }
+
+
+  # Allows the management client to use AWS's public dual-stack SSM endpoint
+  # when local DNS redirects the legacy hostname to an unreachable private IP.
+  dynamic "endpoints" {
+    for_each = !local.is_localstack && var.ssm_endpoint != "" ? [var.ssm_endpoint] : []
+    content {
+      ssm = endpoints.value
+    }
+  }
 }

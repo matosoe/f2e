@@ -6,6 +6,17 @@ variable "localstack_endpoint" {
   description = "LocalStack endpoint reachable from the Terraform host (e.g. http://localhost:4566). Leave empty for real AWS."
 }
 
+variable "ssm_endpoint" {
+  description = "Optional SSM endpoint override for Terraform clients. Leave empty to use the regional AWS endpoint."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.ssm_endpoint == "" || can(regex("^https?://", var.ssm_endpoint))
+    error_message = "ssm_endpoint must be empty or an HTTP(S) URL."
+  }
+}
+
 variable "lambda_aws_endpoint_url" {
   type        = string
   default     = ""

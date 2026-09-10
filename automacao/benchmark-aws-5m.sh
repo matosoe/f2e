@@ -4,6 +4,8 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")" && pwd)"
+project_tools="$root/../.build/tools"
+[[ -d "$project_tools" ]] && export PATH="$project_tools:$PATH"
 terraform_dir="$root/../terraform"
 tfvars="${F2E_AWS_TFVARS:-$terraform_dir/environments/aws.local.tfvars}"
 record_length="${BENCHMARK_RECORD_LENGTH:-100}"
@@ -24,6 +26,7 @@ preflight_timeout_ms="${BENCHMARK_PREFLIGHT_TIMEOUT_MS:-0}"
 timeout_seconds="${BENCHMARK_TIMEOUT_SECONDS:-14400}"
 poll_seconds="${BENCHMARK_POLL_SECONDS:-5}"
 keep_environment="${BENCHMARK_KEEP_ENVIRONMENT:-0}"
+ssm_endpoint_url="${BENCHMARK_SSM_ENDPOINT_URL:-}"
 run_id="$(date -u +%Y%m%dT%H%M%SZ)"
 result_dir="${BENCHMARK_RESULTS_DIR:-$root/resultados/benchmark-aws-5m/$run_id}"
 prefix_id="example-text"
@@ -44,6 +47,7 @@ fi
 [[ "$publish_concurrency" -le 16 ]] || { echo "BENCHMARK_PUBLISH_CONCURRENCY deve ser <= 16." >&2; exit 2; }
 [[ "$target_chunk_bytes" -ge 5242880 && "$target_chunk_bytes" -le 104857600 ]] || { echo "BENCHMARK_TARGET_CHUNK_BYTES deve ficar entre 5 e 100 MiB." >&2; exit 2; }
 [[ "$keep_environment" == 0 || "$keep_environment" == 1 ]] || { echo "BENCHMARK_KEEP_ENVIRONMENT deve ser 0 ou 1." >&2; exit 2; }
+[[ -z "$ssm_endpoint_url" || "$ssm_endpoint_url" =~ ^https?:// ]] || { echo "BENCHMARK_SSM_ENDPOINT_URL deve ser uma URL HTTP(S)." >&2; exit 2; }
 [[ "$full_label" =~ ^[a-z0-9-]+$ ]] || { echo "BENCHMARK_FULL_LABEL deve conter apenas letras minúsculas, números e hífen." >&2; exit 2; }
 for command in aws go jq terraform; do
   command -v "$command" >/dev/null || { echo "$command não encontrado no PATH." >&2; exit 1; }
@@ -62,6 +66,11 @@ aws_cli() { aws --region "$region" --no-cli-pager "$@"; }
 # Prevent Git Bash from rewriting AWS resource names beginning with / as
 # Windows paths. Do not use this wrapper for local upload paths.
 aws_cli_no_pathconv() { MSYS_NO_PATHCONV=1 aws --region "$region" --no-cli-pager "$@"; }
+aws_ssm_cli() {
+  local endpoint_args=()
+  [[ -z "$ssm_endpoint_url" ]] || endpoint_args=(--endpoint-url "$ssm_endpoint_url")
+  MSYS_NO_PATHCONV=1 aws --region "$region" --no-cli-pager "${endpoint_args[@]}" ssm "$@"
+}
 
 environment_started=0
 cleanup() {
@@ -102,8 +111,9 @@ echo "Conta: $account; resultados: $result_dir"
 override_tfvars="$result_dir/terraform-benchmark.tfvars.json"
 jq -n \
   --arg id "$prefix_id" --argjson concurrency "$worker_concurrency" --argjson memory "$worker_memory_mb" \
-  --argjson timeout "$lambda_timeout" --argjson visibility "$sqs_visibility_timeout" \
-  '{lambda_timeout:$timeout,sqs_visibility_timeout:$visibility,prefix_worker_config:{($id):{reserved_concurrency:-1,maximum_concurrency:$concurrency,memory_mb:$memory}}}' \
+  --argjson timeout "$lambda_timeout" --argjson visibility "$sqs_visibility_timeout" --arg ssmEndpoint "$ssm_endpoint_url" \
+  '{lambda_timeout:$timeout,sqs_visibility_timeout:$visibility,prefix_worker_config:{($id):{reserved_concurrency:-1,maximum_concurrency:$concurrency,memory_mb:$memory}}}
+   + (if $ssmEndpoint == "" then {} else {ssm_endpoint:$ssmEndpoint} end)' \
   > "$override_tfvars"
 
 provision_start="$(now_ms)"
@@ -158,7 +168,7 @@ while IFS=$'\t' read -r uuid function_arn; do
 done < <(jq -r '.EventSourceMappings[] | [.UUID,.FunctionArn] | @tsv' <<<"$mappings")
 [[ -n "$target_mapping" ]] || { echo "Event-source mapping do Worker $worker_name não encontrado." >&2; exit 1; }
 
-current_config="$(aws_cli_no_pathconv ssm get-parameter --name "$ssm_path" --query Parameter.Value --output text)"
+current_config="$(aws_ssm_cli get-parameter --name "$ssm_path" --query Parameter.Value --output text)"
 
 # Keep SQS publication sequential inside each invocation. The requested
 # parallelism is supplied exclusively by the ten Lambda Worker environments.
@@ -272,7 +282,7 @@ run_case() {
     --arg outputMode "$output_mode" --argjson maxEnvelopes "$max_envelopes" --argjson maxMessageBytes "$max_message_bytes" \
     --argjson chunk "$case_records_per_chunk" --argjson targetChunkBytes "$target_chunk_bytes" --argjson recordLength "$record_length" \
     '. + {recordsPerChunk:$chunk,targetChunkBytes:$targetChunkBytes,maxRecordLengthBytes:$recordLength,outputMode:$outputMode,maxEnvelopesPerMessage:$maxEnvelopes,maxMessageBytes:$maxMessageBytes}' <<<"$current_config")"
-  aws_cli_no_pathconv ssm put-parameter --name "$ssm_path" --type String --value "$benchmark_config" --overwrite >/dev/null
+  aws_ssm_cli put-parameter --name "$ssm_path" --type String --value "$benchmark_config" --overwrite >/dev/null
   generation_start="$(now_ms)"
   if [[ -f "$data_file" && -f "$data_file.manifest.json" ]] &&
      jq -e --argjson records "$records" --argjson length "$record_length" \
