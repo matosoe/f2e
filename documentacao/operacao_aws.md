@@ -5,6 +5,11 @@ Terraform para criar S3, SQS, DLQs, DynamoDB, Lambdas, mapeamentos SQS,
 CloudWatch Logs e alarmes. Diferentemente do ambiente local, recursos AWS têm
 custo e o estado deve ser mantido em backend remoto antes do uso compartilhado.
 
+Antes do provisionamento, valide o caso de uso contra os
+[Requisitos e restrições](requisitos_e_restricoes.md), em especial limites de
+arquivo, registro e mensagem, ausência de ordenação global, regra determinável
+de fronteira e janela de processamento compatível com Lambda.
+
 > Execute os comandos no **Git Bash**, a partir da raiz do repositório. Use uma
 > conta e um ambiente de desenvolvimento isolados para testes E2E.
 

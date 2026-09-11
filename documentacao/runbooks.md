@@ -4,6 +4,12 @@ Todo incidente deve registrar ambiente, `jobId`, `chunkId`, identidade física d
 objeto, receive count, horário e ação adotada. Nunca registrar payload ou URL
 pré-assinada.
 
+Ao classificar um incidente, diferencie `COMPLETED/SUCCESS`,
+`COMPLETED/WITH_REJECTIONS`, `FAILED` e `REJECTED`. Em `WITH_REJECTIONS`, a
+execução técnica terminou, mas há registros rejeitados; em `FAILED`, a
+contagem final pode ser parcial. Consulte [Requisitos e restrições](requisitos_e_restricoes.md)
+antes de aprovar replay ou reenfileiramento.
+
 ## DLQ de intake ou chunks
 
 1. suspender o event-source mapping se o volume estiver crescendo;

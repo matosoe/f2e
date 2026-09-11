@@ -4,6 +4,11 @@ Esta pasta é o destino obrigatório de todos os artefatos usados para criar, ex
 
 Os scripts shell desta pasta implementam a [operação local](../documentacao/operacao_local.md). A estrutura inclui:
 
+Antes de gerar ou enviar uma massa, valide o caso de uso em
+[Requisitos e restrições](../documentacao/requisitos_e_restricoes.md). As
+automações exercitam o fluxo inbound File-to-Event e não validam Event-to-File,
+SNS como destino, ordenação global ou layouts sem fronteira previsível.
+
 - Docker Compose e inicialização idempotente do LocalStack;
 - scripts Bash para subir e parar o ambiente;
 - `parametros.sh` para definir a quantidade de registros do teste;

@@ -7,6 +7,10 @@ que transforma arquivos versionados no Amazon S3 em eventos de registros no
 Amazon SQS. O foco são responsabilidades, garantias, recuperação, capacidade
 e limites para operadores e consumidores.
 
+Os critérios normativos de elegibilidade, escopo e limites estão em
+[Requisitos e restrições](requisitos_e_restricoes.md). Este blueprint detalha
+as decisões e os trade-offs da implementação atual.
+
 ---
 
 ## 2. Visão arquitetural
@@ -54,6 +58,9 @@ DynamoDB job-ledger -> DynamoDB Streams -> Completion Publisher
 O F2E é responsável por converter uma versão imutável de arquivo em eventos
 rastreáveis. Ele não executa regra de negócio downstream nem garante que cada
 efeito de negócio seja aplicado uma única vez.
+
+O escopo é inbound, File-to-Event. Event-to-File é deliberadamente externo ao
+building block, e SNS não é um destino implementado por esta versão.
 
 ~~~text
 ORIGEM                         F2E                              DESTINO
@@ -356,4 +363,3 @@ Antes de incluir um prefixo, formato ou consumidor, responda:
 - terraform: recursos AWS e módulos por prefixo.
 - [Desenho arquitetural](arquitetura.md): topologia visual.
 - [Operação na AWS](operacao_aws.md) e [runbooks](runbooks.md): operação.
-

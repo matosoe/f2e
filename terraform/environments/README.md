@@ -2,6 +2,10 @@
 
 Ambientes suportados: `local`, `development`, `staging` e `production`.
 
+Antes de provisionar um ambiente para uma nova integração, confirme que o
+caso atende os [requisitos e restrições do F2E](../../documentacao/requisitos_e_restricoes.md),
+incluindo limites de formato, tamanho, ordenação e janela de processamento.
+
 O módulo mantém backend local para permitir o gate LocalStack. Produção deve
 inicializar uma cópia/wrapper corporativo com o conteúdo de
 `backend.tf.example`, habilitando S3 criptografado e lockfile nativo. Bucket,

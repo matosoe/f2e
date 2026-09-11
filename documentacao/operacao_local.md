@@ -4,6 +4,12 @@ Este guia descreve como executar e verificar o F2E localmente. O LocalStack
 simula S3, SQS, Lambda, DynamoDB, IAM e CloudWatch Logs; nenhuma conta AWS é
 necessária.
 
+Antes de enviar uma massa, confirme que ela atende os critérios de formato,
+tamanho, independência e ordenação descritos em
+[Requisitos e restrições](requisitos_e_restricoes.md). O ambiente local valida
+o fluxo File-to-Event atual; não é validação de Event-to-File ou SNS como
+destino.
+
 > Execute os comandos no **Git Bash**, a partir da raiz do repositório. O
 > ambiente é descartável e a subida remove recursos de execuções anteriores.
 

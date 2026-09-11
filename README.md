@@ -4,6 +4,19 @@ O F2E é um framework em Go que transforma arquivos armazenados no Amazon S3 em 
 
 > Este repositório é uma prova de conceito. A arquitetura e a infraestrutura estão prontas para validação local e evolução, mas ainda não foram dimensionadas ou homologadas para produção. Consulte [Uso em produção](#uso-em-produção).
 
+## Escopo, requisitos e restrições
+
+O F2E é um building block **inbound**, exclusivamente para o fluxo
+**File-to-Event**: um arquivo recebido é convertido em eventos de registros
+publicados em SQS. Ele não implementa o fluxo **Event-to-File** e não publica
+em SNS na implementação atual
+
+Antes de adotar a solução, confirme que os registros são independentes, não
+exigem ordenação global e possuem fronteiras determináveis com limites de
+tamanho conhecidos. A janela de processamento deve caber na capacidade e no
+timeout dimensionados para as Lambdas. Veja os critérios completos em
+[Requisitos e restrições](documentacao/requisitos_e_restricoes.md).
+
 ## Como funciona
 
 1. Um arquivo é enviado a um prefixo configurado do S3, que gera uma notificação, ou um sistema publica uma requisição explícita na fila de intake.
@@ -237,6 +250,7 @@ prefixo e carregam a configuração selecionada em cada `ChunkJob`.
 
 ## Documentação
 
+- [Requisitos e restrições](documentacao/requisitos_e_restricoes.md)
 - [Arquitetura](documentacao/arquitetura.md)
 - [Blueprint arquitetural](documentacao/blueprint_arquitetural.md)
 - [Operação local](documentacao/operacao_local.md)

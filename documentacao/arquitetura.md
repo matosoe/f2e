@@ -4,6 +4,11 @@ Este diagrama descreve a implantação AWS criada pelo Terraform. Também é a
 referência do fluxo executado localmente pelo LocalStack; nesse caso, os
 serviços AWS representados são emulados.
 
+> Escopo: este é um building block inbound, de arquivo para eventos SQS. Ele
+> não cobre Event-to-File, SNS como destino, ordenação global ou layouts sem
+> fronteira de registro previsível. Consulte [Requisitos e restrições](requisitos_e_restricoes.md)
+> antes de adotar o fluxo.
+
 ```mermaid
 flowchart LR
     classDef aws fill:#fff7ed,stroke:#d97706,color:#431407
