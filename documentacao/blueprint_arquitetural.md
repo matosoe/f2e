@@ -16,7 +16,8 @@ as decisões e os trade-offs da implementação atual.
 ## 2. Visão arquitetural
 
 O F2E fica entre uma origem baseada em arquivos e consumidores orientados a
-eventos. Ele admite uma versão imutável do arquivo, divide o trabalho em
+eventos. Ele admite uma identidade de arquivo — uma versão imutável quando
+disponível, ou `ETag` condicional —, divide o trabalho em
 chunks, extrai registros e os publica em filas de saída.
 
 ~~~text
@@ -55,8 +56,8 @@ DynamoDB job-ledger -> DynamoDB Streams -> Completion Publisher
 
 ## 3. Limites de responsabilidade
 
-O F2E é responsável por converter uma versão imutável de arquivo em eventos
-rastreáveis. Ele não executa regra de negócio downstream nem garante que cada
+O F2E é responsável por converter uma identidade de arquivo fixada na admissão
+em eventos rastreáveis. Ele não executa regra de negócio downstream nem garante que cada
 efeito de negócio seja aplicado uma única vez.
 
 O escopo é inbound, File-to-Event. Event-to-File é deliberadamente externo ao
@@ -187,7 +188,7 @@ O ledger reduz duplicações técnicas, mas consumidores precisam ser idempotent
 
 | Identificador | Uso |
 |---|---|
-| fileId | Versão física e imutável do arquivo. |
+| fileId | Identidade física do arquivo: versão imutável ou `ETag`/tamanho observados na admissão. |
 | jobId | Execução; muda em um replay explícito. |
 | chunkId | Unidade de processamento dentro do job. |
 | eventId | Deduplicação de retries da mesma execução. |
@@ -333,7 +334,8 @@ O procedimento de atraso do Stream está em
 
 | Decisão | Benefício | Consequência |
 |---|---|---|
-| S3 versionado | Origem imutável | Exige retenção e permissões para versões. |
+| S3 versionado (preferível) | Origem imutável e replay reproduzível | Exige retenção e permissões para versões. |
+| S3 não versionado | Menor exigência para a origem | Usa `ETag` condicional; sobrescrita falha o job e inviabiliza replay do conteúdo original. |
 | SQS Standard | Desacoplamento e escala simples | Duplicatas e ausência de ordenação. |
 | Chunks paralelos | Throughput para arquivos grandes | Ordem entre chunks não é preservada. |
 | Ledger DynamoDB | Auditoria, recuperação e replay | Estado operacional e custo de escrita. |

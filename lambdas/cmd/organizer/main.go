@@ -155,9 +155,6 @@ func jobsFor(ctx context.Context, body []byte, executionID string) ([]f2e.ChunkJ
 	}
 	var jobs []f2e.ChunkJob
 	for _, reference := range references {
-		if reference.VersionID == "" {
-			return nil, fmt.Errorf("S3 notification for s3://%s/%s has no VersionId; immutable admission is required", reference.Bucket, reference.Key)
-		}
 		prefixConfig, configSnapshot, err := configurationResolver.ResolvePrefixConfiguration(ctx, reference.Bucket, reference.Key)
 		if err != nil {
 			return nil, err
@@ -180,13 +177,9 @@ func jobsFor(ctx context.Context, body []byte, executionID string) ([]f2e.ChunkJ
 		configured.Config.EventSchemaID = prefixConfig.EventSchemaID
 		configured.Config.EventSchemaVersion = prefixConfig.EventSchemaVersion
 		configured.Config.EventFormat = prefixConfig.EventFormat
-		versionedStore, ok := configured.Store.(port.VersionedObjectStore)
-		if !ok {
-			return nil, fmt.Errorf("configured object store does not support immutable version reads")
-		}
-		object, err := versionedStore.HeadObject(ctx, f2e.ObjectIdentity{Bucket: reference.Bucket, Key: reference.Key, VersionID: reference.VersionID})
+		object, err := headAdmissionObject(ctx, configured.Store, reference)
 		if err != nil {
-			return nil, fmt.Errorf("head immutable S3 object %s/%s@%s: %w", reference.Bucket, reference.Key, reference.VersionID, err)
+			return nil, err
 		}
 		fileID := f2e.FileID(object)
 		if configured.Ledger != nil {
@@ -240,7 +233,7 @@ func jobsFor(ctx context.Context, body []byte, executionID string) ([]f2e.ChunkJ
 		}
 		request := f2e.OrganizerRequest{SchemaVersion: f2e.SchemaVersion, ExecutionID: fileID, Files: []f2e.FileRequest{{
 			Bucket: reference.Bucket, Key: reference.Key, DataType: prefixConfig.DataType,
-			VersionID:            reference.VersionID,
+			VersionID: object.VersionID, ETag: object.ETag,
 			MaxRecordLengthBytes: prefixConfig.MaxRecordLengthBytes, MultiLineLayout: prefixConfig.MultiLineLayout,
 			JSONArrayLayout: prefixConfig.JSONArrayLayout,
 		}}}
@@ -277,6 +270,31 @@ func jobsFor(ctx context.Context, body []byte, executionID string) ([]f2e.ChunkJ
 		jobs = append(jobs, execution.Jobs...)
 	}
 	return jobs, nil
+}
+
+// headAdmissionObject resolves the object identity used for admission. A
+// versioned notification pins an immutable S3 version; otherwise the current
+// object is admitted with its ETag, which subsequent reads use conditionally.
+func headAdmissionObject(ctx context.Context, store port.ObjectStore, reference f2e.FileReference) (f2e.ObjectIdentity, error) {
+	object := f2e.ObjectIdentity{Bucket: reference.Bucket, Key: reference.Key, VersionID: reference.VersionID}
+	// S3 uses the literal "null" version ID for the mutable current object of
+	// a bucket with versioning suspended; it cannot be treated as immutable.
+	if reference.VersionID == "" || reference.VersionID == "null" {
+		resolved, err := store.Head(ctx, reference.Bucket, reference.Key)
+		if err != nil {
+			return f2e.ObjectIdentity{}, fmt.Errorf("head S3 object %s/%s: %w", reference.Bucket, reference.Key, err)
+		}
+		return resolved, nil
+	}
+	versionedStore, ok := store.(port.VersionedObjectStore)
+	if !ok {
+		return f2e.ObjectIdentity{}, fmt.Errorf("configured object store does not support reads of requested version %q", reference.VersionID)
+	}
+	resolved, err := versionedStore.HeadObject(ctx, object)
+	if err != nil {
+		return f2e.ObjectIdentity{}, fmt.Errorf("head immutable S3 object %s/%s@%s: %w", reference.Bucket, reference.Key, reference.VersionID, err)
+	}
+	return resolved, nil
 }
 
 func singleS3Notification(reference f2e.FileReference) ([]byte, error) {

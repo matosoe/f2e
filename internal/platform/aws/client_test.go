@@ -29,11 +29,19 @@ func TestValidateOutboundMessageLimitsAttributesAndTotalSize(t *testing.T) {
 	for name, message := range map[string]port.OutboundMessage{
 		"reserved name": {Body: `{}`, Attributes: map[string]port.MessageAttribute{"AWS.bad": {DataType: "String", Value: "x"}}},
 		"invalid type":  {Body: `{}`, Attributes: map[string]port.MessageAttribute{"schema": {DataType: "Number", Value: "1"}}},
-		"oversized":     {Body: strings.Repeat("x", 256*1024+1)},
+		"oversized":     {Body: strings.Repeat("x", port.MaxSQSMessageBytes+1)},
 	} {
 		if err := validateOutboundMessage(message); err == nil {
 			t.Errorf("%s: expected validation error", name)
 		}
+	}
+}
+
+func TestSendCompletionRejectsMessageAboveSQSLimit(t *testing.T) {
+	a := AWS{}
+	err := a.SendCompletion(context.Background(), "queue-url", strings.Repeat("x", port.MaxSQSMessageBytes+1))
+	if err == nil || !strings.Contains(err.Error(), "SQS limit") {
+		t.Fatalf("expected SQS size limit error, got %v", err)
 	}
 }
 

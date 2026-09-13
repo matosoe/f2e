@@ -186,7 +186,7 @@ func validateOutboundMessage(message port.OutboundMessage) error {
 		}
 	}
 	if size > port.MaxPhysicalMessageBytes {
-		return fmt.Errorf("message and attributes exceed 250 KiB budget: %d", size)
+		return fmt.Errorf("message and attributes exceed %d byte SQS limit: %d", port.MaxPhysicalMessageBytes, size)
 	}
 	return nil
 }
@@ -200,6 +200,9 @@ func (a *AWS) SendCompletion(ctx context.Context, queueURL string, body string) 
 	}
 	if body == "" {
 		return fmt.Errorf("completion event body is empty")
+	}
+	if len(body) > port.MaxSQSMessageBytes {
+		return fmt.Errorf("completion event exceeds %d byte SQS limit: %d", port.MaxSQSMessageBytes, len(body))
 	}
 	_, err := a.SQS.SendMessage(ctx, &sqs.SendMessageInput{
 		QueueUrl:    &queueURL,

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/f2e/f2e/internal/application/organizer"
 	"github.com/f2e/f2e/internal/application/port"
@@ -32,6 +33,30 @@ func (s closeErrorStore) OpenChunkRange(_ context.Context, _ f2e.ChunkJob, _, _ 
 }
 
 type queue struct{ batches [][]string }
+
+type failureLedger struct {
+	port.JobLedger
+	failures []f2e.ChunkResult
+}
+
+func (l *failureLedger) FailChunk(_ context.Context, result f2e.ChunkResult) error {
+	l.failures = append(l.failures, result)
+	return nil
+}
+
+type shutdownLedger struct {
+	port.JobLedger
+	failures          []f2e.ChunkResult
+	failureContextErr error
+}
+
+func (l *shutdownLedger) StartChunk(context.Context, string, string, int) error { return nil }
+
+func (l *shutdownLedger) FailChunk(ctx context.Context, result f2e.ChunkResult) error {
+	l.failureContextErr = ctx.Err()
+	l.failures = append(l.failures, result)
+	return nil
+}
 
 func (q *queue) Send(_ context.Context, _ string, messages []port.OutboundMessage) ([]int, error) {
 	bodies := make([]string, len(messages))
@@ -242,9 +267,46 @@ func TestLegacyDataTypesAreRejected(t *testing.T) {
 		job := f2e.ChunkJob{SchemaVersion: f2e.SchemaVersion, FileID: "f", JobID: "j", ChunkID: "00000001", Bucket: "b", Key: "k", StartByte: 0, EndByteInclusive: 3, DataType: dataType}
 		body, _ := json.Marshal(job)
 		err := (Service{Resolver: store{"aaa\n"}, Queue: &queue{}, Config: config.Config{OutputQueueURL: "out", EventSchemaID: "s", EventSchemaVersion: "1", EventFormat: "json"}}).Process(context.Background(), body)
-		if err == nil || !strings.Contains(err.Error(), "unsupported data type") {
+		if err == nil || !strings.Contains(err.Error(), "tipo de dado não suportado") {
 			t.Fatalf("dataType=%q err=%v", dataType, err)
 		}
+	}
+}
+
+func TestProcessAttemptStoresClearReasonInLedger(t *testing.T) {
+	ledger := &failureLedger{}
+	job := f2e.ChunkJob{SchemaVersion: f2e.SchemaVersion, FileID: "f", JobID: "j", ChunkID: "1", Bucket: "b", Key: "k", StartByte: 0, EndByteInclusive: 9, DataType: f2e.DataTypeText, MaxRecordLengthBytes: 4}
+	body, _ := json.Marshal(job)
+
+	err := (Service{Resolver: store{""}, Queue: &queue{}, Ledger: ledger, Config: config.Config{MaxChunkBytes: 5}}).ProcessAttempt(context.Background(), body, 1)
+	if err == nil {
+		t.Fatal("expected chunk size validation error")
+	}
+	if len(ledger.failures) != 1 || !strings.Contains(ledger.failures[0].Error, "o chunk possui 10 bytes e excede o limite configurado de 5 bytes") {
+		t.Fatalf("ledger failures=%+v", ledger.failures)
+	}
+}
+
+func TestProcessAttemptStopsOutputAndMarksChunkIncompleteWhenDeadlineExpires(t *testing.T) {
+	ledger := &shutdownLedger{}
+	q := &queue{}
+	job := f2e.ChunkJob{SchemaVersion: f2e.SchemaVersion, FileID: "f", JobID: "j", ChunkID: "1", Bucket: "b", Key: "k", StartByte: 0, EndByteInclusive: 3, DataType: f2e.DataTypeText, MaxRecordLengthBytes: 4}
+	body, _ := json.Marshal(job)
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+
+	err := (Service{Resolver: store{"aaa\n"}, Queue: q, Ledger: ledger, Config: config.Config{BatchSize: 1, OutputQueueURL: "out", EventSchemaID: "s", EventSchemaVersion: "1", EventFormat: "json"}}).ProcessAttempt(ctx, body, 1)
+	if !errors.Is(err, ErrLambdaExecutionLimitExceeded) {
+		t.Fatalf("err=%v, want execution-limit error", err)
+	}
+	if len(q.batches) != 0 {
+		t.Fatalf("output was sent after deadline: %+v", q.batches)
+	}
+	if len(ledger.failures) != 1 || !strings.Contains(ledger.failures[0].Error, ErrLambdaExecutionLimitExceeded.Error()) {
+		t.Fatalf("ledger failures=%+v", ledger.failures)
+	}
+	if ledger.failureContextErr != nil {
+		t.Fatalf("failure ledger received cancelled context: %v", ledger.failureContextErr)
 	}
 }
 
@@ -286,8 +348,8 @@ func TestTextBoundariesWithoutFinalLFAndWithCRLF(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected error for record exceeding max bytes, got nil")
 		}
-		if !strings.Contains(err.Error(), "exceeds maximum") {
-			t.Fatalf("expected 'exceeds maximum' in error, got: %v", err)
+		if !strings.Contains(err.Error(), "um dos registros excede o limite configurado") {
+			t.Fatalf("expected clear record-limit error, got: %v", err)
 		}
 	})
 }
@@ -365,7 +427,7 @@ func TestNominalTextChunkFailsBeforePublishingWhenBoundaryExceedsNineTimesLimit(
 	job := f2e.ChunkJob{SchemaVersion: f2e.SchemaVersion, FileID: "f", JobID: "j", ChunkID: "1", Bucket: "b", Key: "k", StartByte: 50, EndByteInclusive: int64(len(data) - 1), FileSize: int64(len(data)), MaxRecordLengthBytes: 10, DataType: f2e.DataTypeText}
 	body, _ := json.Marshal(job)
 	err := (Service{Resolver: rangedStore{data}, Queue: q, Config: config.Config{OutputQueueURL: "out", EventSchemaID: "s", EventSchemaVersion: "1", EventFormat: "json"}}).Process(context.Background(), body)
-	if err == nil || !strings.Contains(err.Error(), "data contract error") {
+	if err == nil || !strings.Contains(err.Error(), "não foi localizada uma quebra de registro") {
 		t.Fatalf("err=%v", err)
 	}
 	if len(q.batches) != 0 {

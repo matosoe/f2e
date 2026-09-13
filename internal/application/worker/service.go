@@ -29,6 +29,11 @@ type Service struct {
 	Config    config.Config
 }
 
+// ErrLambdaExecutionLimitExceeded identifies work deliberately stopped before
+// the Lambda runtime can terminate the invocation. Callers use this to record
+// an incomplete chunk with a reason that is actionable in the ledger.
+var ErrLambdaExecutionLimitExceeded = errors.New("excedeu o limite de execução da lambda")
+
 // ChunkProcessingResult contains metrics from processing a chunk
 type ChunkProcessingResult struct {
 	JobID                string
@@ -54,9 +59,25 @@ func (s Service) Process(ctx context.Context, body []byte) error {
 func (s Service) ProcessAttempt(ctx context.Context, body []byte, attempt int) error {
 	result, err := s.processWithMetrics(ctx, body, attempt)
 	if err != nil && s.Ledger != nil {
+		// The worker uses a deadline slightly before the Lambda deadline. Do not
+		// reuse that cancelled context to write the terminal/retry state: this
+		// write is precisely what makes the shutdown graceful.
+		if errors.Is(err, context.DeadlineExceeded) {
+			err = fmt.Errorf("%w: %v", ErrLambdaExecutionLimitExceeded, err)
+		}
 		var job f2e.ChunkJob
 		if json.Unmarshal(body, &job) == nil && job.JobID != "" {
-			_ = s.Ledger.FailChunk(ctx, f2e.ChunkResult{JobID: job.JobID, ChunkID: job.ChunkID, Attempt: attempt, Error: err.Error(), OccurredAt: time.Now().UTC()})
+			failureCtx := ctx
+			var cancel context.CancelFunc
+			if ctx.Err() != nil {
+				// Preserve request values (for tracing) but detach cancellation and
+				// bound the final ledger write so it fits in the reserved margin.
+				failureCtx, cancel = context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+				defer cancel()
+			}
+			if failErr := s.Ledger.FailChunk(failureCtx, f2e.ChunkResult{JobID: job.JobID, ChunkID: job.ChunkID, Attempt: attempt, Error: err.Error(), OccurredAt: time.Now().UTC()}); failErr != nil {
+				slog.Error("could not mark incomplete chunk", "service", "worker", "jobId", job.JobID, "chunkId", job.ChunkID, "error", failErr)
+			}
 		}
 	}
 	if err == nil && result != nil {
@@ -229,7 +250,7 @@ func hasLineTerminator(data []byte) bool {
 }
 
 func boundaryError(j f2e.ChunkJob, side string, offset, searched int64) error {
-	return fmt.Errorf("data contract error: jobId=%s chunkId=%s boundary=%s nominalOffset=%d maxRecordLengthBytes=%d bytesSearched=%d; record exceeds 9x declared maximum", j.JobID, j.ChunkID, side, offset, j.MaxRecordLengthBytes, searched)
+	return fmt.Errorf("não foi localizada uma quebra de registro na fronteira %s (byte %d) após buscar %d bytes; um dos registros pode ser maior que o limite configurado de %d bytes", side, offset, searched, j.MaxRecordLengthBytes)
 }
 
 // logChunkSummary logs the chunk processing summary
@@ -238,26 +259,26 @@ func logChunkSummary(result *ChunkProcessingResult) {
 }
 func (s Service) valid(j f2e.ChunkJob) error {
 	if j.SchemaVersion != f2e.SchemaVersion || j.Bucket == "" || j.Key == "" || j.EndByteInclusive < j.StartByte {
-		return fmt.Errorf("invalid chunk job")
+		return fmt.Errorf("dados do chunk inválidos: versão, origem ou intervalo de bytes inconsistente")
 	}
 	maxChunkBytes := s.Config.MaxChunkBytes
 	if maxChunkBytes == 0 {
 		maxChunkBytes = 64 * 1024 * 1024
 	}
 	if j.EndByteInclusive-j.StartByte+1 > maxChunkBytes {
-		return fmt.Errorf("chunk exceeds maximum %d bytes", maxChunkBytes)
+		return fmt.Errorf("o chunk possui %d bytes e excede o limite configurado de %d bytes", j.EndByteInclusive-j.StartByte+1, maxChunkBytes)
 	}
 	if j.DataType != f2e.DataTypeText && j.DataType != f2e.DataTypeMultiLine && j.DataType != f2e.DataTypeJSON {
-		return fmt.Errorf("unsupported data type %q", j.DataType)
+		return fmt.Errorf("tipo de dado não suportado no chunk: %q", j.DataType)
 	}
 	if j.MaxRecordLengthBytes > 0 && (j.TrailingPaddingBytes < 0 || j.TrailingPaddingBytes > j.MaxRecordLengthBytes || j.EndByteInclusive-j.StartByte+1 < j.TrailingPaddingBytes) {
-		return fmt.Errorf("invalid variable-record chunk job")
+		return fmt.Errorf("dados do chunk com registros de tamanho variável inválidos: padding ou limite de registro inconsistente")
 	}
 	if j.DataType == f2e.DataTypeMultiLine && j.MultiLineLayout.BreakMarker == "" {
-		return fmt.Errorf("multi-line chunk job missing breakMarker")
+		return fmt.Errorf("configuração do chunk multi-linha inválida: quebra de registro (breakMarker) não informada")
 	}
 	if j.DataType == f2e.DataTypeJSON && j.JSONArrayLayout.MaxBytesPerElement < 1 {
-		return fmt.Errorf("json array chunk job missing maxBytesPerElement")
+		return fmt.Errorf("configuração do chunk JSON inválida: limite máximo por elemento não informado")
 	}
 	return nil
 }

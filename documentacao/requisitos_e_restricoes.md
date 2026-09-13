@@ -8,9 +8,9 @@ O F2E resolve exclusivamente o fluxo inbound File-to-Event:
 Arquivo recebido -> eventos de registros em SQS
 ~~~
 
-A entrada normal é um objeto versionado no Amazon S3. Uma integração também pode
-enviar uma requisição explícita para a fila de intake, desde que forneça o
-contrato necessário.
+A entrada normal é um objeto no Amazon S3, versionado ou não. Uma integração
+também pode enviar uma requisição explícita para a fila de intake, desde que
+forneça o contrato necessário.
 
 O F2E não implementa o fluxo outbound Event-to-File:
 
@@ -73,9 +73,13 @@ sem fronteira previsível, dividir o arquivo pode corromper o registro lógico.
 
 ### S3
 
-- A origem é um bucket S3 com versionamento habilitado.
-- O Organizer fixa bucket, key e VersionId antes de planejar o job.
-- A retenção das versões precisa cobrir a janela de retry e replay.
+- O bucket pode ter versionamento habilitado ou não. Com versionamento, o
+  Organizer fixa bucket, key e `VersionId` antes de planejar o job e a retenção
+  das versões deve cobrir a janela de retry e replay.
+- Sem versionamento (ou com versionamento suspenso e `VersionId` `null`), o
+  Organizer registra `ETag` e tamanho na admissão e usa leituras condicionais
+  por `ETag`. Se o objeto for sobrescrito ou removido, o job falha e exige nova
+  ingestão; retry e replay do conteúdo original não são garantidos.
 - Notificações S3 apenas iniciam o fluxo; não são confirmação de processamento
   completo.
 
@@ -168,7 +172,8 @@ Antes de adotar o building block, confirme:
 5. A janela de processamento cabe na capacidade dimensionada de Lambda e SQS.
 6. O consumidor é idempotente e suporta o contrato de saída escolhido.
 7. Há responsável por alarmes, DLQs, retenção e autorização.
-8. O replay é seguro para os efeitos de negócio e a versão do S3 será retida.
+8. O replay é seguro para os efeitos de negócio; se ele for obrigatório, a
+   versão do S3 deve ser retida.
 
 ## 8. Referências
 
@@ -177,4 +182,3 @@ Antes de adotar o building block, confirme:
 - [Operação local](operacao_local.md)
 - [Operação na AWS](operacao_aws.md)
 - [Runbooks](runbooks.md)
-

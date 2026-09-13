@@ -1,6 +1,11 @@
 package config
 
-import "testing"
+import (
+	"strconv"
+	"testing"
+
+	"github.com/f2e/f2e/internal/application/port"
+)
 
 func TestLoadRejectsInvalidNumericConfiguration(t *testing.T) {
 	t.Setenv("F2E_BATCH_SIZE", "11")
@@ -19,5 +24,16 @@ func TestLoadUsesSafeDefaults(t *testing.T) {
 	}
 	if c.BatchSize != 10 || c.MaxEventBytes != 256*1024 || c.MaxReceiveCount != 3 || c.JSONArraySearchBytes != 1024*1024 || c.LedgerRetentionDays != 90 || c.MaxFileBytes != 10*1024*1024*1024 || c.MaxChunkBytes != 64*1024*1024 {
 		t.Fatalf("unexpected defaults: %+v", c)
+	}
+}
+
+func TestLoadCapsMaxEventBytesAtSQSLimit(t *testing.T) {
+	t.Setenv("F2E_MAX_EVENT_BYTES", strconv.Itoa(port.MaxSQSMessageBytes))
+	if _, err := Load(); err != nil {
+		t.Fatalf("SQS maximum should be accepted: %v", err)
+	}
+	t.Setenv("F2E_MAX_EVENT_BYTES", strconv.Itoa(port.MaxSQSMessageBytes+1))
+	if _, err := Load(); err == nil {
+		t.Fatal("value above the SQS maximum should be rejected")
 	}
 }

@@ -5,6 +5,7 @@ resource "aws_sqs_queue" "file_intake_dlq" {
   visibility_timeout_seconds = var.sqs_visibility_timeout
   receive_wait_time_seconds  = 1
   message_retention_seconds  = var.sqs_dlq_retention_seconds
+  max_message_size           = local.sqs_max_message_bytes
   sqs_managed_sse_enabled    = var.kms_key_arn == "" ? true : null
   kms_master_key_id          = var.kms_key_arn != "" ? var.kms_key_arn : null
   tags                       = local.tags
@@ -15,6 +16,7 @@ resource "aws_sqs_queue" "chunk_jobs_dlq" {
   visibility_timeout_seconds = var.sqs_visibility_timeout
   receive_wait_time_seconds  = 1
   message_retention_seconds  = var.sqs_dlq_retention_seconds
+  max_message_size           = local.sqs_max_message_bytes
   sqs_managed_sse_enabled    = var.kms_key_arn == "" ? true : null
   kms_master_key_id          = var.kms_key_arn != "" ? var.kms_key_arn : null
   tags                       = local.tags
@@ -27,7 +29,7 @@ resource "aws_sqs_queue" "file_intake" {
   visibility_timeout_seconds = var.sqs_visibility_timeout
   receive_wait_time_seconds  = 1
   message_retention_seconds  = var.sqs_retention_seconds
-  max_message_size           = 262144
+  max_message_size           = local.sqs_max_message_bytes
   sqs_managed_sse_enabled    = var.kms_key_arn == "" ? true : null
   kms_master_key_id          = var.kms_key_arn != "" ? var.kms_key_arn : null
   redrive_policy = jsonencode({
@@ -42,7 +44,7 @@ resource "aws_sqs_queue" "chunk_jobs" {
   visibility_timeout_seconds = var.sqs_visibility_timeout
   receive_wait_time_seconds  = 1
   message_retention_seconds  = var.sqs_retention_seconds
-  max_message_size           = 262144
+  max_message_size           = local.sqs_max_message_bytes
   sqs_managed_sse_enabled    = var.kms_key_arn == "" ? true : null
   kms_master_key_id          = var.kms_key_arn != "" ? var.kms_key_arn : null
   redrive_policy = jsonencode({
@@ -57,7 +59,7 @@ resource "aws_sqs_queue" "output_events" {
   visibility_timeout_seconds = var.sqs_visibility_timeout
   receive_wait_time_seconds  = 1
   message_retention_seconds  = var.sqs_retention_seconds
-  max_message_size           = var.f2e_max_event_bytes
+  max_message_size           = min(var.f2e_max_event_bytes, local.sqs_max_message_bytes)
   sqs_managed_sse_enabled    = var.kms_key_arn == "" ? true : null
   kms_master_key_id          = var.kms_key_arn != "" ? var.kms_key_arn : null
   tags                       = local.tags
@@ -172,6 +174,7 @@ resource "aws_sqs_queue" "completion_events_dlq" {
   visibility_timeout_seconds = var.sqs_visibility_timeout
   receive_wait_time_seconds  = 1
   message_retention_seconds  = var.sqs_dlq_retention_seconds
+  max_message_size           = local.sqs_max_message_bytes
   sqs_managed_sse_enabled    = var.kms_key_arn == "" ? true : null
   kms_master_key_id          = var.kms_key_arn != "" ? var.kms_key_arn : null
   tags                       = local.tags
@@ -182,7 +185,7 @@ resource "aws_sqs_queue" "completion_events" {
   visibility_timeout_seconds = var.sqs_visibility_timeout
   receive_wait_time_seconds  = 1
   message_retention_seconds  = var.sqs_retention_seconds
-  max_message_size           = 262144
+  max_message_size           = local.sqs_max_message_bytes
   sqs_managed_sse_enabled    = var.kms_key_arn == "" ? true : null
   kms_master_key_id          = var.kms_key_arn != "" ? var.kms_key_arn : null
   redrive_policy = jsonencode({

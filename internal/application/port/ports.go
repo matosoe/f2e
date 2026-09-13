@@ -46,10 +46,12 @@ type OutboundMessage struct {
 }
 
 const (
-	// SQS accepts 256 KiB, but F2E deliberately reserves headroom for the
-	// request encoding and broker metadata.
-	MaxPhysicalMessageBytes   = 250 * 1024
-	MaxMultiMessageBatchBytes = 240 * 1024
+	// MaxSQSMessageBytes is the AWS hard limit for an individual message and
+	// the total payload of a SendMessageBatch request: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/APIReference/API_SendMessageBatch.html
+	MaxSQSMessageBytes = 1024 * 1024
+
+	MaxPhysicalMessageBytes   = MaxSQSMessageBytes
+	MaxMultiMessageBatchBytes = MaxSQSMessageBytes
 	MaxMessagesPerBatch       = 10
 )
 

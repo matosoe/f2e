@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+
+	"github.com/f2e/f2e/internal/application/port"
 )
 
 type Config struct {
@@ -66,7 +68,7 @@ func Load() (Config, error) {
 	if c.PublishConcurrency, err = integer("F2E_PUBLISH_CONCURRENCY", 1); err != nil {
 		return c, err
 	}
-	if c.RecordsPerChunk < 1 || c.BatchSize < 1 || c.BatchSize > 10 || c.MaxReceiveCount < 1 || c.LedgerRetentionDays < 1 || c.MaxEventBytes < 1024 || c.MaxEventBytes > 256*1024 || c.JSONArraySearchBytes < 1024 || c.JSONArraySearchBytes > 16*1024*1024 || c.MaxChunkBytes < 1024 || c.MaxFileBytes < c.MaxChunkBytes || (c.TargetChunkBytes != 0 && (c.TargetChunkBytes < 5*1024*1024 || c.TargetChunkBytes > 100*1024*1024 || c.TargetChunkBytes > c.MaxChunkBytes)) {
+	if c.RecordsPerChunk < 1 || c.BatchSize < 1 || c.BatchSize > 10 || c.MaxReceiveCount < 1 || c.LedgerRetentionDays < 1 || c.MaxEventBytes < 1024 || c.MaxEventBytes > port.MaxSQSMessageBytes || c.JSONArraySearchBytes < 1024 || c.JSONArraySearchBytes > 16*1024*1024 || c.MaxChunkBytes < 1024 || c.MaxFileBytes < c.MaxChunkBytes || (c.TargetChunkBytes != 0 && (c.TargetChunkBytes < 5*1024*1024 || c.TargetChunkBytes > 100*1024*1024 || c.TargetChunkBytes > c.MaxChunkBytes)) {
 		return c, fmt.Errorf("invalid F2E numeric configuration")
 	}
 	if c.PublishConcurrency < 1 {

@@ -20,6 +20,11 @@ import (
 
 var service worker.Service
 
+const (
+	lambdaMaximumExecution = 15 * time.Minute
+	shutdownReservation    = 5 * time.Second
+)
+
 func init() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 	ctx := context.Background()
@@ -39,6 +44,19 @@ func init() {
 	}
 }
 func handler(ctx context.Context, e events.SQSEvent) (events.SQSEventResponse, error) {
+	// Stop processing early enough to cancel S3/SQS work and persist the
+	// incomplete chunk before Lambda's hard timeout. Honour a shorter runtime
+	// deadline too (as used by lower environments and tests).
+	shutdownAt := time.Now().Add(lambdaMaximumExecution - shutdownReservation)
+	if deadline, ok := ctx.Deadline(); ok {
+		deadline = deadline.Add(-shutdownReservation)
+		if deadline.Before(shutdownAt) {
+			shutdownAt = deadline
+		}
+	}
+	ctx, cancel := context.WithDeadline(ctx, shutdownAt)
+	defer cancel()
+
 	started := time.Now()
 	startUserCPU, startSystemCPU, cpuAvailable := processmetrics.CPUTime()
 	var gcBefore runtime.MemStats

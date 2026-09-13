@@ -26,7 +26,9 @@ Repetir somente os itens falhos, preservando IDs. Não republicar o arquivo.
 ## Job sem progresso
 
 Consultar chunks `PENDING`, `RUNNING` e `FAILED`, idade da mensagem e concorrência
-Lambda. Chunks presos devem ser reprocessados pela referência imutável registrada.
+Lambda. Chunks presos devem ser reprocessados pela referência registrada: uma
+versão imutável quando houver `VersionId`, ou uma leitura condicional por `ETag`
+em bucket não versionado.
 
 ## Objeto alterado, removido ou URL expirada
 
@@ -36,8 +38,10 @@ exige nova ingestão autorizada; a credencial antiga nunca entra no ledger.
 
 ## Replay
 
-Replay cria novo `jobId` e `eventId`, preservando `fileId`, `sourceRecordId` e a
-versão física. Registrar solicitante, motivo, horário, escopo e resultado.
+Replay cria novo `jobId` e `eventId`, preservando `fileId` e `sourceRecordId`.
+Em bucket não versionado, só o execute se o objeto ainda corresponder ao `ETag`
+registrado; caso contrário, faça nova ingestão. Registrar solicitante, motivo,
+horário, escopo e resultado.
 
 ## Suspensão emergencial
 

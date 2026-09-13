@@ -4,13 +4,14 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/f2e/f2e/internal/application/port"
 	"github.com/f2e/f2e/internal/domain/f2e"
 )
 
 // ValidateGlobalLimits checks that the global limits are within acceptable bounds.
 func ValidateGlobalLimits(limits f2e.GlobalLimits) error {
 	if limits.MaxFileBytes < 1024 || limits.MaxChunkBytes < 1024 || limits.MaxFileBytes < limits.MaxChunkBytes ||
-		limits.MaxEventBytes < 1024 || limits.MaxEventBytes > 256*1024 || limits.MaxBatchSize < 1 || limits.MaxBatchSize > 10 ||
+		limits.MaxEventBytes < 1024 || limits.MaxEventBytes > port.MaxSQSMessageBytes || limits.MaxBatchSize < 1 || limits.MaxBatchSize > 10 ||
 		limits.MaxJSONArraySearchBytes < 1024 || limits.MaxJSONArraySearchBytes > 16*1024*1024 {
 		return fmt.Errorf("invalid numeric global limits")
 	}
@@ -32,7 +33,7 @@ func ValidatePrefixConfiguration(c f2e.PrefixConfiguration, limits f2e.GlobalLim
 	}
 	typeLimits, knownType := limits.InputTypes[c.DataType]
 	if c.RecordsPerChunk < 1 || c.BatchSize < 1 || c.BatchSize > 10 ||
-		c.MaxEventBytes < 1024 || c.MaxEventBytes > 256*1024 || c.MaxChunkBytes < 1024 ||
+		c.MaxEventBytes < 1024 || c.MaxEventBytes > port.MaxSQSMessageBytes || c.MaxChunkBytes < 1024 ||
 		c.MaxFileBytes < c.MaxChunkBytes || c.JSONArraySearchBytes < 1024 || c.JSONArraySearchBytes > 16*1024*1024 ||
 		c.EventSchemaID == "" || c.EventSchemaVersion == "" || c.EventFormat == "" {
 		return fmt.Errorf("invalid SSM configuration for s3://%s/%s", c.Bucket, c.Prefix)

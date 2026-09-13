@@ -548,16 +548,16 @@ func (a *AWS) advanceJob(ctx context.Context, jobID string, from []f2e.JobStatus
 }
 
 // Admit binds a receipt to a job item in the RECEIVED state. jobId is the
-// immutable fileId, so a different SQS receipt for the same physical version
-// links to the existing normal execution rather than creating a duplicate.
-// rather than creating a duplicate. It returns Acquired on first write,
+// fileId, so a different SQS receipt for the same physical object identity
+// links to the existing normal execution rather than creating a duplicate. It
+// returns Acquired on first write,
 // AlreadyCompleted if the job is terminal, or Busy if another execution owns it.
 func (a *AWS) Admit(ctx context.Context, receipt f2e.Receipt) (f2e.AcquisitionResult, error) {
 	if a.LedgerTable == "" {
 		return f2e.Busy, fmt.Errorf("ledger table is not configured")
 	}
-	if receipt.ReceiptID == "" || receipt.FileID == "" || receipt.Source.VersionID == "" {
-		return f2e.Busy, fmt.Errorf("receiptId, fileId and source versionId are required for admission")
+	if receipt.ReceiptID == "" || receipt.FileID == "" {
+		return f2e.Busy, fmt.Errorf("receiptId and fileId are required for admission")
 	}
 	jobID := receipt.FileID
 	now := time.Now().UTC().Format(time.RFC3339Nano)

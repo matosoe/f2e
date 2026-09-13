@@ -165,6 +165,11 @@ variable "max_event_bytes" {
   description = "Maximum SQS message size (bytes) for the output queue."
   type        = number
   default     = 262144
+  # AWS SQS hard limit: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/APIReference/API_SendMessageBatch.html
+  validation {
+    condition     = var.max_event_bytes >= 1024 && var.max_event_bytes <= 1024 * 1024
+    error_message = "Maximum SQS message size must be between 1 KiB and 1 MiB."
+  }
 }
 
 variable "allowed_source_arns" {

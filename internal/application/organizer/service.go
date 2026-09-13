@@ -53,6 +53,9 @@ func (s Service) Plan(ctx context.Context, request f2e.OrganizerRequest) ([]f2e.
 		if e != nil {
 			return nil, fmt.Errorf("head %s/%s: %w", file.Bucket, file.Key, e)
 		}
+		if file.ETag != "" && object.ETag != file.ETag {
+			return nil, fmt.Errorf("object %s/%s changed after admission", file.Bucket, file.Key)
+		}
 		size, etag, versionID := object.Size, object.ETag, object.VersionID
 		maxFileBytes := s.Config.MaxFileBytes
 		if maxFileBytes == 0 {

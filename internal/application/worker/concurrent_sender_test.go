@@ -17,7 +17,8 @@ import (
 
 func TestSplitSendBatchesHonorsSQSByteAndEntryBudgets(t *testing.T) {
 	// Multibyte bytes and attributes both participate in the budget.
-	large := port.OutboundMessage{Body: strings.Repeat("界", 81_900), Attributes: map[string]port.MessageAttribute{"ação": {DataType: "String", Value: "✓"}}}
+	large := port.OutboundMessage{Body: "界", Attributes: map[string]port.MessageAttribute{"ação": {DataType: "String", Value: "✓"}}}
+	large.Body += strings.Repeat("x", port.MaxMultiMessageBatchBytes-port.OutboundMessageSize(large))
 	small := port.OutboundMessage{Body: "x"}
 	batches := splitSendBatches(append([]port.OutboundMessage{large, small}, make([]port.OutboundMessage, 10)...))
 	for _, batch := range batches {

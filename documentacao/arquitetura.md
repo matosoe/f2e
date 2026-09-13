@@ -25,7 +25,7 @@ flowchart LR
 
     subgraph AWS[Ambiente AWS / LocalStack]
         direction LR
-        s3[(S3: bucket de entrada<br/>versionamento habilitado)]:::aws
+        s3[(S3: bucket de entrada<br/>versionado ou com ETag condicional)]:::aws
         intake[[SQS: file-intake]]:::queue
         organizer[Lambda Organizer<br/>admissão e planejamento]:::compute
         ssm[(SSM Parameter Store<br/>limites globais e configuração por prefixo)]:::data
@@ -56,7 +56,7 @@ flowchart LR
     s3 -->|ObjectCreated por prefixo| intake
     intake -->|evento SQS; falhas parciais de lote| organizer
     organizer <-->|resolve a configuração<br/>pela maior correspondência de prefixo| ssm
-    organizer -->|HeadObject da versão imutável| s3
+    organizer -->|HeadObject da versão ou ETag atual| s3
     organizer <-->|admite job, reserva quota,<br/>grava plano e estados| ledger
     organizer -->|ChunkJob com snapshot<br/>da configuração| chunks
     chunks -->|evento SQS| worker

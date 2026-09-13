@@ -8,7 +8,9 @@
 # SSM PrefixConfiguration.outputQueueURL field (set outside this module).
 
 locals {
-  name_prefix = "${var.resource_prefix}-${var.environment}-${var.prefix_id}"
+  # AWS SQS hard limit: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/APIReference/API_SendMessageBatch.html
+  sqs_max_message_bytes = 1024 * 1024
+  name_prefix           = "${var.resource_prefix}-${var.environment}-${var.prefix_id}"
 }
 
 # ── Exclusive chunk queue and output queue ───────────────────────────────────
@@ -18,6 +20,7 @@ resource "aws_sqs_queue" "chunk_dlq" {
   visibility_timeout_seconds = var.sqs_visibility_timeout
   receive_wait_time_seconds  = 1
   message_retention_seconds  = var.sqs_dlq_retention_seconds
+  max_message_size           = local.sqs_max_message_bytes
   sqs_managed_sse_enabled    = var.kms_key_arn == "" ? true : null
   kms_master_key_id          = var.kms_key_arn != "" ? var.kms_key_arn : null
   tags                       = var.tags
@@ -28,7 +31,7 @@ resource "aws_sqs_queue" "chunk" {
   visibility_timeout_seconds = var.sqs_visibility_timeout
   receive_wait_time_seconds  = 1
   message_retention_seconds  = var.sqs_retention_seconds
-  max_message_size           = 262144
+  max_message_size           = local.sqs_max_message_bytes
   sqs_managed_sse_enabled    = var.kms_key_arn == "" ? true : null
   kms_master_key_id          = var.kms_key_arn != "" ? var.kms_key_arn : null
   redrive_policy = jsonencode({
@@ -48,6 +51,7 @@ resource "aws_sqs_queue" "output_dlq" {
   visibility_timeout_seconds = var.sqs_visibility_timeout
   receive_wait_time_seconds  = 1
   message_retention_seconds  = var.sqs_dlq_retention_seconds
+  max_message_size           = local.sqs_max_message_bytes
   sqs_managed_sse_enabled    = var.kms_key_arn == "" ? true : null
   kms_master_key_id          = var.kms_key_arn != "" ? var.kms_key_arn : null
   tags                       = var.tags
@@ -58,7 +62,7 @@ resource "aws_sqs_queue" "output" {
   visibility_timeout_seconds = var.sqs_visibility_timeout
   receive_wait_time_seconds  = 1
   message_retention_seconds  = var.sqs_retention_seconds
-  max_message_size           = var.max_event_bytes
+  max_message_size           = min(var.max_event_bytes, local.sqs_max_message_bytes)
   sqs_managed_sse_enabled    = var.kms_key_arn == "" ? true : null
   kms_master_key_id          = var.kms_key_arn != "" ? var.kms_key_arn : null
   redrive_policy = jsonencode({

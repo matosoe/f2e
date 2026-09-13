@@ -42,6 +42,20 @@ func TestPlanPreservesJobForSameIntakeOccurrence(t *testing.T) {
 	}
 }
 
+func TestPlanRejectsObjectChangedAfterNonVersionedAdmission(t *testing.T) {
+	s := Service{Store: rangeStore{"aaa\n"}, Config: config.Config{RecordsPerChunk: 10}}
+	_, err := s.Plan(context.Background(), f2e.OrganizerRequest{
+		SchemaVersion: f2e.SchemaVersion,
+		Files: []f2e.FileRequest{{
+			Bucket: "b", Key: "k", DataType: f2e.DataTypeText,
+			MaxRecordLengthBytes: 4, ETag: "etag-at-admission",
+		}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "changed after admission") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
 func TestPlanCarriesFormatAndLayoutToWorkerJob(t *testing.T) {
 	s := Service{Store: rangeStore{`{"items":[{"a":1}]}`}, Config: config.Config{RecordsPerChunk: 10}}
 	layout := f2e.JSONArrayLayout{ArrayPath: "items", MaxBytesPerElement: 16}

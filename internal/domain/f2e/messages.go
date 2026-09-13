@@ -71,6 +71,7 @@ type FileRequest struct {
 	Bucket               string           `json:"bucket"`
 	Key                  string           `json:"key"`
 	VersionID            string           `json:"versionId,omitempty"`
+	ETag                 string           `json:"etag,omitempty"`
 	PresignedURL         string           `json:"presignedUrl,omitempty"`
 	DataType             DataType         `json:"dataType"`
 	MaxRecordLengthBytes int64            `json:"maxRecordLengthBytes,omitempty"`

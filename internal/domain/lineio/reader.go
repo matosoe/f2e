@@ -111,7 +111,7 @@ func ReadLines(
 
 		default:
 			if int64(len(buf)) >= maxLineBytes {
-				return fmt.Errorf("lineio: line starting at byte offset %d exceeds maximum %d bytes", lineStart, maxLineBytes)
+				return fmt.Errorf("um dos registros excede o limite configurado de %d bytes (início no byte %d)", maxLineBytes, lineStart)
 			}
 			buf = append(buf, b)
 		}

@@ -1,5 +1,7 @@
 locals {
-  is_localstack = var.localstack_endpoint != ""
+  # AWS SQS hard limit: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/APIReference/API_SendMessageBatch.html
+  sqs_max_message_bytes = 1024 * 1024
+  is_localstack         = var.localstack_endpoint != ""
 
   organizer_zip            = "${path.module}/${var.lambda_zip_dir}/organizer.zip"
   worker_zip               = "${path.module}/${var.lambda_zip_dir}/worker.zip"

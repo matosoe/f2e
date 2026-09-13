@@ -167,9 +167,10 @@ variable "sqs_max_receive_count" {
 variable "f2e_max_event_bytes" {
   type    = number
   default = 262144
+  # AWS SQS hard limit: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/APIReference/API_SendMessageBatch.html
   validation {
-    condition     = var.f2e_max_event_bytes >= 1024 && var.f2e_max_event_bytes <= 262144
-    error_message = "Event size must be between 1 KiB and the SQS 256 KiB limit."
+    condition     = var.f2e_max_event_bytes >= 1024 && var.f2e_max_event_bytes <= 1024 * 1024
+    error_message = "Event size must be between 1 KiB and the SQS 1 MiB limit."
   }
 }
 
