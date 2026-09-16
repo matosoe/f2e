@@ -33,7 +33,7 @@ CHUNK_VARIANTS=(1000 5000 10000)
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 worker_function_name() {
-  terraform -chdir="$terraform_dir" output -raw worker_function_name 2>/dev/null
+  terraform -chdir="$terraform_dir" output -raw worker_function_arn 2>/dev/null | awk -F: '{print $NF}'
 }
 
 update_lambda_config() {

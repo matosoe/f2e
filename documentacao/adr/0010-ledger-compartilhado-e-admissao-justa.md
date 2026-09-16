@@ -1,5 +1,7 @@
 # ADR 0010 — Ledger compartilhado e admissão justa por prefixo
 
+**Status:** aceito em 2026-09-05
+
 ## Decisão
 
 Para a PoC, o DynamoDB permanece uma única tabela compartilhada. `prefixId` é

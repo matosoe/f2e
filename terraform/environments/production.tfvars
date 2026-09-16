@@ -10,7 +10,6 @@ lambda_runtime                 = "provided.al2023"
 lambda_timeout                 = 60
 lambda_memory_mb               = 1024
 organizer_reserved_concurrency = 2
-worker_reserved_concurrency    = 20
 worker_maximum_concurrency     = 20
 worker_batch_size              = 1
 f2e_input_bucket               = "replace-me-f2e-production"

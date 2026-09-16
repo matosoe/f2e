@@ -47,11 +47,8 @@ resource "aws_sqs_queue" "chunk_jobs" {
   max_message_size           = local.sqs_max_message_bytes
   sqs_managed_sse_enabled    = var.kms_key_arn == "" ? true : null
   kms_master_key_id          = var.kms_key_arn != "" ? var.kms_key_arn : null
-  redrive_policy = jsonencode({
-    deadLetterTargetArn = aws_sqs_queue.chunk_jobs_dlq.arn
-    maxReceiveCount     = var.sqs_max_receive_count
-  })
-  tags = local.tags
+  redrive_policy             = jsonencode({ deadLetterTargetArn = aws_sqs_queue.chunk_jobs_dlq.arn, maxReceiveCount = var.sqs_max_receive_count })
+  tags                       = local.tags
 }
 
 resource "aws_sqs_queue" "output_events" {
@@ -121,10 +118,10 @@ resource "aws_sqs_queue_policy" "file_intake" {
 
 locals {
   tls_only_queues = {
-    chunk_jobs            = aws_sqs_queue.chunk_jobs
-    output_events         = aws_sqs_queue.output_events
     file_intake_dlq       = aws_sqs_queue.file_intake_dlq
+    chunk_jobs            = aws_sqs_queue.chunk_jobs
     chunk_jobs_dlq        = aws_sqs_queue.chunk_jobs_dlq
+    output_events         = aws_sqs_queue.output_events
     completion_events     = aws_sqs_queue.completion_events
     completion_events_dlq = aws_sqs_queue.completion_events_dlq
   }
@@ -162,7 +159,6 @@ resource "aws_sqs_queue_redrive_allow_policy" "chunk_jobs" {
   queue_url            = aws_sqs_queue.chunk_jobs_dlq.id
   redrive_allow_policy = jsonencode({ redrivePermission = "byQueue", sourceQueueArns = [aws_sqs_queue.chunk_jobs.arn] })
 }
-
 # ── Completion events queue (T13) ─────────────────────────────────────────────
 #
 # The completion-publisher Lambda writes a single terminal-state event per job

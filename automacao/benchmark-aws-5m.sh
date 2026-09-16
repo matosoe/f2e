@@ -112,7 +112,7 @@ override_tfvars="$result_dir/terraform-benchmark.tfvars.json"
 jq -n \
   --arg id "$prefix_id" --argjson concurrency "$worker_concurrency" --argjson memory "$worker_memory_mb" \
   --argjson timeout "$lambda_timeout" --argjson visibility "$sqs_visibility_timeout" --arg ssmEndpoint "$ssm_endpoint_url" \
-  '{lambda_timeout:$timeout,sqs_visibility_timeout:$visibility,prefix_worker_config:{($id):{reserved_concurrency:-1,maximum_concurrency:$concurrency,memory_mb:$memory}}}
+  '{lambda_timeout:$timeout,lambda_memory_mb:$memory,worker_maximum_concurrency:$concurrency,sqs_visibility_timeout:$visibility}
    + (if $ssmEndpoint == "" then {} else {ssm_endpoint:$ssmEndpoint} end)' \
   > "$override_tfvars"
 

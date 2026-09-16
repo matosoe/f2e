@@ -3,9 +3,8 @@ locals {
   sqs_max_message_bytes = 1024 * 1024
   is_localstack         = var.localstack_endpoint != ""
 
-  organizer_zip            = "${path.module}/${var.lambda_zip_dir}/organizer.zip"
-  worker_zip               = "${path.module}/${var.lambda_zip_dir}/worker.zip"
-  completion_publisher_zip = "${path.module}/${var.lambda_zip_dir}/completion-publisher.zip"
+  organizer_zip = "${path.module}/${var.lambda_zip_dir}/organizer.zip"
+  worker_zip    = "${path.module}/${var.lambda_zip_dir}/worker.zip"
 
   # Base env vars shared by both Lambda functions.
   lambda_env_base = {
@@ -23,6 +22,7 @@ locals {
     F2E_INTAKE_QUEUE_URL        = aws_sqs_queue.file_intake.url
     F2E_CHUNK_QUEUE_URL         = aws_sqs_queue.chunk_jobs.url
     F2E_OUTPUT_QUEUE_URL        = aws_sqs_queue.output_events.url
+    F2E_COMPLETION_QUEUE_URL    = aws_sqs_queue.completion_events.url
     F2E_LEDGER_TABLE            = aws_dynamodb_table.job_ledger.name
     F2E_LEDGER_RETENTION_DAYS   = tostring(var.ledger_retention_days)
     F2E_FILE_CONFIG_PATH        = local.file_config_path
@@ -55,15 +55,9 @@ locals {
   }
 
   file_configurations = {
-    "example-text" = merge(local.file_configuration_base, { prefix = "example-text/", dataType = "text", maxRecordLengthBytes = 65536 })
-    "example-json" = merge(local.file_configuration_base, {
-      prefix          = "example-json/", dataType = "json",
-      jsonArrayLayout = { arrayPath = "", maxBytesPerElement = 65536 }
-    })
-    "example-multi-line" = merge(local.file_configuration_base, {
-      prefix          = "example-multi-line/", dataType = "multi-line",
-      multiLineLayout = { breakPosition = 0, breakMarker = "1", acceptedPrefixes = [], lineSeparator = "\u001c", maxBytesPerRecord = 65536 }
-    })
+    "example-text"       = merge(local.file_configuration_base, { prefix = "example-text/", dataType = "text", maxRecordLengthBytes = 65536 })
+    "example-json"       = merge(local.file_configuration_base, { prefix = "example-json/", dataType = "json", jsonArrayLayout = { arrayPath = "", maxBytesPerElement = 65536 } })
+    "example-multi-line" = merge(local.file_configuration_base, { prefix = "example-multi-line/", dataType = "multi-line", multiLineLayout = { breakPosition = 0, breakMarker = "1", acceptedPrefixes = [], lineSeparator = "\u001c", maxBytesPerRecord = 65536 } })
   }
 
   global_limits = {

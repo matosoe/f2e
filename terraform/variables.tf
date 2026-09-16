@@ -100,15 +100,6 @@ variable "organizer_reserved_concurrency" {
   }
 }
 
-variable "worker_reserved_concurrency" {
-  type    = number
-  default = 10
-  validation {
-    condition     = var.worker_reserved_concurrency == 0 || var.worker_reserved_concurrency >= var.worker_maximum_concurrency
-    error_message = "Worker reserved concurrency must be zero (disabled) or at least the event-source maximum concurrency."
-  }
-}
-
 # ── F2E processing parameters ─────────────────────────────────────────────────
 
 variable "f2e_input_bucket" {
@@ -319,31 +310,4 @@ variable "worker_batch_size" {
     condition     = var.worker_batch_size == 1
     error_message = "Worker batch size must be 1 so every chunk has an independent Lambda timeout and retry lifecycle."
   }
-}
-
-# ── Per-prefix Worker configuration (T21) ────────────────────────────────────
-#
-# Each key must match a key in locals.file_configurations.
-# Absent keys fall back to the defaults in the module.
-# Example tfvars:
-#
-#   prefix_worker_config = {
-#     example-text = { reserved_concurrency = 5, maximum_concurrency = 5, memory_mb = 1024 }
-#     example-json = { reserved_concurrency = 2, maximum_concurrency = 2, memory_mb = 2048 }
-#   }
-variable "prefix_worker_config" {
-  description = <<EOF
-Per-prefix Worker Lambda configuration overrides.
-Keys must match entries in locals.file_configurations.
-Each value is an object with optional fields:
-  reserved_concurrency  - isolated concurrency units (>0); -1 = unreserved (default).
-  maximum_concurrency   - max SQS poller concurrency; when omitted, worker_maximum_concurrency is used.
-  memory_mb             - Lambda memory in MiB (default 1024).
-EOF
-  type = map(object({
-    reserved_concurrency = optional(number, -1)
-    maximum_concurrency  = optional(number, null)
-    memory_mb            = optional(number, 1024)
-  }))
-  default = {}
 }

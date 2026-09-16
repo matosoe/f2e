@@ -24,15 +24,10 @@ resource "aws_lambda_function" "organizer" {
   architectures                  = [var.lambda_architecture]
   reserved_concurrent_executions = var.organizer_reserved_concurrency > 0 ? var.organizer_reserved_concurrency : -1
   publish                        = true
-
   ephemeral_storage { size = var.lambda_ephemeral_storage_mb }
   logging_config { log_format = "JSON" }
   tracing_config { mode = local.is_localstack ? "PassThrough" : "Active" }
-
-  environment {
-    variables = local.lambda_env
-  }
-
+  environment { variables = local.lambda_env }
   tags       = local.tags
   depends_on = [aws_cloudwatch_log_group.organizer, aws_ssm_parameter.global_limits]
 }
@@ -47,133 +42,14 @@ resource "aws_lambda_function" "worker" {
   timeout                        = var.lambda_timeout
   memory_size                    = var.lambda_memory_mb
   architectures                  = [var.lambda_architecture]
-  reserved_concurrent_executions = var.worker_reserved_concurrency > 0 ? var.worker_reserved_concurrency : -1
+  reserved_concurrent_executions = -1
   publish                        = true
-
   ephemeral_storage { size = var.lambda_ephemeral_storage_mb }
   logging_config { log_format = "JSON" }
   tracing_config { mode = local.is_localstack ? "PassThrough" : "Active" }
-
-  environment {
-    variables = local.lambda_env
-  }
-
+  environment { variables = local.lambda_env }
   tags       = local.tags
   depends_on = [aws_cloudwatch_log_group.worker]
-}
-
-# ── Completion-publisher Lambda (T13) ─────────────────────────────────────────
-#
-# Triggered by DynamoDB Streams on the job-ledger table. For every new
-# COMPLETION_INTENT# item with intentPending="1" it publishes the event to the
-# completion_events queue and marks the intent as delivered.
-
-resource "aws_cloudwatch_log_group" "completion_publisher" {
-  name              = "/aws/lambda/${var.resource_prefix}-${var.environment}-completion-publisher"
-  retention_in_days = var.log_retention_days
-  kms_key_id        = var.kms_key_arn != "" ? var.kms_key_arn : null
-  tags              = local.tags
-}
-
-resource "aws_lambda_function" "completion_publisher" {
-  function_name    = "${var.resource_prefix}-${var.environment}-completion-publisher"
-  filename         = local.completion_publisher_zip
-  source_code_hash = filebase64sha256(local.completion_publisher_zip)
-  handler          = "bootstrap"
-  runtime          = var.lambda_runtime
-  role             = aws_iam_role.completion_publisher.arn
-  timeout          = var.lambda_timeout
-  memory_size      = var.lambda_memory_mb
-  architectures    = [var.lambda_architecture]
-  publish          = true
-
-  ephemeral_storage { size = var.lambda_ephemeral_storage_mb }
-  logging_config { log_format = "JSON" }
-  tracing_config { mode = local.is_localstack ? "PassThrough" : "Active" }
-
-  environment {
-    variables = merge(local.lambda_env, {
-      F2E_COMPLETION_QUEUE_URL = aws_sqs_queue.completion_events.url
-    })
-  }
-
-  tags       = local.tags
-  depends_on = [aws_cloudwatch_log_group.completion_publisher]
-}
-
-resource "aws_lambda_alias" "completion_publisher_live" {
-  name             = "live"
-  function_name    = aws_lambda_function.completion_publisher.function_name
-  function_version = aws_lambda_function.completion_publisher.version
-}
-
-# DynamoDB Streams event source: only COMPLETION_INTENT inserts are relevant;
-# the Lambda filters internally. bisect_batch_on_function_error retries only
-# the failing record on failure rather than the entire batch.
-resource "aws_lambda_event_source_mapping" "completion_publisher_streams" {
-  event_source_arn               = aws_dynamodb_table.job_ledger.stream_arn
-  function_name                  = aws_lambda_alias.completion_publisher_live.arn
-  starting_position              = "LATEST"
-  batch_size                     = 10
-  bisect_batch_on_function_error = true
-  maximum_retry_attempts         = 3
-
-  destination_config {
-    on_failure {
-      destination_arn = aws_sqs_queue.completion_events_dlq.arn
-    }
-  }
-}
-
-# DynamoDB Streams retain records for only 24 hours. The scheduled recovery
-# queries the outbox GSI so a publisher crash cannot strand a completion event.
-resource "aws_cloudwatch_event_rule" "completion_publisher_recovery" {
-  name                = "${var.resource_prefix}-${var.environment}-completion-recovery"
-  description         = "Recover undelivered F2E completion intents"
-  schedule_expression = "rate(5 minutes)"
-  tags                = local.tags
-}
-
-resource "aws_cloudwatch_event_target" "completion_publisher_recovery" {
-  rule      = aws_cloudwatch_event_rule.completion_publisher_recovery.name
-  target_id = "completion-publisher-recovery"
-  arn       = aws_lambda_alias.completion_publisher_live.arn
-  input     = jsonencode({ recover = true })
-}
-
-resource "aws_lambda_permission" "completion_publisher_recovery" {
-  statement_id  = "AllowEventBridgeRecovery"
-  action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.completion_publisher.function_name
-  qualifier     = aws_lambda_alias.completion_publisher_live.name
-  principal     = "events.amazonaws.com"
-  source_arn    = aws_cloudwatch_event_rule.completion_publisher_recovery.arn
-}
-
-# Fair quota recovery: the Organizer claims the oldest WAITING item per
-# prefix, retries its normal admission path and returns it to WAITING when the
-# quota remains full. No Lambda invocation waits for a slot.
-resource "aws_cloudwatch_event_rule" "organizer_waiting_recovery" {
-  name                = "${var.resource_prefix}-${var.environment}-waiting-admission-recovery"
-  description         = "Release fair F2E admissions waiting for prefix quota"
-  schedule_expression = "rate(1 minute)"
-  tags                = local.tags
-}
-
-resource "aws_cloudwatch_event_target" "organizer_waiting_recovery" {
-  rule      = aws_cloudwatch_event_rule.organizer_waiting_recovery.name
-  target_id = "organizer-waiting-recovery"
-  arn       = aws_lambda_alias.organizer_live.arn
-  input     = jsonencode({ releaseWaiting = true })
-}
-
-resource "aws_lambda_permission" "organizer_waiting_recovery" {
-  statement_id  = "AllowEventBridgeWaitingAdmissionRecovery"
-  action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.organizer.function_name
-  qualifier     = aws_lambda_alias.organizer_live.name
-  principal     = "events.amazonaws.com"
-  source_arn    = aws_cloudwatch_event_rule.organizer_waiting_recovery.arn
 }
 
 resource "aws_lambda_alias" "organizer_live" {
@@ -188,8 +64,6 @@ resource "aws_lambda_alias" "worker_live" {
   function_version = aws_lambda_function.worker.version
 }
 
-# ── Event source mappings ─────────────────────────────────────────────────────
-
 resource "aws_lambda_event_source_mapping" "organizer_intake" {
   event_source_arn        = aws_sqs_queue.file_intake.arn
   function_name           = aws_lambda_alias.organizer_live.arn
@@ -197,5 +71,10 @@ resource "aws_lambda_event_source_mapping" "organizer_intake" {
   function_response_types = ["ReportBatchItemFailures"]
 }
 
-# Chunk consumers are created in module.prefix, one exclusive queue per
-# registered prefix. Do not attach the legacy Worker to the shared queue.
+resource "aws_lambda_event_source_mapping" "worker_chunks" {
+  event_source_arn        = aws_sqs_queue.chunk_jobs.arn
+  function_name           = aws_lambda_alias.worker_live.arn
+  batch_size              = var.worker_batch_size
+  function_response_types = ["ReportBatchItemFailures"]
+  scaling_config { maximum_concurrency = var.worker_maximum_concurrency }
+}

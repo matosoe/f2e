@@ -30,11 +30,3 @@ sqs_visibility_timeout = 1800
 sqs_max_receive_count  = 3
 organizer_batch_size   = 1
 worker_batch_size      = 1
-
-# LocalStack must receive the same explicit SQS poller caps as AWS. Use 8
-# initially; set 16 in the benchmark matrix when the host has capacity.
-prefix_worker_config = {
-  example-text       = { maximum_concurrency = 8, memory_mb = 256 }
-  example-json       = { maximum_concurrency = 8, memory_mb = 256 }
-  example-multi-line = { maximum_concurrency = 8, memory_mb = 256 }
-}

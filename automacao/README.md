@@ -17,6 +17,13 @@ SNS como destino, ordenação global ou layouts sem fronteira previsível.
 - validação da quantidade configurada de mensagens na fila de saída;
 - massas em `automacao/dados` e resultados locais em `automacao/resultados`.
 
+## Entradas canônicas
+
+Use `automacao/ambiente local up|down|run|test` para LocalStack e
+`automacao/ambiente aws up|down|e2e` para AWS. Para benchmarks, use
+`automacao/benchmark <memory|5m|p3|matrix> <local|aws>`. Os scripts com nomes
+históricos permanecem como compatibilidade temporária.
+
 ## AWS real
 
 As automações AWS usam o arquivo local e ignorado

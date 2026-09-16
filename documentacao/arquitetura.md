@@ -4,6 +4,8 @@ Este diagrama descreve a implantação AWS criada pelo Terraform. Também é a
 referência do fluxo executado localmente pelo LocalStack; nesse caso, os
 serviços AWS representados são emulados.
 
+As decisões que governam esta arquitetura estão no [índice de ADRs](adr/README.md).
+
 > Escopo: este é um building block inbound, de arquivo para eventos SQS. Ele
 > não cobre Event-to-File, SNS como destino, ordenação global ou layouts sem
 > fronteira de registro previsível. Consulte [Requisitos e restrições](requisitos_e_restricoes.md)
@@ -119,9 +121,9 @@ flowchart LR
 
 ## Código e infraestrutura relacionados
 
-- `lambdas/cmd/organizer`: entrada, seleção de configuração e planejamento.
-- `lambdas/cmd/worker`: consumo dos chunks e publicação dos registros.
-- `lambdas/cmd/completion-publisher`: entrega do outbox de conclusão.
+- `cmd/organizer`: entrada, seleção de configuração e planejamento.
+- `cmd/worker`: consumo dos chunks e publicação dos registros.
+- `cmd/completion-publisher`: entrega do outbox de conclusão.
 - `terraform/modules/f2e-prefix`: fila de chunks, fila de saída, DLQs e Worker
   para cada prefixo.
 - `terraform/dynamodb.tf`, `terraform/ssm.tf` e `terraform/lambda.tf`:

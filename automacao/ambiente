@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Entrada canônica para operações locais e AWS.
+set -euo pipefail
+root="$(cd "$(dirname "$0")" && pwd)"
+target="${1:-}"
+action="${2:-}"
+case "$target:$action" in
+  local:up) exec "$root/subir-ambiente.sh" ;;
+  local:down) exec "$root/parar-ambiente.sh" ;;
+  local:run) exec "$root/executar-fluxo.sh" ;;
+  local:test) exec "$root/testar-e2e.sh" ;;
+  aws:up) exec "$root/subir-ambiente-aws.sh" ;;
+  aws:down) exec "$root/parar-ambiente-aws.sh" ;;
+  aws:e2e) exec "$root/executar-e2e-aws.sh" ;;
+  *) echo 'Uso: automacao/ambiente local up|down|run|test | aws up|down|e2e' >&2; exit 2 ;;
+esac

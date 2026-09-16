@@ -4,7 +4,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/url"
@@ -60,16 +59,7 @@ func init() {
 	}
 }
 
-// handler accepts both the SQS intake event and the small EventBridge recovery
-// event. Keeping both paths in the Organizer makes the PoC operationally
-// small: there is one admission implementation and no extra queue consumer.
 func handler(ctx context.Context, raw json.RawMessage) (any, error) {
-	var scheduled struct {
-		ReleaseWaiting bool `json:"releaseWaiting"`
-	}
-	if err := json.Unmarshal(raw, &scheduled); err == nil && scheduled.ReleaseWaiting {
-		return nil, releaseWaiting(ctx)
-	}
 	var e events.SQSEvent
 	if err := json.Unmarshal(raw, &e); err != nil {
 		return nil, fmt.Errorf("decode organizer event: %w", err)
@@ -86,43 +76,10 @@ func handleSQSEvent(ctx context.Context, e events.SQSEvent) (events.SQSEventResp
 		}
 		if err != nil {
 			slog.Error("organizer message failed", "service", "organizer", "sqsMessageId", r.MessageId, "receiveCount", r.Attributes["ApproximateReceiveCount"], "error", err)
-			// A quota miss is normally converted into a durable WAITING admission
-			// by jobsFor. Keep this guard for non-S3 callers that still surface it.
-			if !errors.Is(err, port.ErrQuotaExceeded) {
-				out.BatchItemFailures = append(out.BatchItemFailures, events.SQSBatchItemFailure{ItemIdentifier: r.MessageId})
-			}
+			out.BatchItemFailures = append(out.BatchItemFailures, events.SQSBatchItemFailure{ItemIdentifier: r.MessageId})
 		}
 	}
 	return out, nil
-}
-
-func releaseWaiting(ctx context.Context) error {
-	if service.Ledger == nil {
-		return nil
-	}
-	waiting, err := service.Ledger.ClaimWaitingAdmissions(ctx, 25)
-	if err != nil {
-		return err
-	}
-	for _, item := range waiting {
-		jobs, admissionErr := jobsFor(ctx, []byte(item.Body), "waiting-"+item.FileID)
-		if admissionErr == nil {
-			admissionErr = service.Publish(ctx, jobs)
-		}
-		if admissionErr == nil {
-			if err := service.Ledger.CompleteWaitingAdmission(ctx, item.FileID); err != nil {
-				return fmt.Errorf("complete waiting admission %s: %w", item.FileID, err)
-			}
-			continue
-		}
-		if err := service.Ledger.ReturnWaitingAdmission(ctx, item.FileID); err != nil {
-			return fmt.Errorf("return waiting admission %s: %w", item.FileID, err)
-		}
-		if !errors.Is(admissionErr, port.ErrQuotaExceeded) {
-			slog.Error("waiting admission deferred", "service", "organizer", "fileId", item.FileID, "prefixId", item.PrefixID, "error", admissionErr)
-		}
-	}
-	return nil
 }
 
 // jobsFor accepts either an explicit OrganizerRequest or an S3 event whose
@@ -183,45 +140,14 @@ func jobsFor(ctx context.Context, body []byte, executionID string) ([]f2e.ChunkJ
 		}
 		fileID := f2e.FileID(object)
 		if configured.Ledger != nil {
-			// A quota miss becomes a durable FIFO admission record. This acks the
-			// intake message, avoiding retry/DLQ churn while preserving the oldest
-			// queued file for each prefix.
-			if prefixConfig.PrefixID != "" && prefixConfig.MaxActiveJobs > 0 {
-				if slotErr := configured.Ledger.ReserveSlot(ctx, prefixConfig.PrefixID, prefixConfig.MaxActiveJobs); slotErr != nil {
-					if errors.Is(slotErr, port.ErrQuotaExceeded) {
-						waitingBody, bodyErr := singleS3Notification(reference)
-						if bodyErr != nil {
-							return nil, bodyErr
-						}
-						if waitErr := configured.Ledger.EnqueueWaitingAdmission(ctx, port.WaitingAdmission{FileID: fileID, PrefixID: prefixConfig.PrefixID, Body: string(waitingBody)}); waitErr != nil {
-							return nil, fmt.Errorf("queue saturated admission: %w", waitErr)
-						}
-						slog.Info("admission queued for quota", "service", "organizer", "fileId", fileID, "prefixId", prefixConfig.PrefixID)
-						return nil, port.ErrQuotaExceeded
-					}
-					return nil, slotErr
-				}
-			}
 			outcome, admitErr := configured.Ledger.Admit(ctx, f2e.Receipt{ReceiptID: executionID, FileID: fileID, Source: object, Environment: configured.Config.Environment, ReceivedAt: time.Now().UTC(), ConfigSnapshot: configSnapshot, PrefixID: prefixConfig.PrefixID})
 			if admitErr != nil {
-				// Roll back the quota slot we just reserved.
-				if prefixConfig.PrefixID != "" && prefixConfig.MaxActiveJobs > 0 {
-					_ = configured.Ledger.ReleaseSlot(ctx, prefixConfig.PrefixID)
-				}
 				return nil, fmt.Errorf("admit immutable S3 object: %w", admitErr)
 			}
 			if outcome == f2e.AlreadyCompleted {
-				// Deduplication: this slot was reserved optimistically but no new job
-				// is created — release it so the counter stays accurate.
-				if prefixConfig.PrefixID != "" && prefixConfig.MaxActiveJobs > 0 {
-					_ = configured.Ledger.ReleaseSlot(ctx, prefixConfig.PrefixID)
-				}
 				continue
 			}
 			if outcome == f2e.Busy {
-				if prefixConfig.PrefixID != "" && prefixConfig.MaxActiveJobs > 0 {
-					_ = configured.Ledger.ReleaseSlot(ctx, prefixConfig.PrefixID)
-				}
 				return nil, fmt.Errorf("admission for fileId %s is busy", fileID)
 			}
 			if err := configured.Ledger.BeginValidation(ctx, fileID); err != nil {

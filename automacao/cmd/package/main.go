@@ -19,7 +19,7 @@ func main() {
 	if err != nil {
 		fatal(err)
 	}
-	for _, name := range []string{"organizer", "worker", "completion-publisher"} {
+	for _, name := range []string{"organizer", "worker"} {
 		if err := makeZip(filepath.Join(root, name, "bootstrap"), filepath.Join(root, name+".zip")); err != nil {
 			fatal(err)
 		}
@@ -28,7 +28,7 @@ func main() {
 	if err != nil {
 		fatal(err)
 	}
-	for _, name := range []string{"organizer/bootstrap", "worker/bootstrap", "completion-publisher/bootstrap", "organizer.zip", "worker.zip", "completion-publisher.zip"} {
+	for _, name := range []string{"organizer/bootstrap", "worker/bootstrap", "organizer.zip", "worker.zip"} {
 		body, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(name)))
 		if err != nil {
 			fatal(err)

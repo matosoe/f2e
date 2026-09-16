@@ -1,6 +1,6 @@
 # ADR 0008 — Isolamento e capacidade por prefixo
 
-**Status:** aceito em 2026-09-05
+**Status:** supersedido em 2026-09-16 pelo [ADR 0013](0013-implantacao-simples-compartilhada.md)
 
 ## Contexto
 
@@ -17,11 +17,11 @@ Cada prefixo protegido recebe recursos próprios:
 
 | Recurso | Dedicado por prefixo |
 |---|---|
-| Fila de intake (entrada autorizada) | Sim |
+| Fila de intake (entrada autorizada) | Não; é compartilhada e a seleção do prefixo é validada pelo Organizer. |
 | Fila de chunks e DLQ | Sim |
 | Worker Lambda e role IAM | Sim |
 | Fila de saída | Sim |
-| Organizer Lambda (quando necessário para capacidade de admissão) | Sim |
+| Organizer Lambda | Não; é compartilhado e envia chunks apenas à fila indicada pela configuração resolvida. |
 
 Código binário compartilhado; configuração, IAM e filas separados.
 
@@ -59,8 +59,8 @@ Código binário compartilhado; configuração, IAM e filas separados.
 
 ### Terraform
 
-- Módulo Terraform com `for_each` de prefixo provê intake, Organizer (opcional),
-  chunks/DLQ, Worker/role e output.
+- Módulo Terraform com `for_each` de prefixo provê chunks/DLQ, Worker/role e
+  output. Intake e Organizer permanecem recursos compartilhados.
 - Migração com `terraform state mv` e preservação de filas antes de qualquer
   `replace` ou `destroy`.
 

@@ -27,7 +27,6 @@ lambda_runtime                   = "<RUNTIME_EX:_provided.al2023>"
 lambda_timeout                   = <SEGUNDOS_DE_TIMEOUT>
 lambda_memory_mb                 = <MEMORIA_EM_MB>
 organizer_reserved_concurrency   = <0_PARA_DESABILITAR_OU_NUMERO>
-worker_reserved_concurrency      = <0_PARA_DESABILITAR_OU_NUMERO>
 worker_maximum_concurrency       = <NUMERO_ENTRE_2_E_1000>
 worker_batch_size                = <NUMERO_DE_MENSAGENS_POR_LOTE>
 
