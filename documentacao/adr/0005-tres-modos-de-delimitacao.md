@@ -6,28 +6,10 @@
 
 O F2E suporta oito tipos de dados (`fixed-width`, `jsonl`, `ndjson`, `csv`,
 `binary`, `text`, `multi-line`, `json`). Essa diversidade não traz benefício
-proporcional ao custo de manutenção e cria ambiguidade para consumidores.
-
-O critério é reduzir os formatos à sua forma de delimitação, sem tentar
-incorporar parsers para cada formato de arquivo. Qualquer conteúdo cujo
-registro lógico ocupe uma linha pode usar `text`, inclusive JSON por linha
-(`jsonl`/`ndjson`) e CSV quando o produtor já fornece um registro por linha e
-não é necessário interpretar campos RFC 4180. Um conteúdo hierárquico cujos
-registros possam ser identificados por um prefixo pode usar `multi-line`. Para
-JSON, o array selecionado por `arrayPath` delimita os registros de maneira
-estrutural.
-
-Assim, `jsonl` e `ndjson` são equivalentes; CSV de uma coluna é `text`; e
-`fixed-width` com LF como terminador é um subconjunto de `text`. XML não é
-suportado como formato próprio: sua estrutura exige um parser XML ou uma
-convenção explícita de prefixos para ser tratado como `multi-line`. Conteúdo
-binário também não tem equivalente: não possui um terminador de linha seguro e
-não deve depender de um caractere de fim de linha; seu envelope Base64 é
-incompatível com a maioria dos consumidores.
-
-Manter somente esses três modos preserva o projeto simples, com contratos e
-limites claros, e evita torná-lo pesado ao tentar abranger todos os formatos
-de arquivo.
+proporcional ao custo de manutenção e cria ambiguidade para consumidores:
+`jsonl` e `ndjson` são equivalentes; `csv` de uma coluna é `text`; `binary`
+requer envelope Base64 incompatível com a maioria dos consumidores; `fixed-width`
+exige LF como terminador, tornando-o um subconjunto de `text`.
 
 ## Decisão
 
@@ -72,8 +54,7 @@ lógicos. Terminador de linhas físicas também é obrigatório neste modo.
 
 ### Remoção
 
-Tipos removidos: `fixed-width`, `csv`, `binary`, `jsonl`, `ndjson`. XML não é
-um tipo suportado e não recebe parser próprio.
+Tipos removidos: `fixed-width`, `csv`, `binary`, `jsonl`, `ndjson`.
 Campo `bypassJsonValidation` / `BypassJSONValidation` removido.
 Campo `RecordLengthBytes` de `PrefixConfiguration` removido (substituído por
 `MaxRecordLengthBytes` em todos os modos variáveis).

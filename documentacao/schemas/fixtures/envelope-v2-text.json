@@ -1,0 +1,36 @@
+{
+  "metadata": {
+    "eventId": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+    "sourceRecordId": "b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3",
+    "schema": {
+      "id": "meu-sistema/evento-v1",
+      "version": "1"
+    },
+    "format": "application/json",
+    "createdAt": "2026-09-05T14:00:00Z",
+    "transactionId": "txn-001",
+    "correlationId": "corr-001",
+    "traceId": "trace-001"
+  },
+  "source": {
+    "type": "s3",
+    "system": "meu-sistema",
+    "bucket": "f2e-input",
+    "key": "entrada/registros.txt",
+    "versionId": "abc123",
+    "etag": "\"d41d8cd98f00b204e9800998ecf8427e\"",
+    "fileName": "registros.txt",
+    "fileFormat": "text",
+    "fileSize": 2048000
+  },
+  "processing": {
+    "jobId": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+    "chunkId": "c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4",
+    "recordNumber": 1,
+    "byteOffset": 0,
+    "byteLength": 42
+  },
+  "data": {
+    "raw": "2026-09-05;PAGAMENTO;00001;100.00"
+  }
+}
