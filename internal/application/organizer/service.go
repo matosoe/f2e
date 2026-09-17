@@ -199,8 +199,8 @@ func (s Service) maxChunkBytes() int64 {
 }
 
 // nextBreakOffset scans data line-by-line using CR, LF, and CRLF terminators
-// and returns the byte offset within data of the first line whose content at
-// breakPosition starts with breakMarker.
+// and returns the byte offset within data of the first line matching all
+// configured break fields.
 // Returns -1 when no such line is found.
 func nextBreakOffset(data []byte, fields []f2e.LineMatchField) int {
 	for start := 0; start < len(data); {

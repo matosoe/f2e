@@ -52,10 +52,11 @@ type LineMatchField struct {
 	Value       string `json:"value"`
 }
 
-// JSONArrayLayout describes how to locate and iterate an array inside a JSON file.
+// JSONArrayLayout describes how to iterate a top-level JSON array.
 type JSONArrayLayout struct {
-	// ArrayPath is the dot-separated key path to the target array (empty = root array).
-	ArrayPath      string `json:"arrayPath,omitempty"`
+	// FirstFieldName is the name of the first JSON key in every object element.
+	// It is matched as a JSON key, not as text occurring in a field value.
+	// The producer must not use it as the first key of nested objects.
 	FirstFieldName string `json:"firstFieldName"`
 	// MaxBytesPerElement is the maximum byte size of one array element; required for chunk planning.
 	MaxBytesPerElement int64 `json:"maxBytesPerElement"`

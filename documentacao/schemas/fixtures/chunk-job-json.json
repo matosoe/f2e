@@ -14,7 +14,6 @@
   "endByteInclusive": 1048575,
   "dataType": "json",
   "jsonArrayLayout": {
-    "arrayPath": "events",
     "firstFieldName": "id",
     "maxBytesPerElement": 65536
   },

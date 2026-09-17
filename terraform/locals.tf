@@ -56,7 +56,7 @@ locals {
   # dedicated queue is opt-in; every other prefix remains on output-events.
   file_configurations = {
     "example-text"       = merge(local.file_configuration_base, { prefix = "example-text/", dataType = "text", maxRecordLengthBytes = 65536, dedicated_output_queue = false })
-    "example-json"       = merge(local.file_configuration_base, { prefix = "example-json/", dataType = "json", jsonArrayLayout = { arrayPath = "", firstFieldName = "id", maxBytesPerElement = 65536 }, dedicated_output_queue = true })
+    "example-json"       = merge(local.file_configuration_base, { prefix = "example-json/", dataType = "json", jsonArrayLayout = { firstFieldName = "id", maxBytesPerElement = 65536 }, dedicated_output_queue = true })
     "example-multi-line" = merge(local.file_configuration_base, { prefix = "example-multi-line/", dataType = "multi-line", multiLineLayout = { breakFields = [{ startByte = 0, lengthBytes = 1, value = "1" }], lineSeparator = "\u001c", maxBytesPerRecord = 65536 }, dedicated_output_queue = false })
   }
 

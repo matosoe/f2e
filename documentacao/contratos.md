@@ -26,7 +26,7 @@ Uma linha física terminada por CR (`\r`), LF (`\n`) ou CRLF (`\r\n`) é um regi
 
 ### Modo `json`
 
-Um objeto do array selecionado por `jsonArrayLayout.arrayPath` (vazio = root array). `firstFieldName` e `maxBytesPerElement` são obrigatórios. O Organizer não lê o corpo do objeto; Workers localizam o primeiro campo por chave JSON real, com janela limitada pelo máximo por elemento. O produtor deve garantir que esse campo seja o primeiro em todos os objetos selecionados e não ocorra fora deles, inclusive em valores/objetos aninhados. Arrays de primitivos não são suportados.
+Um objeto identificado e delimitado pelo nome da primeira chave configurada em `jsonArrayLayout.firstFieldName`. `firstFieldName` e `maxBytesPerElement` são obrigatórios. O Organizer não lê o corpo do objeto; os Workers reconhecem uma chave JSON real — respeitando strings e escapes — e não uma ocorrência do texto em conteúdo de campo. O produtor deve garantir que esse campo seja o primeiro em todos os objetos do array e que esse nome não ocorra fora deles, inclusive como chave em objetos aninhados ou dentro de JSON serializado no valor de outro campo. Apenas arrays no nível raiz e elementos-objeto são suportados.
 
 ### Modo `multi-line`
 
@@ -35,7 +35,7 @@ Linhas físicas agrupadas por campos configurados em `multiLineLayout`:
 - Cada conjunto tem de 1 a 99 campos (`startByte`, `lengthBytes`, `value`); todos devem corresponder por bytes, sem trim. Linha curta não corresponde.
 - A precedência é quebra, inclusão e ignorar; linhas sem correspondência são descartadas.
 - `lineSeparator`: separador entre linhas do registro (padrão: `\x1C`).
-- `maxBytesPerRecord`: tamanho máximo do registro lógico completo (obrigatório).
+- `maxBytesPerRecord`: tamanho máximo do registro lógico completo, com todas as linhas incluídas (obrigatório).
 
 Cabeçalhos e trailers (linhas que não correspondem a nenhum prefixo) são silenciosamente ignorados e contados como linhas físicas ignoradas em métrica separada. Terminadores físicos CR/LF/CRLF são suportados com as mesmas regras do modo `text`.
 

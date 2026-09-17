@@ -320,7 +320,7 @@ run_case() {
   last_progress=0
   while (( $(date +%s) < deadline )); do
     job="$(get_job "$job_id")"
-    status="$(jq -r '.status.S // "WAITING"' <<<"$job")"
+    status="$(jq -r '.status.S // "UNKNOWN"' <<<"$job")"
     completed="$(jq -r '.completedChunks.N // "0"' <<<"$job")"
     expected="$(jq -r '.expectedChunks.N // "0"' <<<"$job")"
     published="$(jq -r '.recordsPublished.N // .recordsProduced.N // "0"' <<<"$job")"

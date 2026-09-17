@@ -42,14 +42,11 @@ Filas de eventos por prefixo
 Consumidores downstream
 ~~~
 
-O DynamoDB mantém o ledger de admissão, plano, chunks e estados terminais. Um
-fluxo separado entrega eventos técnicos de conclusão.
+O DynamoDB mantém o ledger de admissão, plano, chunks e estados terminais. O
+Worker entrega eventos técnicos de conclusão a partir da outbox durável.
 
 ~~~text
-DynamoDB job-ledger -> DynamoDB Streams -> Completion Publisher
-                                            |
-                                            v
-                                    SQS completion-events
+DynamoDB job-ledger -> Worker -> SQS completion-events
 ~~~
 
 ---
@@ -249,30 +246,22 @@ Organizer mais rápido que Worker --> backlog em chunks
 Worker mais rápido que destino   --> backlog na fila de saída
 ~~~
 
-O limite opcional de jobs ativos por prefixo impede admissão ilimitada. Sem
-vaga, o Organizer registra a admissão como WAITING no ledger. O EventBridge
-tenta liberar periodicamente a admissão mais antiga por prefixo, sem deixar uma
-Lambda aguardando vaga.
-
-Essa quota limita arquivos ativos, não substitui o dimensionamento de filas,
-concorrência, tamanho de arquivo ou capacidade downstream.
+O dimensionamento de filas, concorrência, tamanho de arquivo e capacidade
+downstream controla o backlog. Não há quota de admissão persistida no ledger.
 
 ---
 
 ## 10. Conclusão e outbox
 
 Quando o job se torna terminal, o ledger grava uma intenção de conclusão na
-mesma transição persistente. O Completion Publisher recebe o Stream, envia o
-evento para a fila de conclusão e confirma a entrega no ledger.
+mesma transição persistente. O Worker envia o evento para a fila de conclusão
+e só então confirma a entrega no ledger.
 
 ~~~text
 Job terminal + intenção pendente (DynamoDB)
                     |
                     v
-             DynamoDB Streams
-                    |
-                    v
-          Completion Publisher
+                 Worker
                     |
                     v
           SQS completion-events
@@ -281,8 +270,8 @@ Job terminal + intenção pendente (DynamoDB)
        marca a intenção como entregue
 ~~~
 
-Uma regra EventBridge consulta intenções pendentes a cada cinco minutos. Isso
-cobre expiração do Stream ou falha entre registrar a intenção e entregá-la. Se
+ Uma nova entrega do chunk ou da mensagem de controle reconcilia intenções
+ pendentes. Isso cobre falha entre registrar a intenção e entregá-la. Se
 a falha ocorrer depois do envio e antes da confirmação, pode haver duplicação;
 o eventId de conclusão permanece estável.
 
@@ -357,9 +346,8 @@ Antes de incluir um prefixo, formato ou consumidor, responda:
 
 ## 14. Referências de implementação
 
-- lambdas/cmd/organizer: entrada, admissão e planejamento.
-- lambdas/cmd/worker: processamento e publicação de registros.
-- lambdas/cmd/completion-publisher: entrega de conclusões.
+- cmd/organizer: entrada, admissão e planejamento.
+- cmd/worker: processamento, publicação de registros e conclusões.
 - internal/application: casos de uso e portas.
 - internal/domain/f2e: contratos, estados, envelopes e identificadores.
 - terraform: recursos AWS e módulos por prefixo.

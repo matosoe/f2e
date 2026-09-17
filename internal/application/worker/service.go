@@ -122,7 +122,7 @@ func (s Service) processWithMetrics(ctx context.Context, body []byte, attempt in
 	if j.Configuration.EventFormat != "" {
 		s.Config.EventFormat = j.Configuration.EventFormat
 	}
-	// T20: per-prefix output queue routing — the job carries its own queue URL
+	// The job carries its own queue URL for optional per-prefix routing.
 	// when the prefix has a dedicated output queue; otherwise fall back to the
 	// Lambda environment's default.
 	if j.Configuration.OutputQueueURL != "" {

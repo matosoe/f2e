@@ -36,7 +36,7 @@ O F2E suporta três modos de delimitação:
 | Modo | Registro lógico |
 |---|---|
 | `text` | Uma linha física terminada por CR, LF ou CRLF. |
-| `json` | Um elemento do array selecionado em `arrayPath`, com parsing estrutural. |
+| `json` | Um objeto delimitado pelo nome de campo configurado para sua primeira propriedade. |
 | `multi-line` | Linhas físicas agrupadas por marcadores configurados. |
 
 Tipos removidos (`fixed-width`, `jsonl`, `ndjson`, `csv`, `binary`) produzem erro explícito. Para informações sobre migração, consulte [contratos](documentacao/contratos.md) e o [ADR 0005](documentacao/adr/0005-tres-modos-de-delimitacao.md).
@@ -90,7 +90,7 @@ O valor de cada parâmetro é um JSON completo. Exemplo para texto:
 | `maxChunkBytes` | Maior faixa de bytes entregue a um Worker. |
 | `maxRecordLengthBytes` | Limite de linha para `text`; use `0` quando não se aplica. |
 | `eventSchemaId`, `eventSchemaVersion`, `eventFormat` | Identificação do contrato dos eventos de saída. |
-| `jsonArrayLayout` | Para `json`: contém `arrayPath`, `firstFieldName` e `maxBytesPerElement`. |
+| `jsonArrayLayout` | Para `json`: contém `firstFieldName` (nome da primeira chave, não conteúdo de campo) e `maxBytesPerElement`. |
 | `multiLineLayout` | Para `multi-line`: contém campos de quebra, inclusão/ignorar, separador e `maxBytesPerRecord`. |
 
 `jsonArrayLayout` é obrigatório para `json`; `multiLineLayout` é obrigatório
@@ -244,7 +244,7 @@ Todos os limites e opções por arquivo estão documentados em [Contratos versio
 
 - [Arquitetura da solução](documentacao/arquitetura.md)
 - [Contratos versionados](documentacao/contratos.md)
-- [Especificação do Envelope de Eventos](documentacao/Especificação%20—%20Envelope%20de%20Eventos%20do%20F2E.md)
+- [JSON Schema do Envelope de Eventos](documentacao/schemas/envelope-v1.schema.json)
 - [Operação local](documentacao/operacao_local.md)
 - [Operação na AWS](documentacao/operacao_aws.md)
 - [Runbooks operacionais](documentacao/runbooks.md)
@@ -253,7 +253,7 @@ Todos os limites e opções por arquivo estão documentados em [Contratos versio
 
 ## Uso em produção
 
-Antes de implantar, valide carga e concorrência com arquivos reais, defina SLOs, alarmes e capacidade. Também é necessário aprovar contas, regiões, rede, IAM, KMS, classificação de dados, retenções e estratégia de recuperação. O F2E preserva a posição de cada registro na origem, mas o processamento distribuído não oferece ordenação global dos eventos de saída. Para o checklist completo, veja o [plano de adequação corporativa](documentacao/plano_adequacao_corporativa_f2e.md).
+Antes de implantar, valide carga e concorrência com arquivos reais, defina SLOs, alarmes e capacidade. Também é necessário aprovar contas, regiões, rede, IAM, KMS, classificação de dados, retenções e estratégia de recuperação. O F2E preserva a posição de cada registro na origem, mas o processamento distribuído não oferece ordenação global dos eventos de saída. Para as condições e limitações que devem orientar essa validação, veja os [requisitos e restrições](documentacao/requisitos_e_restricoes.md).
 
 ## Licença
 

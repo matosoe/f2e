@@ -31,7 +31,7 @@ for spec in \
   max_file_bytes=10737418240
   max_chunk_bytes=67108864
   [[ "$data_type" == text ]] && max_record_length=65536
-  [[ "$data_type" == json ]] && extra=',"jsonArrayLayout":{"arrayPath":"","firstFieldName":"id","maxBytesPerElement":65536}'
+  [[ "$data_type" == json ]] && extra=',"jsonArrayLayout":{"firstFieldName":"id","maxBytesPerElement":65536}'
   [[ "$data_type" == multi-line ]] && extra=',"multiLineLayout":{"breakFields":[{"startByte":0,"lengthBytes":1,"value":"1"}],"lineSeparator":"\u001c","maxBytesPerRecord":65536}'
   value="{\"bucket\":\"f2e-input\",\"prefix\":\"$prefix/\",\"dataType\":\"$data_type\",\"recordsPerChunk\":1000,\"batchSize\":10,\"maxEventBytes\":1044480,\"maxFileBytes\":$max_file_bytes,\"maxChunkBytes\":$max_chunk_bytes,\"maxRecordLengthBytes\":$max_record_length,\"eventSchemaId\":\"f2e-record\",\"eventSchemaVersion\":\"1\",\"eventFormat\":\"json\"$extra}"
   awslocal ssm put-parameter --name "$config_path/$prefix" --type String --value "$value" --overwrite >/dev/null

@@ -13,17 +13,6 @@ import (
 // without processing or publishing its records again.
 var ErrAlreadyCompleted = errors.New("chunk already completed")
 
-// Deprecated compatibility types remain private to the DynamoDB adapter while
-// historic ledger rows are drained. They are not part of JobLedger.
-var ErrQuotaExceeded = errors.New("prefix active-job quota exceeded")
-
-type WaitingAdmission struct {
-	FileID   string
-	PrefixID string
-	Body     string
-	QueuedAt string
-}
-
 // MessageAttribute is an SQS/SNS message attribute.
 type MessageAttribute struct {
 	DataType string
@@ -99,10 +88,9 @@ type CompletionLedger interface {
 // The lifecycle is split into the following phases:
 // admission (Admit), validation (BeginValidation/RejectJob), planning
 // (BeginPlanning/Plan), scheduling (MarkScheduled/MarkSchedulingFailed),
-// execution (AcquireChunk/StartChunk/CompleteChunk/FailChunk) and completion
-// (FinalizeJob). The phased methods below are declared now (T07) but full
-// persistence is introduced in T08; implementations may return
-// ErrNotImplemented until then.
+// execution (AcquireChunk/StartChunk/CompleteChunk/FailChunk). Terminal
+// transitions and their completion outbox entries are reconciled by the
+// Worker through CompletionLedger.
 type JobLedger interface {
 	// Admission binds a receipt to a jobId/fileId and returns whether the job
 	// was newly acquired, already completed, or busy in another execution.
@@ -116,8 +104,8 @@ type JobLedger interface {
 	// BeginPlanning moves a VALIDATING job into PLANNING.
 	BeginPlanning(context.Context, string) error
 
-	// Plan (legacy) seals the chunk manifest and moves the job from PLANNING to
-	// PROCESSING (or COMPLETED when the plan is empty).
+	// Plan seals the chunk manifest. Empty manifests are completed by a durable
+	// Worker control message, so terminal publication has one owner.
 	Plan(context.Context, f2e.JobPlan, []f2e.ChunkJob) error
 	// MarkChunksScheduled records the durable publication checkpoint after SQS
 	// confirms a chunk message. Replaying an uncheckpointed chunk keeps its ID.
@@ -136,29 +124,6 @@ type JobLedger interface {
 	FailChunk(context.Context, f2e.ChunkResult) error
 
 	Replay(context.Context, string, string, []string) ([]f2e.ChunkJob, error)
-
-	// ReserveSlot atomically increments the active-job counter for prefixID and
-	// returns ErrQuotaExceeded if the counter would exceed maxActiveJobs (>0).
-	// When maxActiveJobs is 0 the call is a no-op (unlimited). The counter is
-	// stored as a separate item so the admission PutItem and the quota update
-	// can be issued in a TransactWriteItems for atomicity.
-	//
-	// The caller must pair every successful ReserveSlot with a corresponding
-	// ReleaseSlot when the job reaches a terminal state, and must call
-	// RecoverQuotaLeaks during startup to release slots for jobs that crashed
-	// before reaching terminal.
-
-	// ReleaseSlot atomically decrements the active-job counter for prefixID.
-	// ReleaseSlot is idempotent: if the counter is already 0 it remains 0.
-	// It must be called exactly once per terminal job state transition, even if
-	// the completion event publication fails. A second call due to a retry or
-	// duplicate terminal is a no-op.
-
-	// EnqueueWaitingAdmission durably records an admission that could not obtain
-	// quota. Repeated S3/SQS deliveries for the same physical file are a no-op.
-	// ClaimWaitingAdmissions returns the oldest waiting admission for each
-	// prefix and marks it RELEASING. The caller must either remove it after a
-	// successful admission or return it to WAITING.
 }
 
 // SourceResolver fetches a byte range for a chunk job, hiding the underlying

@@ -58,7 +58,7 @@ func TestPlanRejectsObjectChangedAfterNonVersionedAdmission(t *testing.T) {
 
 func TestPlanCarriesFormatAndLayoutToWorkerJob(t *testing.T) {
 	s := Service{Store: rangeStore{`{"items":[{"a":1}]}`}, Config: config.Config{RecordsPerChunk: 10}}
-	layout := f2e.JSONArrayLayout{ArrayPath: "items", FirstFieldName: "a", MaxBytesPerElement: 16}
+	layout := f2e.JSONArrayLayout{FirstFieldName: "a", MaxBytesPerElement: 16}
 	jobs, err := s.Plan(context.Background(), f2e.OrganizerRequest{SchemaVersion: f2e.SchemaVersion, Files: []f2e.FileRequest{{Bucket: "b", Key: "events.json", DataType: f2e.DataTypeJSON, JSONArrayLayout: layout}}})
 	if err != nil || len(jobs) != 1 || jobs[0].DataType != f2e.DataTypeJSON || jobs[0].JSONArrayLayout.MaxBytesPerElement != 16 {
 		t.Fatalf("jobs=%+v err=%v", jobs, err)
@@ -201,7 +201,7 @@ func TestMultiLineJobsLayoutCarriedToJob(t *testing.T) {
 	}
 }
 
-func TestMultiLineJobsRejectsEmptyBreakMarker(t *testing.T) {
+func TestMultiLineJobsRejectsEmptyBreakFields(t *testing.T) {
 	s := Service{Store: rangeStore{"x\n"}, Config: config.Config{RecordsPerChunk: 1}}
 	_, err := s.Plan(context.Background(), f2e.OrganizerRequest{
 		SchemaVersion: f2e.SchemaVersion,
@@ -209,7 +209,7 @@ func TestMultiLineJobsRejectsEmptyBreakMarker(t *testing.T) {
 			MultiLineLayout: f2e.MultiLineLayout{MaxBytesPerRecord: 10}}},
 	})
 	if err == nil {
-		t.Fatal("expected error for missing breakMarker")
+		t.Fatal("expected error for missing breakFields")
 	}
 }
 
@@ -244,7 +244,7 @@ func TestJSONArrayJobsRootArray(t *testing.T) {
 	// Root array with 3 elements; MaxBytesPerElement=10 → nominal=10 per chunk of 1.
 	data := `[{"a":1},{"b":2},{"c":3}]`
 	s := Service{Store: rangeStore{data}, Config: config.Config{RecordsPerChunk: 1}}
-	layout := f2e.JSONArrayLayout{ArrayPath: "", FirstFieldName: "a", MaxBytesPerElement: 10}
+	layout := f2e.JSONArrayLayout{FirstFieldName: "a", MaxBytesPerElement: 10}
 	jobs, err := s.Plan(context.Background(), f2e.OrganizerRequest{
 		SchemaVersion: f2e.SchemaVersion,
 		Files:         []f2e.FileRequest{{Bucket: "b", Key: "k", DataType: f2e.DataTypeJSON, JSONArrayLayout: layout}},
@@ -260,11 +260,10 @@ func TestJSONArrayJobsRootArray(t *testing.T) {
 	}
 }
 
-func TestJSONArrayJobsNestedArray(t *testing.T) {
-	// Array nested at "items"; 2 elements of ~7 bytes each.
-	data := `{"meta":"x","items":[{"a":1},{"b":2}]}`
+func TestJSONArrayJobsUseOnlyObjectMetadata(t *testing.T) {
+	data := `[{"a":1},{"a":2}]`
 	s := Service{Store: rangeStore{data}, Config: config.Config{RecordsPerChunk: 2}}
-	layout := f2e.JSONArrayLayout{ArrayPath: "items", FirstFieldName: "a", MaxBytesPerElement: 10}
+	layout := f2e.JSONArrayLayout{FirstFieldName: "a", MaxBytesPerElement: 10}
 	jobs, err := s.Plan(context.Background(), f2e.OrganizerRequest{
 		SchemaVersion: f2e.SchemaVersion,
 		Files:         []f2e.FileRequest{{Bucket: "b", Key: "k", DataType: f2e.DataTypeJSON, JSONArrayLayout: layout}},
@@ -272,8 +271,8 @@ func TestJSONArrayJobsNestedArray(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Both elements fit in a single chunk (nominalSize=2*10=20).
-	if len(jobs) != 2 {
+	// The organizer does not inspect the payload while planning.
+	if len(jobs) != 1 {
 		t.Fatalf("expected nominal chunks without content reads, got %d: %+v", len(jobs), jobs)
 	}
 }
@@ -282,7 +281,7 @@ func TestJSONArrayJobsMultiChunk(t *testing.T) {
 	// Array with 4 elements; RecordsPerChunk=2, MaxBytesPerElement=8 → 2 chunks.
 	data := `[{"a":1},{"b":2},{"c":3},{"d":4}]`
 	s := Service{Store: rangeStore{data}, Config: config.Config{RecordsPerChunk: 2}}
-	layout := f2e.JSONArrayLayout{ArrayPath: "", FirstFieldName: "a", MaxBytesPerElement: 8}
+	layout := f2e.JSONArrayLayout{FirstFieldName: "a", MaxBytesPerElement: 8}
 	jobs, err := s.Plan(context.Background(), f2e.OrganizerRequest{
 		SchemaVersion: f2e.SchemaVersion,
 		Files:         []f2e.FileRequest{{Bucket: "b", Key: "k", DataType: f2e.DataTypeJSON, JSONArrayLayout: layout}},

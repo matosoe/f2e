@@ -2,6 +2,8 @@ package aws
 
 import (
 	"context"
+	"io"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -9,13 +11,17 @@ import (
 	"github.com/f2e/f2e/internal/domain/f2e"
 )
 
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
 func TestPresignedGetRangeRejectsUnsafeURLs(t *testing.T) {
 	for _, raw := range []string{
 		"http://bucket.s3.amazonaws.com/object",
 		"https://localhost/object",
 		"https://bucket.example.com/object",
 	} {
-		if _, err := presignedGetRange(context.Background(), raw, 0, 1); err == nil {
+		if _, err := presignedGetRange(context.Background(), raw, 0, 1, f2e.ObjectIdentity{}); err == nil {
 			t.Fatalf("expected URL %q to be rejected", raw)
 		}
 	}
@@ -37,14 +43,6 @@ func TestValidateOutboundMessageLimitsAttributesAndTotalSize(t *testing.T) {
 	}
 }
 
-func TestSendCompletionRejectsMessageAboveSQSLimit(t *testing.T) {
-	a := AWS{}
-	err := a.SendCompletion(context.Background(), "queue-url", strings.Repeat("x", port.MaxSQSMessageBytes+1))
-	if err == nil || !strings.Contains(err.Error(), "SQS limit") {
-		t.Fatalf("expected SQS size limit error, got %v", err)
-	}
-}
-
 func TestValidateS3RangeIdentityDetectsReplacementAndTruncation(t *testing.T) {
 	identity := f2e.ObjectIdentity{ETag: `"original"`, VersionID: "v1", Size: 100}
 	for name, err := range map[string]error{
@@ -62,7 +60,31 @@ func TestValidateS3RangeIdentityDetectsReplacementAndTruncation(t *testing.T) {
 }
 
 func TestPresignedGetRangeRejectsInvalidRange(t *testing.T) {
-	if _, err := presignedGetRange(context.Background(), "https://bucket.s3.amazonaws.com/object", 1, 0); err == nil {
+	if _, err := presignedGetRange(context.Background(), "https://bucket.s3.amazonaws.com/object", 1, 0, f2e.ObjectIdentity{}); err == nil {
 		t.Fatal("expected invalid range to be rejected")
+	}
+}
+
+func TestPresignedGetRangeValidatesRangeAndObjectIdentity(t *testing.T) {
+	original := http.DefaultTransport
+	t.Cleanup(func() { http.DefaultTransport = original })
+	http.DefaultTransport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if got := request.Header.Get("Range"); got != "bytes=2-4" {
+			t.Fatalf("Range=%q, want bytes=2-4", got)
+		}
+		return &http.Response{
+			StatusCode:    http.StatusPartialContent,
+			ContentLength: 3,
+			Header: http.Header{
+				"Content-Range":    []string{"bytes 2-4/10"},
+				"Etag":             []string{`"changed"`},
+				"X-Amz-Version-Id": []string{"v1"},
+			},
+			Body: io.NopCloser(strings.NewReader("abc")),
+		}, nil
+	})
+	_, err := presignedGetRange(context.Background(), "https://bucket.s3.amazonaws.com/object", 2, 4, f2e.ObjectIdentity{ETag: `"expected"`, VersionID: "v1", Size: 10})
+	if err == nil || !strings.Contains(err.Error(), "identity") {
+		t.Fatalf("expected identity validation error, got %v", err)
 	}
 }

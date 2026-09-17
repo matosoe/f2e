@@ -15,7 +15,7 @@ func TestLoadRejectsInvalidNumericConfiguration(t *testing.T) {
 }
 
 func TestLoadUsesSafeDefaults(t *testing.T) {
-	for _, key := range []string{"F2E_RECORDS_PER_CHUNK", "F2E_BATCH_SIZE", "F2E_MAX_EVENT_BYTES", "F2E_MAX_RECEIVE_COUNT", "F2E_JSON_ARRAY_SEARCH_BYTES", "F2E_LEDGER_RETENTION_DAYS", "F2E_MAX_FILE_BYTES", "F2E_MAX_CHUNK_BYTES"} {
+	for _, key := range []string{"F2E_RECORDS_PER_CHUNK", "F2E_BATCH_SIZE", "F2E_MAX_EVENT_BYTES", "F2E_MAX_RECEIVE_COUNT", "F2E_LEDGER_RETENTION_DAYS", "F2E_MAX_FILE_BYTES", "F2E_MAX_CHUNK_BYTES"} {
 		t.Setenv(key, "")
 	}
 	c, err := Load()

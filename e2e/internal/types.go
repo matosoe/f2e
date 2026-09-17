@@ -33,7 +33,6 @@ type LineMatchField struct {
 
 // JSONArrayLayout describes how to iterate a JSON array inside a file.
 type JSONArrayLayout struct {
-	ArrayPath          string `json:"arrayPath,omitempty"`
 	FirstFieldName     string `json:"firstFieldName"`
 	MaxBytesPerElement int64  `json:"maxBytesPerElement"`
 }

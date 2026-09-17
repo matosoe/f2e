@@ -18,7 +18,7 @@ Manter somente três modos:
 | Modo | Registro lógico |
 |---|---|
 | `text` | Uma linha física terminada por CR, LF ou CRLF. |
-| `json` | Um elemento do array selecionado via `arrayPath`, com parsing estrutural. |
+| `json` | Um objeto identificado e delimitado pelo nome configurado para seu primeiro campo. |
 | `multi-line` | Linhas físicas agrupadas por marcadores configurados via `MultiLineLayout`. |
 
 ### Contratos de terminadores
@@ -41,14 +41,14 @@ UTF-8 inválidos geram erro identificável; não há substituição silenciosa.
 
 ### Modo `json`
 
-Preserva o contrato atual de seleção por `arrayPath` com parser estrutural.
+Usa `firstFieldName` como nome de chave JSON para identificar o primeiro campo de cada objeto e delimitar os registros; ocorrências desse texto no conteúdo de campos não são gatilhos. O produtor mantém a restrição de não usar esse nome em objetos aninhados nem em JSON serializado no valor de outro campo. O array é obrigatoriamente raiz.
 Array vazio conclui com zero registros e zero chunks, sem aguardar Worker.
-Busca limitada por `F2E_JSON_ARRAY_SEARCH_BYTES` (1 MiB padrão).
+A busca é limitada por `maxBytesPerElement`.
 
 ### Modo `multi-line`
 
-Reutiliza o leitor físico compartilhado. Marcadores (`BreakMarker`,
-`AcceptedPrefixes`, `LineSeparator`) preservados. Cabeçalhos/trailers ignorados
+Reutiliza o leitor físico compartilhado. `breakFields`, `includeFields` e
+`ignoreFields` são conjuntos de comparações posicionais por bytes; cabeçalhos/trailers são ignorados
 são contados como linhas físicas ignoradas, em métrica separada de registros
 lógicos. Terminador de linhas físicas também é obrigatório neste modo.
 

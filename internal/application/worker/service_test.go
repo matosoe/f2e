@@ -502,7 +502,7 @@ func TestJSONArrayWorkerSingleChunk(t *testing.T) {
 	// File: [{"a":1},{"b":2},{"c":3}] — array starts at byte 1, 3 elements.
 	data := `[{"a":1},{"a":2},{"a":3}]`
 	q := &queue{}
-	layout := f2e.JSONArrayLayout{ArrayPath: "", FirstFieldName: "a", MaxBytesPerElement: 10}
+	layout := f2e.JSONArrayLayout{FirstFieldName: "a", MaxBytesPerElement: 10}
 	job := f2e.ChunkJob{
 		SchemaVersion:        f2e.SchemaVersion,
 		FileID:               "f",
@@ -538,25 +538,22 @@ func TestJSONArrayWorkerSingleChunk(t *testing.T) {
 	}
 }
 
-func TestJSONArrayWorkerNestedAndMultiChunk(t *testing.T) {
-	// File: {"items":[{"a":1},{"b":2},{"c":3},{"d":4}]}
-	// Array starts at byte 10 (after '{"items":[').
-	data := `{"items":[{"a":1},{"a":2},{"a":3},{"a":4}]}`
+func TestJSONArrayWorkerMultiChunk(t *testing.T) {
+	data := `[{"a":1},{"a":2},{"a":3},{"a":4}]`
 	// Manually create two jobs that would result from planning.
-	layout := f2e.JSONArrayLayout{ArrayPath: "items", FirstFieldName: "a", MaxBytesPerElement: 8}
+	layout := f2e.JSONArrayLayout{FirstFieldName: "a", MaxBytesPerElement: 8}
 	jobs := []f2e.ChunkJob{
 		{
 			SchemaVersion: f2e.SchemaVersion, FileID: "f", JobID: "j", ChunkID: "00000001",
 			Bucket: "b", Key: "k",
-			// owns bytes [10..24], padding to end of {"b":2}
-			StartByte: 10, EndByteInclusive: 24, MaxRecordLengthBytes: 8,
+			StartByte: 0, EndByteInclusive: 16, MaxRecordLengthBytes: 8,
 			TrailingPaddingBytes: 0,
 			DataType:             f2e.DataTypeJSON, JSONArrayLayout: layout,
 		},
 		{
 			SchemaVersion: f2e.SchemaVersion, FileID: "f", JobID: "j", ChunkID: "00000002",
 			Bucket: "b", Key: "k",
-			StartByte: 26, EndByteInclusive: int64(len(data) - 1), MaxRecordLengthBytes: 8,
+			StartByte: 17, EndByteInclusive: int64(len(data) - 1), MaxRecordLengthBytes: 8,
 			TrailingPaddingBytes: 0,
 			DataType:             f2e.DataTypeJSON, JSONArrayLayout: layout,
 		},

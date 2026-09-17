@@ -46,7 +46,7 @@ determinada de forma previsível e limitada.
 | Formato | Regra suportada | Limite necessário para paralelizar |
 |---|---|---|
 | text | Uma linha terminada por CR, LF ou CRLF. | maxRecordLengthBytes para arquivos divididos. |
-| json | Um elemento de array no arrayPath configurado. | maxBytesPerElement e janela de busca do array. |
+| json | Um objeto identificado e delimitado pelo nome da primeira chave configurada. | firstFieldName, maxBytesPerElement e a regra de unicidade do nome como chave estrutural. |
 | multi-line | Linhas agrupadas por marcador de início e prefixes aceitos. | maxBytesPerRecord e regra de marcador. |
 
 O arquivo deve respeitar os máximos configurados para tamanho total, chunk,
@@ -94,7 +94,7 @@ sem fronteira previsível, dividir o arquivo pode corromper o registro lógico.
 
 ### Lambda
 
-- Organizer, Workers e Completion Publisher executam sob demanda.
+- Organizer e Worker executam sob demanda.
 - Tempo de execução, memória, armazenamento efêmero, concorrência e limites da
   conta restringem throughput e tamanho de trabalho por invocação.
 - O Worker lê intervalos S3; ele não deve depender de carregar todo arquivo na
@@ -156,10 +156,9 @@ e capacidade de consumidores. Backlogs nas filas são o mecanismo de
 desacoplamento e um sinal operacional de que uma etapa está mais lenta que a
 anterior.
 
-Cada prefixo registrado tem Worker e filas de chunks/saída próprios. Essa
-separação evita que um prefixo consuma a fila de chunks de outro. O limite
-opcional maxActiveJobs impede admitir arquivos ilimitadamente por prefixo; os
-excedentes ficam em WAITING no ledger até a tentativa periódica de liberação.
+Os jobs preservam no snapshot a fila de saída escolhida pelo prefixo. Por
+padrão ela é compartilhada; um prefixo pode usar fila dedicada. A fila de
+chunks e a fila de conclusão permanecem únicas.
 
 ## 7. Decisão de adoção
 

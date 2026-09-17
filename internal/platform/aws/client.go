@@ -191,31 +191,11 @@ func validateOutboundMessage(message port.OutboundMessage) error {
 	return nil
 }
 
-// SendCompletion sends a single completion event body to the dedicated
-// completion SQS queue. It is called by the completion-publisher Lambda after
-// decoding an outbox intent from DynamoDB Streams or the recovery path.
-func (a *AWS) SendCompletion(ctx context.Context, queueURL string, body string) error {
-	if queueURL == "" {
-		return fmt.Errorf("completion queue URL is empty")
-	}
-	if body == "" {
-		return fmt.Errorf("completion event body is empty")
-	}
-	if len(body) > port.MaxSQSMessageBytes {
-		return fmt.Errorf("completion event exceeds %d byte SQS limit: %d", port.MaxSQSMessageBytes, len(body))
-	}
-	_, err := a.SQS.SendMessage(ctx, &sqs.SendMessageInput{
-		QueueUrl:    &queueURL,
-		MessageBody: &body,
-	})
-	return err
-}
-
 // OpenChunkRange implements port.SourceResolver. It uses the pre-signed URL when
 // present, falling back to S3 SDK access via bucket/key.
 func (a *AWS) OpenChunkRange(ctx context.Context, job f2e.ChunkJob, start, end int64) (io.ReadCloser, error) {
 	if job.PresignedURL != "" {
-		return presignedGetRange(ctx, job.PresignedURL, start, end)
+		return presignedGetRange(ctx, job.PresignedURL, start, end, f2e.ObjectIdentity{Bucket: job.Bucket, Key: job.Key, VersionID: job.VersionID, ETag: job.ETag, Size: job.FileSize})
 	}
 	if start < 0 || end < start || job.FileSize < 1 || end >= job.FileSize {
 		return nil, fmt.Errorf("invalid immutable object range %d-%d for size %d", start, end, job.FileSize)
@@ -256,7 +236,7 @@ func validateS3RangeIdentity(object f2e.ObjectIdentity, start, end, contentLengt
 	return nil
 }
 
-func presignedGetRange(ctx context.Context, rawURL string, start, end int64) (io.ReadCloser, error) {
+func presignedGetRange(ctx context.Context, rawURL string, start, end int64, object f2e.ObjectIdentity) (io.ReadCloser, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil || u == nil {
 		return nil, fmt.Errorf("invalid pre-signed URL")
@@ -289,10 +269,9 @@ func presignedGetRange(ctx context.Context, rawURL string, start, end int64) (io
 		}
 		return nil, fmt.Errorf("presigned range request failed with status %d", resp.StatusCode)
 	}
-	expectedRange := fmt.Sprintf("bytes %d-%d/", start, end)
-	if resp.ContentLength != end-start+1 || !strings.HasPrefix(resp.Header.Get("Content-Range"), expectedRange) {
+	if err := validateS3RangeIdentity(object, start, end, resp.ContentLength, resp.Header.Get("Content-Range"), resp.Header.Get("ETag"), resp.Header.Get("x-amz-version-id")); err != nil {
 		resp.Body.Close()
-		return nil, fmt.Errorf("presigned response range does not match requested bytes")
+		return nil, fmt.Errorf("presigned response identity does not match requested object: %w", err)
 	}
 	return resp.Body, nil
 }

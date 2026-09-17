@@ -27,71 +27,9 @@ func Matches(line []byte, fields []f2e.LineMatchField) bool {
 	return true
 }
 
-// ReadMultiLine is retained as a source-compatible adapter for callers during
-// migration; new contracts use ReadMultiLineLayout.
-func ReadMultiLine(ctx context.Context, r io.Reader, breakPosition int, breakMarker string, acceptedPrefixes []string, lineSeparator string, maxLineBytes int64, fn func(number, offset int64, raw string) error) error {
-	_, err := ReadMultiLineWithStats(ctx, r, breakPosition, breakMarker, acceptedPrefixes, lineSeparator, maxLineBytes, fn)
-	return err
-}
-
 func ReadMultiLineLayout(ctx context.Context, r io.Reader, layout f2e.MultiLineLayout, fn func(number, offset int64, raw string) error) error {
 	_, err := ReadMultiLineLayoutWithStats(ctx, r, layout, fn)
 	return err
-}
-
-func ReadMultiLineWithStats(ctx context.Context, r io.Reader, breakPosition int, breakMarker string, acceptedPrefixes []string, lineSeparator string, maxLineBytes int64, fn func(number, offset int64, raw string) error) (Stats, error) {
-	if lineSeparator == "" {
-		lineSeparator = DefaultLineSeparator
-	}
-	var stats Stats
-	var n, start int64
-	var lines []string
-	emit := func() error {
-		if len(lines) == 0 {
-			return nil
-		}
-		raw := strings.Join(lines, lineSeparator)
-		lines = nil
-		if err := fn(n, start, raw); err != nil {
-			return err
-		}
-		n++
-		return nil
-	}
-	err := lineio.ReadLines(ctx, r, maxLineBytes, false, func(_ int64, off int64, line string) error {
-		sub := ""
-		if breakPosition >= 0 && breakPosition < len(line) {
-			sub = line[breakPosition:]
-		}
-		if strings.HasPrefix(sub, breakMarker) {
-			if err := emit(); err != nil {
-				return err
-			}
-			start = off
-			lines = []string{line}
-			return nil
-		}
-		if len(lines) == 0 {
-			stats.HeaderLinesIgnored++
-			return nil
-		}
-		if len(acceptedPrefixes) == 0 {
-			lines = append(lines, line)
-			return nil
-		}
-		for _, p := range acceptedPrefixes {
-			if strings.HasPrefix(sub, p) {
-				lines = append(lines, line)
-				return nil
-			}
-		}
-		stats.TrailerLinesIgnored++
-		return nil
-	})
-	if err != nil {
-		return stats, err
-	}
-	return stats, emit()
 }
 
 func ReadMultiLineLayoutWithStats(ctx context.Context, r io.Reader, layout f2e.MultiLineLayout, fn func(number, offset int64, raw string) error) (Stats, error) {
@@ -125,6 +63,12 @@ func ReadMultiLineLayoutWithStats(ctx context.Context, r io.Reader, layout f2e.M
 			recLines = append(recLines, line)
 		case len(recLines) > 0 && Matches(bytes, layout.IncludeFields):
 			recLines = append(recLines, line)
+		case Matches(bytes, layout.IgnoreFields):
+			if len(recLines) > 0 {
+				stats.TrailerLinesIgnored++
+			} else {
+				stats.HeaderLinesIgnored++
+			}
 		case len(recLines) > 0:
 			stats.TrailerLinesIgnored++
 		default:

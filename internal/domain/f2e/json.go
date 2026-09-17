@@ -6,11 +6,32 @@ import (
 )
 
 // FindJSONObjectStarts finds complete object elements whose first key is name.
-// It recognises JSON strings/escapes and only accepts a key immediately after
-// an object opening brace, so values containing the marker are never selected.
+//
+// name is matched as a decoded JSON object key, never as arbitrary text. The
+// lexical scan deliberately skips JSON strings (including escaped characters),
+// so a serialized object or a field name embedded in a field value cannot be a
+// record boundary. The producer contract still requires name not to be used as
+// the first key of nested objects.
 func FindJSONObjectStarts(data []byte, name string) [][2]int {
 	var found [][2]int
+	inString := false
+	escaped := false
 	for i := 0; i < len(data); i++ {
+		if inString {
+			switch {
+			case escaped:
+				escaped = false
+			case data[i] == '\\':
+				escaped = true
+			case data[i] == '"':
+				inString = false
+			}
+			continue
+		}
+		if data[i] == '"' {
+			inString = true
+			continue
+		}
 		if data[i] != '{' {
 			continue
 		}

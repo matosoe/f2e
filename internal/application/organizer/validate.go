@@ -25,7 +25,7 @@ func ValidateGlobalLimits(limits f2e.GlobalLimits) error {
 
 // ValidatePrefixConfiguration checks that the prefix configuration is within
 // acceptable bounds and consistent with the global limits. It also validates
-// the T20 routing fields (PrefixID, OutputQueueURL).
+// routing fields (PrefixID, OutputQueueURL).
 func ValidatePrefixConfiguration(c f2e.PrefixConfiguration, limits f2e.GlobalLimits) error {
 	if c.DataType != f2e.DataTypeText && c.DataType != f2e.DataTypeJSON && c.DataType != f2e.DataTypeMultiLine {
 		return fmt.Errorf("unsupported data type %q", c.DataType)
@@ -65,7 +65,7 @@ func ValidatePrefixConfiguration(c f2e.PrefixConfiguration, limits f2e.GlobalLim
 	default:
 		return fmt.Errorf("invalid SSM configuration for s3://%s/%s: unknown outputMode %q (valid: single, bundle)", c.Bucket, c.Prefix, c.OutputMode)
 	}
-	// ── Authorisation and routing validation (T20) ────────────────────────────
+	// Authorisation and routing validation.
 	if c.PrefixID != "" {
 		for _, ch := range c.PrefixID {
 			if !((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '-' || ch == '_') {

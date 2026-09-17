@@ -6,7 +6,6 @@
       "key": "entrada/eventos.json",
       "dataType": "json",
       "jsonArrayLayout": {
-        "arrayPath": "events",
         "firstFieldName": "id",
         "maxBytesPerElement": 65536
       }

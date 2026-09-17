@@ -236,7 +236,7 @@ while (( $(date +%s) < deadline )); do
   items="$(aws_local dynamodb scan --table-name "$table" --consistent-read --output json)"
   job="$(jq -c --arg key "$object_key" '[.Items[] | select(.sk.S == "JOB" and .key.S == $key)] | sort_by(.createdAt.S) | last // {}' <<<"$items")"
   job_id="$(jq -r '.jobId.S // empty' <<<"$job")"
-  status="$(jq -r '.status.S // "WAITING"' <<<"$job")"
+  status="$(jq -r '.status.S // "UNKNOWN"' <<<"$job")"
   completed="$(jq -r '.completedChunks.N // "0"' <<<"$job")"
   expected="$(jq -r '.expectedChunks.N // "0"' <<<"$job")"
   published="$(jq -r '.recordsPublished.N // .recordsProduced.N // "0"' <<<"$job")"

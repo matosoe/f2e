@@ -21,8 +21,6 @@ import (
 
 var _ port.JobLedger = (*AWS)(nil)
 
-const waitingAdmissionMarker = "1"
-
 func text(v string) types.AttributeValue { return &types.AttributeValueMemberS{Value: v} }
 func number(v int64) types.AttributeValue {
 	return &types.AttributeValueMemberN{Value: strconv.FormatInt(v, 10)}
@@ -833,8 +831,8 @@ func (a *AWS) AcquireChunk(ctx context.Context, jobID, chunkID string) (f2e.Acqu
 // The completion intent pattern ensures that every terminal job transition
 // produces exactly one logical delivery record. The intent is written to a
 // dedicated sort-key COMPLETION_INTENT#<version> under the same partition as
-// the job. A sparse GSI (pending-intents-index) on the intentPending attribute
-// allows the publisher (T13) to query pending intents without a full Scan.
+// the job and reconciled by the Worker that processes a chunk or durable
+// completion control message.
 //
 // Item layout:
 //   pk: JOB#<jobId>
@@ -850,167 +848,8 @@ func intentSortKey(version int64) string {
 	return fmt.Sprintf("%s%020d", intentSortKeyPrefix, version)
 }
 
-// quotaKey returns the DynamoDB primary key for a per-prefix active-job counter.
-// The item uses pk = "QUOTA#<prefixID>" and sk = "QUOTA" so it is co-located
-// with job items but separated by a different sort-key prefix.
-func quotaKey(prefixID string) map[string]types.AttributeValue {
-	return map[string]types.AttributeValue{
-		"pk": text("QUOTA#" + prefixID),
-		"sk": text("QUOTA"),
-	}
-}
-
-// ReserveSlot atomically increments the per-prefix active-job counter, returning
-// ErrQuotaExceeded if it would exceed maxActiveJobs. When maxActiveJobs is 0 the
-// call is a no-op. Thread-safe via a DynamoDB conditional update.
-func (a *AWS) ReserveSlot(ctx context.Context, prefixID string, maxActiveJobs int) error {
-	if a.LedgerTable == "" {
-		return fmt.Errorf("ledger table is not configured")
-	}
-	if maxActiveJobs == 0 || prefixID == "" {
-		return nil
-	}
-	// Attempt to increment if count < maxActiveJobs.
-	_, err := a.DynamoDB.UpdateItem(ctx, &dynamodb.UpdateItemInput{
-		TableName: aws.String(a.LedgerTable),
-		Key:       quotaKey(prefixID),
-		// Create the counter at 1 if it doesn't exist yet (if_not_exists(activeJobs,0)+1),
-		// but only if the resulting value does not exceed the quota.
-		ConditionExpression: aws.String("attribute_not_exists(activeJobs) OR activeJobs < :max"),
-		UpdateExpression:    aws.String("SET activeJobs = if_not_exists(activeJobs, :zero) + :one, prefixId = :prefix, updatedAt = :now"),
-		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":max":    number(int64(maxActiveJobs)),
-			":zero":   number(0),
-			":one":    number(1),
-			":prefix": text(prefixID),
-			":now":    text(time.Now().UTC().Format(time.RFC3339Nano)),
-		},
-	})
-	if err != nil {
-		if conditionalConflict(err) {
-			return port.ErrQuotaExceeded
-		}
-		return fmt.Errorf("reserve quota slot for prefix %q: %w", prefixID, err)
-	}
-	return nil
-}
-
-// ReleaseSlot atomically decrements the per-prefix active-job counter.
-// It is idempotent: if the counter is already 0 it stays at 0.
-func (a *AWS) ReleaseSlot(ctx context.Context, prefixID string) error {
-	if a.LedgerTable == "" {
-		return fmt.Errorf("ledger table is not configured")
-	}
-	if prefixID == "" {
-		return nil
-	}
-	// Decrement only if activeJobs > 0 to prevent negative counters.
-	_, err := a.DynamoDB.UpdateItem(ctx, &dynamodb.UpdateItemInput{
-		TableName:           aws.String(a.LedgerTable),
-		Key:                 quotaKey(prefixID),
-		ConditionExpression: aws.String("attribute_exists(activeJobs) AND activeJobs > :zero"),
-		UpdateExpression:    aws.String("SET activeJobs = activeJobs - :one, updatedAt = :now"),
-		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":zero": number(0),
-			":one":  number(1),
-			":now":  text(time.Now().UTC().Format(time.RFC3339Nano)),
-		},
-	})
-	if err != nil {
-		if conditionalConflict(err) {
-			// Counter is already 0; no-op (idempotent).
-			return nil
-		}
-		return fmt.Errorf("release quota slot for prefix %q: %w", prefixID, err)
-	}
-	return nil
-}
-
-// EnqueueWaitingAdmission stores a saturated admission once.  The shared
-// ledger is deliberately partitioned by prefix in this auxiliary record:
-// WAITING#<fileId> is immutable and prefixId is carried on every item.
-func (a *AWS) EnqueueWaitingAdmission(ctx context.Context, admission port.WaitingAdmission) error {
-	if a.LedgerTable == "" || admission.FileID == "" || admission.PrefixID == "" || admission.Body == "" {
-		return fmt.Errorf("waiting admission requires ledger table, fileId, prefixId and body")
-	}
-	now := time.Now().UTC()
-	if admission.QueuedAt == "" {
-		admission.QueuedAt = now.Format(time.RFC3339Nano)
-	}
-	_, err := a.DynamoDB.PutItem(ctx, &dynamodb.PutItemInput{TableName: aws.String(a.LedgerTable), Item: map[string]types.AttributeValue{
-		"pk": text("WAITING#" + admission.FileID), "sk": text("WAITING"),
-		"fileId": text(admission.FileID), "prefixId": text(admission.PrefixID), "body": text(admission.Body),
-		"status": text("WAITING"), "waitingAdmission": text(waitingAdmissionMarker),
-		"queuedAt": text(admission.QueuedAt), "updatedAt": text(now.Format(time.RFC3339Nano)),
-		"expiresAt": number(a.jobRetention()),
-	}, ConditionExpression: aws.String("attribute_not_exists(pk)")})
-	if conditionalConflict(err) {
-		return nil
-	}
-	return err
-}
-
-// ClaimWaitingAdmissions selects the oldest waiting entry for each prefix.
-// Claiming is conditional, so overlapping EventBridge invocations cannot
-// release the same physical file twice.
-func (a *AWS) ClaimWaitingAdmissions(ctx context.Context, limit int) ([]port.WaitingAdmission, error) {
-	if limit <= 0 {
-		limit = 25
-	}
-	out, err := a.DynamoDB.Query(ctx, &dynamodb.QueryInput{
-		TableName: aws.String(a.LedgerTable), IndexName: aws.String("waiting-admissions-index"),
-		KeyConditionExpression: aws.String("waitingAdmission = :waiting"), Limit: aws.Int32(int32(limit * 4)),
-		ExpressionAttributeValues: map[string]types.AttributeValue{":waiting": text(waitingAdmissionMarker)},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("query waiting admissions: %w", err)
-	}
-	claimed := make([]port.WaitingAdmission, 0, limit)
-	prefixes := map[string]bool{}
-	for _, item := range out.Items {
-		if len(claimed) == limit {
-			break
-		}
-		fileID, fok := item["fileId"].(*types.AttributeValueMemberS)
-		prefixID, pok := item["prefixId"].(*types.AttributeValueMemberS)
-		body, bok := item["body"].(*types.AttributeValueMemberS)
-		queuedAt, qok := item["queuedAt"].(*types.AttributeValueMemberS)
-		if !fok || !pok || !bok || !qok || prefixes[prefixID.Value] {
-			continue
-		}
-		_, claimErr := a.DynamoDB.UpdateItem(ctx, &dynamodb.UpdateItemInput{TableName: aws.String(a.LedgerTable), Key: map[string]types.AttributeValue{"pk": text("WAITING#" + fileID.Value), "sk": text("WAITING")},
-			ConditionExpression: aws.String("#status = :waiting"), UpdateExpression: aws.String("SET #status = :releasing, updatedAt = :now"),
-			ExpressionAttributeNames: map[string]string{"#status": "status"}, ExpressionAttributeValues: map[string]types.AttributeValue{":waiting": text("WAITING"), ":releasing": text("RELEASING"), ":now": text(time.Now().UTC().Format(time.RFC3339Nano))}})
-		if claimErr != nil {
-			if conditionalConflict(claimErr) {
-				continue
-			}
-			return nil, fmt.Errorf("claim waiting admission: %w", claimErr)
-		}
-		prefixes[prefixID.Value] = true
-		claimed = append(claimed, port.WaitingAdmission{FileID: fileID.Value, PrefixID: prefixID.Value, Body: body.Value, QueuedAt: queuedAt.Value})
-	}
-	return claimed, nil
-}
-
-func (a *AWS) CompleteWaitingAdmission(ctx context.Context, fileID string) error {
-	_, err := a.DynamoDB.DeleteItem(ctx, &dynamodb.DeleteItemInput{TableName: aws.String(a.LedgerTable), Key: map[string]types.AttributeValue{"pk": text("WAITING#" + fileID), "sk": text("WAITING")}, ConditionExpression: aws.String("#status = :releasing"), ExpressionAttributeNames: map[string]string{"#status": "status"}, ExpressionAttributeValues: map[string]types.AttributeValue{":releasing": text("RELEASING")}})
-	if conditionalConflict(err) {
-		return nil
-	}
-	return err
-}
-
-func (a *AWS) ReturnWaitingAdmission(ctx context.Context, fileID string) error {
-	_, err := a.DynamoDB.UpdateItem(ctx, &dynamodb.UpdateItemInput{TableName: aws.String(a.LedgerTable), Key: map[string]types.AttributeValue{"pk": text("WAITING#" + fileID), "sk": text("WAITING")}, ConditionExpression: aws.String("#status = :releasing"), UpdateExpression: aws.String("SET #status = :waiting, updatedAt = :now"), ExpressionAttributeNames: map[string]string{"#status": "status"}, ExpressionAttributeValues: map[string]types.AttributeValue{":releasing": text("RELEASING"), ":waiting": text("WAITING"), ":now": text(time.Now().UTC().Format(time.RFC3339Nano))}})
-	if conditionalConflict(err) {
-		return nil
-	}
-	return err
-}
-
-// MarkIntentDelivered removes the intentPending attribute from the intent item,
-// dropping it from the sparse GSI. It is called by the publisher only after SQS
+// MarkIntentDelivered removes the pending marker after SQS confirms the send.
+// It is called by the Worker only after SQS
 // confirms the send; a crash between send and mark may duplicate delivery, which
 // consumers handle via the stable, deterministic eventId.
 func (a *AWS) MarkIntentDelivered(ctx context.Context, jobID string, version int64) error {

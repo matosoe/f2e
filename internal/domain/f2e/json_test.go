@@ -2,6 +2,18 @@ package f2e
 
 import "testing"
 
+func TestFindJSONObjectStartsMatchesJSONKeysNotFieldContents(t *testing.T) {
+	data := []byte(`[{"id":1,"note":"the text id and {\"id\":999} are content"},{"id":2}]`)
+
+	got := FindJSONObjectStarts(data, "id")
+	if len(got) != 2 {
+		t.Fatalf("found %d objects, want 2: %#v", len(got), got)
+	}
+	if first := string(data[got[0][0]:got[0][1]]); first != `{"id":1,"note":"the text id and {\"id\":999} are content"}` {
+		t.Fatalf("first object = %s", first)
+	}
+}
+
 func TestNextCompleteJSONElementSupportsEveryJSONValue(t *testing.T) {
 	data := []byte(` {"nested":[1,{"escaped":"a\"b"}]}, [true], "text", 42, false, null ] trailing`)
 	want := []string{`{"nested":[1,{"escaped":"a\"b"}]}`, `[true]`, `"text"`, `42`, `false`, `null`}

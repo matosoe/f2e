@@ -13,7 +13,6 @@ package aws
 //   pk: JOB#<jobId>   sk: COMPLETION_INTENT#<version>
 //
 // GSIs (defined in terraform/dynamodb.tf):
-//   pending-intents-index: hash=intentPending, range=sk
 //   status-time-index:     hash=statusIndex,   range=updatedAt  (T14)
 
 import (
