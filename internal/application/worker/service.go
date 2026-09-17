@@ -22,11 +22,11 @@ import (
 )
 
 type Service struct {
-	Resolver  port.SourceResolver
-	Processor port.RecordProcessor
-	Queue     port.Queue
-	Ledger    port.JobLedger
-	Config    config.Config
+	Resolver         port.SourceResolver
+	Queue            port.Queue
+	Ledger           port.JobLedger
+	CompletionLedger port.CompletionLedger
+	Config           config.Config
 }
 
 // ErrLambdaExecutionLimitExceeded identifies work deliberately stopped before
@@ -98,6 +98,12 @@ func (s Service) processWithMetrics(ctx context.Context, body []byte, attempt in
 	if e := json.Unmarshal(body, &j); e != nil {
 		return nil, fmt.Errorf("decode job: %w", e)
 	}
+	if j.Control == "completion" {
+		if j.JobID == "" {
+			return nil, fmt.Errorf("completion control without jobId")
+		}
+		return nil, s.publishCompletion(ctx, j.JobID)
+	}
 	if j.Configuration.BatchSize > 0 {
 		s.Config.BatchSize = j.Configuration.BatchSize
 	}
@@ -128,7 +134,7 @@ func (s Service) processWithMetrics(ctx context.Context, body []byte, attempt in
 	if s.Ledger != nil {
 		if err := s.Ledger.StartChunk(ctx, j.JobID, j.ChunkID, attempt); err != nil {
 			if errors.Is(err, port.ErrAlreadyCompleted) {
-				return nil, nil
+				return nil, s.publishCompletion(ctx, j.JobID)
 			}
 			return nil, fmt.Errorf("start chunk ledger: %w", err)
 		}
@@ -193,11 +199,59 @@ func (s Service) processWithMetrics(ctx context.Context, body []byte, attempt in
 		if err := s.Ledger.CompleteChunk(ctx, f2e.ChunkResult{JobID: j.JobID, ChunkID: j.ChunkID, Attempt: attempt, RecordsProduced: counts.RecordsPublished, BytesProcessed: readEnd - readStart + 1, OccurredAt: time.Now().UTC(), Counts: counts}); err != nil {
 			return nil, fmt.Errorf("complete chunk ledger: %w", err)
 		}
+		if err := s.publishCompletion(ctx, j.JobID); err != nil {
+			return nil, err
+		}
 	}
 	return result, nil
 }
 
+// publishCompletion sends only a durable, pending intent.  SQS acknowledgement
+// is deliberately after Send succeeds; a crash between them can redeliver the
+// same deterministic eventId, which is the intended at-least-once contract.
+func (s Service) publishCompletion(ctx context.Context, jobID string) error {
+	if s.CompletionLedger == nil {
+		return nil
+	}
+	intent, err := s.CompletionLedger.ReconcileCompletion(ctx, jobID)
+	if err != nil || intent == nil {
+		return err
+	}
+	if s.Config.CompletionQueueURL == "" {
+		return fmt.Errorf("completion queue is not configured")
+	}
+	body, err := json.Marshal(intent.Event)
+	if err != nil {
+		return fmt.Errorf("encode completion event: %w", err)
+	}
+	failed, err := s.Queue.Send(ctx, s.Config.CompletionQueueURL, []port.OutboundMessage{{Body: string(body)}})
+	if err != nil {
+		return fmt.Errorf("send completion event: %w", err)
+	}
+	if len(failed) != 0 {
+		return fmt.Errorf("send completion event: partial batch failure")
+	}
+	if err := s.CompletionLedger.MarkIntentDelivered(ctx, intent.JobID, intent.Version); err != nil {
+		return fmt.Errorf("mark completion delivery: %w", err)
+	}
+	return nil
+}
+
 func chunkReadRange(j f2e.ChunkJob) (int64, int64, error) {
+	if j.DataType == f2e.DataTypeJSON && j.FileSize > 0 {
+		overlap := j.JSONArrayLayout.MaxBytesPerElement
+		if overlap < 1 {
+			return 0, 0, fmt.Errorf("JSON chunk is missing maxBytesPerElement")
+		}
+		start, end := j.StartByte-overlap, j.EndByteInclusive+overlap
+		if start < 0 {
+			start = 0
+		}
+		if end >= j.FileSize {
+			end = j.FileSize - 1
+		}
+		return start, end, nil
+	}
 	if j.DataType != f2e.DataTypeText || j.MaxRecordLengthBytes == 0 {
 		return j.StartByte, j.EndByteInclusive, nil
 	}
@@ -274,11 +328,11 @@ func (s Service) valid(j f2e.ChunkJob) error {
 	if j.MaxRecordLengthBytes > 0 && (j.TrailingPaddingBytes < 0 || j.TrailingPaddingBytes > j.MaxRecordLengthBytes || j.EndByteInclusive-j.StartByte+1 < j.TrailingPaddingBytes) {
 		return fmt.Errorf("dados do chunk com registros de tamanho variável inválidos: padding ou limite de registro inconsistente")
 	}
-	if j.DataType == f2e.DataTypeMultiLine && j.MultiLineLayout.BreakMarker == "" {
-		return fmt.Errorf("configuração do chunk multi-linha inválida: quebra de registro (breakMarker) não informada")
+	if j.DataType == f2e.DataTypeMultiLine && len(j.MultiLineLayout.BreakFields) == 0 {
+		return fmt.Errorf("configuração do chunk multi-linha inválida: breakFields não informado")
 	}
-	if j.DataType == f2e.DataTypeJSON && j.JSONArrayLayout.MaxBytesPerElement < 1 {
-		return fmt.Errorf("configuração do chunk JSON inválida: limite máximo por elemento não informado")
+	if j.DataType == f2e.DataTypeJSON && (j.JSONArrayLayout.MaxBytesPerElement < 1 || j.JSONArrayLayout.FirstFieldName == "") {
+		return fmt.Errorf("configuração do chunk JSON inválida: firstFieldName ou limite máximo por elemento não informado")
 	}
 	return nil
 }
@@ -434,46 +488,13 @@ func (s Service) streamWithMetrics(ctx context.Context, j f2e.ChunkJob, r io.Rea
 			},
 			Data: f2e.RecordPayload{Raw: raw},
 		}
-		if s.Processor != nil {
-			original := env
-			decision, er := s.Processor.Process(ctx, env)
-			if er != nil {
-				return er
-			}
-			switch decision.Kind {
-			case f2e.RecordReject, f2e.RecordIgnore:
-				if decision.Reason == "" {
-					return fmt.Errorf("record processor returned %s without reasonCode", decision.Kind)
-				}
-				if decision.Kind == f2e.RecordReject {
-					counts.RecordsRejected++
-				} else {
-					counts.RecordsIgnored++
-				}
-				if counts.Reasons == nil {
-					counts.Reasons = make(map[f2e.RejectionReason]int64)
-				}
-				counts.Reasons[decision.Reason]++
-				return nil
-			case f2e.RecordPublish:
-				if decision.Envelope == nil {
-					return fmt.Errorf("record processor returned publish without envelope")
-				}
-				env = *decision.Envelope
-			default:
-				return fmt.Errorf("record processor returned invalid decision %q", decision.Kind)
-			}
-			if env.Metadata.EventID != original.Metadata.EventID || env.Metadata.SourceRecordID != original.Metadata.SourceRecordID || env.Metadata.Schema.ID == "" || env.Metadata.Schema.Version == "" || env.Metadata.Format == "" || env.Processing.JobID != original.Processing.JobID || env.Processing.ChunkID != original.Processing.ChunkID || env.Source.Bucket != original.Source.Bucket || env.Source.Key != original.Source.Key {
-				return fmt.Errorf("record processor changed or removed mandatory technical fields")
-			}
-		}
 		b, er := json.Marshal(env)
 		if er != nil {
 			return er
 		}
 		maxEventBytes := s.Config.MaxEventBytes
 		if maxEventBytes == 0 {
-			maxEventBytes = 256 * 1024
+			maxEventBytes = port.DefaultMaxEventBytes
 		}
 		// A configured limit below the SQS safety budget remains a hard
 		// contract. At/above that budget, let the physical-message check below
@@ -535,7 +556,7 @@ func (s Service) streamWithMetrics(ctx context.Context, j f2e.ChunkJob, r io.Rea
 		if lineLimit == 0 {
 			lineLimit = int64(s.Config.MaxEventBytes)
 			if lineLimit == 0 {
-				lineLimit = 256 * 1024
+				lineLimit = int64(port.DefaultMaxEventBytes)
 			}
 		}
 		err = lineio.ReadLines(ctx, r, lineLimit, j.MaxRecordLengthBytes > 0 && readStart > 0, func(n, off int64, raw string) error {
@@ -546,7 +567,7 @@ func (s Service) streamWithMetrics(ctx context.Context, j f2e.ChunkJob, r io.Rea
 		})
 	case f2e.DataTypeMultiLine:
 		layout := j.MultiLineLayout
-		stats, multiErr := multiline.ReadMultiLineWithStats(ctx, r, layout.BreakPosition, layout.BreakMarker, layout.AcceptedPrefixes, layout.LineSeparator, layout.MaxBytesPerRecord, func(n, off int64, raw string) error {
+		stats, multiErr := multiline.ReadMultiLineLayoutWithStats(ctx, r, layout, func(n, off int64, raw string) error {
 			if readStart+off < j.StartByte || readStart+off > j.EndByteInclusive-j.TrailingPaddingBytes {
 				return nil
 			}
@@ -582,36 +603,21 @@ func readJSONArray(ctx context.Context, r io.Reader, j f2e.ChunkJob, readStart i
 	if err != nil {
 		return err
 	}
-	// Trim the buffer to start at the array content.
-	var scanStart int64
-	if j.JSONArrayOffset >= readStart {
-		scanStart = j.JSONArrayOffset - readStart
-	}
-	trimmed := data[scanStart:]
-	bufferBase := readStart + scanStart
-	ownedEnd := j.EndByteInclusive - j.TrailingPaddingBytes
-	pos := 0
 	var n int64
-	for {
+	for _, element := range f2e.FindJSONObjectStarts(data, j.JSONArrayLayout.FirstFieldName) {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		elemStart, elemEnd := nextCompleteElement(trimmed, pos)
-		if elemStart < 0 {
-			break
-		}
-		fileOffset := bufferBase + int64(elemStart)
-		if fileOffset > ownedEnd {
-			break
-		}
-		if fileOffset >= j.StartByte {
-			off := fileOffset - readStart
-			if err := fn(n, off, string(trimmed[elemStart:elemEnd])); err != nil {
+		fileOffset := readStart + int64(element[0])
+		if fileOffset >= j.StartByte && fileOffset <= j.EndByteInclusive {
+			if int64(element[1]-element[0]) > j.JSONArrayLayout.MaxBytesPerElement {
+				return fmt.Errorf("JSON element at byte %d exceeds maxBytesPerElement", fileOffset)
+			}
+			if err := fn(n, fileOffset-readStart, string(data[element[0]:element[1]])); err != nil {
 				return err
 			}
 			n++
 		}
-		pos = elemEnd
 	}
 	return nil
 }

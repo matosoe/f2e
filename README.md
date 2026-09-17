@@ -9,7 +9,7 @@ O F2E é um framework em Go que transforma arquivos armazenados no Amazon S3 em 
 1. Um arquivo é enviado a um prefixo configurado do S3, que gera uma notificação, ou um sistema publica uma requisição explícita na fila de intake.
 2. Para notificações S3, a Lambda **Organizer** resolve no Parameter Store a configuração de `bucket + prefixo`, obtém os metadados do objeto, planeja faixas de bytes (*chunks*) e registra o plano no ledger DynamoDB.
 3. A Lambda **Worker** processa os chunks em paralelo, lê o objeto com S3 Range GET e publica um evento por registro na fila de saída.
-4. Os consumidores recebem eventos no formato Envelope v2; o ledger registra o resultado de cada chunk para apoiar auditoria, reconciliação e replay.
+4. Os consumidores recebem eventos no formato Envelope v1; o ledger registra o resultado de cada chunk para apoiar auditoria, reconciliação e replay.
 
 ```text
 S3 ObjectCreated ou OrganizerRequest
@@ -69,10 +69,9 @@ O valor de cada parâmetro é um JSON completo. Exemplo para texto:
   "dataType": "text",
   "recordsPerChunk": 1000,
   "batchSize": 10,
-  "maxEventBytes": 262144,
+  "maxEventBytes": 1044480,
   "maxFileBytes": 10737418240,
   "maxChunkBytes": 67108864,
-  "jsonArraySearchBytes": 1048576,
   "maxRecordLengthBytes": 65536,
   "eventSchemaId": "f2e-record",
   "eventSchemaVersion": "1",
@@ -86,14 +85,13 @@ O valor de cada parâmetro é um JSON completo. Exemplo para texto:
 | `dataType` | `text`, `json` ou `multi-line`. |
 | `recordsPerChunk` | Granularidade do planejamento; valores menores geram mais chunks e disponibilizam mais paralelismo. |
 | `batchSize` | Quantidade de eventos enviada por chamada `SendMessageBatch`, entre 1 e 10. |
-| `maxEventBytes` | Limite serializado de cada evento, entre 1 KiB e 256 KiB. |
+| `maxEventBytes` | Limite serializado de cada evento, entre 1 KiB e 1.020 KiB (1 MiB menos 4 KiB reservados para atributos e codificação SQS). |
 | `maxFileBytes` | Maior arquivo aceito pelo prefixo. |
 | `maxChunkBytes` | Maior faixa de bytes entregue a um Worker. |
-| `jsonArraySearchBytes` | Janela usada para localizar o array configurado em arquivos `json`. |
 | `maxRecordLengthBytes` | Limite de linha para `text`; use `0` quando não se aplica. |
 | `eventSchemaId`, `eventSchemaVersion`, `eventFormat` | Identificação do contrato dos eventos de saída. |
-| `jsonArrayLayout` | Para `json`: contém `arrayPath` e `maxBytesPerElement`. |
-| `multiLineLayout` | Para `multi-line`: contém marcadores, separador e `maxBytesPerRecord`. |
+| `jsonArrayLayout` | Para `json`: contém `arrayPath`, `firstFieldName` e `maxBytesPerElement`. |
+| `multiLineLayout` | Para `multi-line`: contém campos de quebra, inclusão/ignorar, separador e `maxBytesPerRecord`. |
 
 `jsonArrayLayout` é obrigatório para `json`; `multiLineLayout` é obrigatório
 para `multi-line`. `recordsPerChunk` controla a granularidade e o paralelismo
@@ -111,31 +109,31 @@ rejeitadas antes do planejamento.
 |---|---:|
 | Arquivo | 10 GiB |
 | Chunk | 64 MiB |
-| Evento SQS | 256 KiB |
+| Evento SQS | 1.020 KiB (1 MiB menos 4 KiB de margem) |
 | Lote de publicação | 10 eventos |
 | Busca pelo array JSON | 16 MiB |
 
 | `dataType` | Arquivo máximo | Registro/elemento máximo |
 |---|---:|---:|
-| `text` | 10 GiB | 258.048 bytes |
-| `json` | 10 GiB | 258.048 bytes |
-| `multi-line` | 10 GiB | 258.048 bytes |
+| `text` | 10 GiB | 1.040.384 bytes |
+| `json` | 10 GiB | 1.040.384 bytes |
+| `multi-line` | 10 GiB | 1.040.384 bytes |
 
-O teto de registro reserva aproximadamente 4 KiB para o envelope. A validação final considera o
-evento serializado e seus atributos; conteúdo com muito escape JSON
-pode atingir o limite de 256 KiB antes do tamanho nominal acima.
+O teto de registro reserva aproximadamente 4 KiB para o envelope. Além disso,
+`maxEventBytes` reserva 4 KiB abaixo do limite de 1 MiB do SQS para atributos e
+codificação. A validação final considera o evento serializado e seus atributos;
+conteúdo com muito escape JSON pode atingir o limite antes do tamanho nominal acima.
 
 ```json
 {
   "maxFileBytes": 10737418240,
   "maxChunkBytes": 67108864,
-  "maxEventBytes": 262144,
+  "maxEventBytes": 1044480,
   "maxBatchSize": 10,
-  "maxJsonArraySearchBytes": 16777216,
   "inputTypes": {
-    "text":        { "maxFileBytes": 10737418240, "maxRecordBytes": 258048 },
-    "json":        { "maxFileBytes": 10737418240, "maxRecordBytes": 258048 },
-    "multi-line":  { "maxFileBytes": 10737418240, "maxRecordBytes": 258048 }
+    "text":        { "maxFileBytes": 10737418240, "maxRecordBytes": 1040384 },
+    "json":        { "maxFileBytes": 10737418240, "maxRecordBytes": 1040384 },
+    "multi-line":  { "maxFileBytes": 10737418240, "maxRecordBytes": 1040384 }
   }
 }
 ```
@@ -144,17 +142,19 @@ A decisão formal está no [ADR 0005](documentacao/adr/0005-tres-modos-de-delimi
 
 ## Evento de saída e rastreabilidade
 
-Cada registro é publicado como um Envelope v2. Ele preserva a origem do arquivo, a posição do registro e o contexto de correlação recebido na entrada.
+Cada registro é publicado como um Envelope v1. Ele preserva a origem do arquivo, a posição do registro e o contexto de correlação recebido na entrada.
 
 ```json
 {
-  "schemaVersion": "2",
-  "schema": "record:1",
-  "format": "text",
-  "eventId": "<id estável durante retries>",
-  "sourceRecordId": "<id imutável do registro físico>",
-  "origin": { "bucket": "f2e-input", "key": "entrada/registros.txt" },
-  "job": { "jobId": "…", "chunkId": "00000001", "recordNumber": 42 },
+  "metadata": {
+    "eventId": "<id estável durante retries>",
+    "sourceRecordId": "<id imutável do registro físico>",
+    "schema": { "id": "f2e-record", "version": "1" },
+    "format": "json",
+    "createdAt": "2026-09-16T12:00:00Z"
+  },
+  "source": { "type": "s3", "bucket": "f2e-input", "key": "entrada/registros.txt" },
+  "processing": { "jobId": "…", "chunkId": "00000001", "recordNumber": 42 },
   "data": { "raw": "2026-09-05;PAGAMENTO;00001;100.00" }
 }
 ```
@@ -163,7 +163,7 @@ Cada registro é publicado como um Envelope v2. Ele preserva a origem do arquivo
 - Use `sourceRecordId` para deduplicar o mesmo registro físico, inclusive entre replays.
 - `transactionId`, `correlationId`, `traceId` e `sourceSystem`, quando informados, são propagados até o evento final.
 
-O [JSON Schema normativo](documentacao/schemas/envelope-v2.schema.json) e o [contrato completo](documentacao/contratos.md) definem o payload.
+O [JSON Schema normativo](documentacao/schemas/envelope-v1.schema.json) e o [contrato completo](documentacao/contratos.md) definem o payload.
 
 ## Início rápido — ambiente local
 
@@ -215,13 +215,13 @@ Para uma conta AWS real, consulte [Operação na AWS](documentacao/operacao_aws.
 | `internal/application` | Casos de uso do Organizer e Worker, independentes do AWS SDK. |
 | `internal/adapter` | Adaptadores de entrada, como notificações S3. |
 | `internal/platform` | Integrações AWS e carregamento de configuração. |
-| `lambdas/` | Binários e bootstrap das Lambdas Organizer e Worker. |
+| `cmd/organizer`, `cmd/worker` | Entradas das Lambdas Organizer e Worker. |
 | `terraform/` | Infraestrutura como código para ambientes local, staging e produção. |
 | `automacao/` | LocalStack, scripts de build, execução e validação local. |
 | `e2e/` | Cenários de integração ponta a ponta. |
 | `documentacao/` | Arquitetura, contratos, ADRs, runbooks e decisões técnicas. |
 
-O repositório possui dois módulos Go coordenados por `go.work`: o framework na raiz e as funções em `lambdas/`.
+O repositório possui o módulo Go principal na raiz; `e2e/` é um módulo separado apenas para a suíte de integração.
 
 ## Configuração e limites
 
@@ -235,7 +235,7 @@ prefixo e carregam a configuração selecionada em cada `ChunkJob`.
 | `F2E_BATCH_SIZE` | `10` | Eventos publicados por lote SQS. |
 | `F2E_MAX_FILE_BYTES` | `10 GiB` | Tamanho máximo aceito por arquivo. |
 | `F2E_MAX_CHUNK_BYTES` | `64 MiB` | Tamanho máximo de um chunk. |
-| `F2E_MAX_EVENT_BYTES` | `256 KiB` | Limite do body e atributos da mensagem SQS. |
+| `F2E_MAX_EVENT_BYTES` | `1.020 KiB` | Limite do evento; deixa 4 KiB de margem abaixo de 1 MiB do SQS. |
 | `F2E_FILE_CONFIG_PATH` | `/f2e/<ambiente>/file-config` | Raiz das configurações de prefixos no SSM. |
 
 Todos os limites e opções por arquivo estão documentados em [Contratos versionados](documentacao/contratos.md).

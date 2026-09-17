@@ -156,8 +156,9 @@ variable "sqs_max_receive_count" {
 }
 
 variable "f2e_max_event_bytes" {
-  type    = number
-  default = 262144
+  type = number
+  # 1 MiB less 4 KiB reserved for SQS message attributes and encoding overhead.
+  default = 1044480
   # AWS SQS hard limit: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/APIReference/API_SendMessageBatch.html
   validation {
     condition     = var.f2e_max_event_bytes >= 1024 && var.f2e_max_event_bytes <= 1024 * 1024
@@ -200,15 +201,6 @@ variable "worker_publish_concurrency" {
   validation {
     condition     = var.worker_publish_concurrency >= 1 && var.worker_publish_concurrency <= 16
     error_message = "worker_publish_concurrency must be between 1 and 16."
-  }
-}
-
-variable "f2e_json_array_search_bytes" {
-  type    = number
-  default = 1048576
-  validation {
-    condition     = var.f2e_json_array_search_bytes >= 1024 && var.f2e_json_array_search_bytes <= 16777216
-    error_message = "JSON array path search must be between 1 KiB and 16 MiB."
   }
 }
 

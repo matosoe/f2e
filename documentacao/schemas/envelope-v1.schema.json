@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/f2e/f2e/blob/main/documentacao/schemas/envelope-v1.schema.json",
+  "title": "F2E output envelope v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["metadata", "source", "processing", "data"],
+  "properties": {
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["eventId", "sourceRecordId", "schema", "format", "createdAt"],
+      "properties": {
+        "eventId": { "type": "string", "minLength": 1 },
+        "sourceRecordId": { "type": "string", "minLength": 1 },
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "version"],
+          "properties": {
+            "id": { "type": "string", "minLength": 1 },
+            "version": { "const": "1" }
+          }
+        },
+        "format": { "type": "string", "minLength": 1 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "transactionId": { "type": "string" },
+        "correlationId": { "type": "string" },
+        "traceId": { "type": "string" }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": { "const": "s3" },
+        "system": { "type": "string" },
+        "bucket": { "type": "string" },
+        "key": { "type": "string" },
+        "versionId": { "type": "string" },
+        "etag": { "type": "string" },
+        "fileName": { "type": "string" },
+        "fileFormat": { "enum": ["text", "json", "multi-line"] },
+        "fileSize": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "processing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["jobId", "chunkId"],
+      "properties": {
+        "jobId": { "type": "string", "minLength": 1 },
+        "chunkId": { "type": "string", "minLength": 1 },
+        "recordNumber": { "type": "integer", "minimum": 1 },
+        "byteOffset": { "type": "integer", "minimum": 0 },
+        "byteLength": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "data": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "raw": { "type": "string" }
+      }
+    }
+  }
+}

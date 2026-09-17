@@ -26,13 +26,14 @@ Uma linha física terminada por CR (`\r`), LF (`\n`) ou CRLF (`\r\n`) é um regi
 
 ### Modo `json`
 
-Um elemento do array selecionado por `jsonArrayLayout.arrayPath` (vazio = root array). Parser consciente de strings, escapes e nesting. Busca limitada por `F2E_JSON_ARRAY_SEARCH_BYTES` (1 MiB padrão). Array vazio conclui com zero registros e zero chunks. `maxBytesPerElement` é obrigatório.
+Um objeto do array selecionado por `jsonArrayLayout.arrayPath` (vazio = root array). `firstFieldName` e `maxBytesPerElement` são obrigatórios. O Organizer não lê o corpo do objeto; Workers localizam o primeiro campo por chave JSON real, com janela limitada pelo máximo por elemento. O produtor deve garantir que esse campo seja o primeiro em todos os objetos selecionados e não ocorra fora deles, inclusive em valores/objetos aninhados. Arrays de primitivos não são suportados.
 
 ### Modo `multi-line`
 
-Linhas físicas agrupadas por marcadores configurados em `multiLineLayout`:
-- `breakMarker`: prefixo de linha que inicia um novo registro.
-- `acceptedPrefixes`: prefixos de linhas incluídas no registro atual; quando vazio, todas as linhas após o break são incluídas.
+Linhas físicas agrupadas por campos configurados em `multiLineLayout`:
+- `breakFields` é obrigatório; `includeFields` e `ignoreFields` são opcionais.
+- Cada conjunto tem de 1 a 99 campos (`startByte`, `lengthBytes`, `value`); todos devem corresponder por bytes, sem trim. Linha curta não corresponde.
+- A precedência é quebra, inclusão e ignorar; linhas sem correspondência são descartadas.
 - `lineSeparator`: separador entre linhas do registro (padrão: `\x1C`).
 - `maxBytesPerRecord`: tamanho máximo do registro lógico completo (obrigatório).
 
@@ -40,7 +41,7 @@ Cabeçalhos e trailers (linhas que não correspondem a nenhum prefixo) são sile
 
 ## Limites padrão
 
-10 GiB por arquivo (`F2E_MAX_FILE_BYTES`), 64 MiB por chunk (`F2E_MAX_CHUNK_BYTES`), limite por registro/elemento declarado no layout, e 256 KiB para body mais Message Attributes. Configurações cujo chunk nominal ultrapasse o limite são rejeitadas no planejamento.
+10 GiB por arquivo (`F2E_MAX_FILE_BYTES`), 64 MiB por chunk (`F2E_MAX_CHUNK_BYTES`), limite por registro/elemento declarado no layout, e 1.020 KiB para cada evento. Esse valor é 1 MiB menos 4 KiB, reservados para os Message Attributes e a codificação SQS. Configurações cujo chunk nominal ultrapasse o limite são rejeitadas no planejamento.
 
 ## Planejamento de chunks (text e multi-line)
 
@@ -60,9 +61,9 @@ O envelope de notificação S3 aceita múltiplos `Records`; somente `ObjectCreat
 
 `transactionId`, `correlationId`, `traceId` e `sourceSystem` atravessam organizer e worker e são incorporados ao body final. Os Message Attributes são construídos após o `RecordProcessor` e refletem `schema` e `format` finais. Extensões não podem remover ou trocar IDs e localização técnica.
 
-## Envelope v2
+## Envelope v1
 
-O envelope v2 contém `eventId`, `sourceRecordId`, identidade imutável da origem, IDs do job/chunk, posição e payload (`data.raw` para todos os três modos). `eventId` é estável durante retries do mesmo job e muda em replay explícito. Consumidores que deduplicam o registro físico devem usar `sourceRecordId`. O JSON Schema normativo está em `documentacao/schemas/envelope-v2.schema.json`.
+O envelope v1 contém `eventId`, `sourceRecordId`, identidade imutável da origem, IDs do job/chunk, posição e payload (`data.raw` para todos os três modos). `eventId` é estável durante retries do mesmo job e muda em replay explícito. Consumidores que deduplicam o registro físico devem usar `sourceRecordId`. O JSON Schema normativo está em `documentacao/schemas/envelope-v1.schema.json`.
 
 ## Migração de tipos removidos
 

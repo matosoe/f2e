@@ -127,10 +127,10 @@ func TestJobConfigurationBundleFieldsRoundTrip(t *testing.T) {
 	}
 }
 
-func TestEnvelopeV2AddsIdentityWithoutBreakingUnknownFieldConsumers(t *testing.T) {
+func TestEnvelopeV1SupportsIdentityWithoutBreakingUnknownFieldConsumers(t *testing.T) {
 	record := int64(1)
 	envelope := Envelope[RecordPayload]{
-		Metadata:   Metadata{EventID: strings.Repeat("a", 64), SourceRecordID: strings.Repeat("b", 64), Schema: Schema{ID: "record", Version: "2"}, Format: "json", CreatedAt: "2026-09-01T00:00:00Z"},
+		Metadata:   Metadata{EventID: strings.Repeat("a", 64), SourceRecordID: strings.Repeat("b", 64), Schema: Schema{ID: "record", Version: "1"}, Format: "json", CreatedAt: "2026-09-01T00:00:00Z"},
 		Source:     Source{Type: "s3", Bucket: "bucket", Key: "key", ETag: `"etag"`, FileFormat: "text", FileSize: 4},
 		Processing: Processing{JobID: "job", ChunkID: "chunk", RecordNumber: &record},
 		Data:       RecordPayload{Raw: "abc"},
@@ -151,6 +151,6 @@ func TestEnvelopeV2AddsIdentityWithoutBreakingUnknownFieldConsumers(t *testing.T
 	}
 	var current Envelope[RecordPayload]
 	if err := json.Unmarshal(body, &current); err != nil || current.Metadata.SourceRecordID != envelope.Metadata.SourceRecordID {
-		t.Fatalf("v2 round trip failed: err=%v value=%+v", err, current)
+		t.Fatalf("v1 round trip failed: err=%v value=%+v", err, current)
 	}
 }

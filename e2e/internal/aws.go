@@ -201,43 +201,13 @@ func (c *AWSClient) SendOrganizerRequest(ctx context.Context, req OrganizerReque
 	return err
 }
 
-// DrainOutputQueue removes all messages from the dedicated output queue after a
-// count-only scenario. The E2E suite is sequential and provisions this queue
-// exclusively, so it never touches an application queue shared with a user.
-func (c *AWSClient) DrainOutputQueue(ctx context.Context) error {
-	for {
-		out, err := c.sqsClient.ReceiveMessage(ctx, &sqs.ReceiveMessageInput{
-			QueueUrl:            aws.String(c.outputQueueURL),
-			MaxNumberOfMessages: 10,
-			WaitTimeSeconds:     0,
-		})
-		if err != nil {
-			return fmt.Errorf("drain receive: %w", err)
-		}
-		if c.Counters != nil {
-			empty := int64(0)
-			if len(out.Messages) == 0 {
-				empty = 1
-			}
-			c.Counters.incSQSReceive(int64(len(out.Messages)), empty)
-		}
-		if len(out.Messages) == 0 {
-			return nil
-		}
-		entries := make([]sqstypes.DeleteMessageBatchRequestEntry, len(out.Messages))
-		for i, m := range out.Messages {
-			entries[i] = sqstypes.DeleteMessageBatchRequestEntry{Id: m.MessageId, ReceiptHandle: m.ReceiptHandle}
-		}
-		if _, err = c.sqsClient.DeleteMessageBatch(ctx, &sqs.DeleteMessageBatchInput{
-			QueueUrl: aws.String(c.outputQueueURL),
-			Entries:  entries,
-		}); err != nil {
-			return fmt.Errorf("drain delete: %w", err)
-		}
-		if c.Counters != nil {
-			c.Counters.incSQSDeleteBatch(int64(len(entries)))
-		}
+// PurgeOutputQueue clears the dedicated E2E output queue in one SQS operation
+// after a count-only scenario. It must never be used with an application queue.
+func (c *AWSClient) PurgeOutputQueue(ctx context.Context) error {
+	if _, err := c.sqsClient.PurgeQueue(ctx, &sqs.PurgeQueueInput{QueueUrl: aws.String(c.outputQueueURL)}); err != nil {
+		return fmt.Errorf("purge output queue: %w", err)
 	}
+	return nil
 }
 
 // ApproximateCount returns the approximate number of messages available in the output queue.

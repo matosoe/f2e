@@ -10,11 +10,10 @@ import (
 // baseGlobalLimits returns a valid GlobalLimits for use in validation tests.
 func baseGlobalLimits() f2e.GlobalLimits {
 	return f2e.GlobalLimits{
-		MaxFileBytes:            512 * 1024 * 1024,
-		MaxChunkBytes:           64 * 1024 * 1024,
-		MaxEventBytes:           256 * 1024,
-		MaxBatchSize:            10,
-		MaxJSONArraySearchBytes: 16 * 1024 * 1024,
+		MaxFileBytes:  512 * 1024 * 1024,
+		MaxChunkBytes: 64 * 1024 * 1024,
+		MaxEventBytes: 256 * 1024,
+		MaxBatchSize:  10,
 		InputTypes: map[f2e.DataType]f2e.InputTypeLimits{
 			f2e.DataTypeText:      {MaxFileBytes: 512 * 1024 * 1024, MaxRecordBytes: 256 * 1024},
 			f2e.DataTypeJSON:      {MaxFileBytes: 512 * 1024 * 1024, MaxRecordBytes: 256 * 1024},
@@ -26,18 +25,17 @@ func baseGlobalLimits() f2e.GlobalLimits {
 // basePrefixConfig returns a valid PrefixConfiguration for use in tests.
 func basePrefixConfig() f2e.PrefixConfiguration {
 	return f2e.PrefixConfiguration{
-		Bucket:               "my-bucket",
-		Prefix:               "logs/",
-		DataType:             f2e.DataTypeText,
-		RecordsPerChunk:      1000,
-		BatchSize:            10,
-		MaxEventBytes:        64 * 1024,
-		MaxFileBytes:         128 * 1024 * 1024,
-		MaxChunkBytes:        32 * 1024 * 1024,
-		JSONArraySearchBytes: 1 * 1024 * 1024,
-		EventSchemaID:        "my-schema",
-		EventSchemaVersion:   "1.0",
-		EventFormat:          "json",
+		Bucket:             "my-bucket",
+		Prefix:             "logs/",
+		DataType:           f2e.DataTypeText,
+		RecordsPerChunk:    1000,
+		BatchSize:          10,
+		MaxEventBytes:      64 * 1024,
+		MaxFileBytes:       128 * 1024 * 1024,
+		MaxChunkBytes:      32 * 1024 * 1024,
+		EventSchemaID:      "my-schema",
+		EventSchemaVersion: "1.0",
+		EventFormat:        "json",
 	}
 }
 

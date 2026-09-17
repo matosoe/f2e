@@ -62,6 +62,18 @@ resource "aws_sqs_queue" "output_events" {
   tags                       = local.tags
 }
 
+resource "aws_sqs_queue" "dedicated_output_events" {
+  for_each                   = local.dedicated_output_prefixes
+  name                       = "${var.resource_prefix}-${var.environment}-${each.key}-output-events"
+  visibility_timeout_seconds = var.sqs_visibility_timeout
+  receive_wait_time_seconds  = 1
+  message_retention_seconds  = var.sqs_retention_seconds
+  max_message_size           = min(var.f2e_max_event_bytes, local.sqs_max_message_bytes)
+  sqs_managed_sse_enabled    = var.kms_key_arn == "" ? true : null
+  kms_master_key_id          = var.kms_key_arn != "" ? var.kms_key_arn : null
+  tags                       = merge(local.tags, { PrefixID = each.key })
+}
+
 # ── Queue policy: allow S3 to publish S3-event notifications ──────────────────
 
 data "aws_iam_policy_document" "file_intake_policy" {
@@ -125,10 +137,12 @@ locals {
     completion_events     = aws_sqs_queue.completion_events
     completion_events_dlq = aws_sqs_queue.completion_events_dlq
   }
+
+  tls_only_queues_with_dedicated = merge(local.tls_only_queues, { for id, queue in aws_sqs_queue.dedicated_output_events : "dedicated_output_${id}" => queue })
 }
 
 data "aws_iam_policy_document" "queue_tls" {
-  for_each = local.tls_only_queues
+  for_each = local.tls_only_queues_with_dedicated
   statement {
     effect    = "Deny"
     actions   = ["sqs:*"]
@@ -146,7 +160,7 @@ data "aws_iam_policy_document" "queue_tls" {
 }
 
 resource "aws_sqs_queue_policy" "tls" {
-  for_each  = local.tls_only_queues
+  for_each  = local.tls_only_queues_with_dedicated
   queue_url = each.value.id
   policy    = data.aws_iam_policy_document.queue_tls[each.key].json
 }

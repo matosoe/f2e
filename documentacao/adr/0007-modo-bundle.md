@@ -15,8 +15,8 @@ requer contrato externo versionado e opt-in explícito do consumidor.
 
 | Modo | Semântica |
 |---|---|
-| `single` | Um `Envelope v2` por mensagem SQS. Comportamento atual. Padrão. |
-| `bundle` | Uma mensagem SQS contendo lista de `Envelope v2` completos, cada qual com seu próprio ID. Contrato externo versionado. |
+| `single` | Um `Envelope v1` por mensagem SQS. Comportamento atual. Padrão. |
+| `bundle` | Uma mensagem SQS contendo lista de `Envelope v1` completos, cada qual com seu próprio ID. Contrato externo versionado. |
 
 ### Contratos do bundle
 

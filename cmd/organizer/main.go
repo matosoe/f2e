@@ -51,7 +51,6 @@ func init() {
 	c.MaxFileBytes = globalLimits.MaxFileBytes
 	c.MaxChunkBytes = globalLimits.MaxChunkBytes
 	c.MaxEventBytes = globalLimits.MaxEventBytes
-	c.JSONArraySearchBytes = globalLimits.MaxJSONArraySearchBytes
 	service = organizer.Service{Store: a, Queue: a, Config: c}
 	configurationResolver = a
 	if c.LedgerTable != "" {
@@ -130,7 +129,6 @@ func jobsFor(ctx context.Context, body []byte, executionID string) ([]f2e.ChunkJ
 		configured.Config.MaxFileBytes = prefixConfig.MaxFileBytes
 		configured.Config.MaxChunkBytes = prefixConfig.MaxChunkBytes
 		configured.Config.TargetChunkBytes = prefixConfig.TargetChunkBytes
-		configured.Config.JSONArraySearchBytes = prefixConfig.JSONArraySearchBytes
 		configured.Config.EventSchemaID = prefixConfig.EventSchemaID
 		configured.Config.EventSchemaVersion = prefixConfig.EventSchemaVersion
 		configured.Config.EventFormat = prefixConfig.EventFormat
@@ -173,6 +171,10 @@ func jobsFor(ctx context.Context, body []byte, executionID string) ([]f2e.ChunkJ
 			if err := configured.Ledger.Plan(ctx, f2e.JobPlan{JobID: fileID, FileID: fileID, Bucket: object.Bucket, Key: object.Key, VersionID: object.VersionID, ETag: object.ETag, ExpectedChunks: 0, CreatedAt: time.Now().UTC(), ConfigSnapshot: configSnapshot}, nil); err != nil {
 				return nil, fmt.Errorf("seal empty manifest: %w", err)
 			}
+			// The Worker owns completion publication even for an empty array. This
+			// control message is durable in the normal chunk queue and can be
+			// redriven without re-planning the file.
+			execution.Jobs = append(execution.Jobs, f2e.ChunkJob{SchemaVersion: f2e.SchemaVersion, JobID: fileID, FileID: fileID, ChunkID: "completion", Bucket: object.Bucket, Key: object.Key, Configuration: f2e.JobConfiguration{ChunkQueueURL: prefixConfig.ChunkQueueURL}, Control: "completion"})
 		}
 		for i := range execution.Jobs {
 			execution.Jobs[i].Configuration = f2e.JobConfiguration{

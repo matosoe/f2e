@@ -2,7 +2,6 @@
 package organizer
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -10,11 +9,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"strings"
 	"time"
 
 	"github.com/f2e/f2e/internal/application/port"
 	"github.com/f2e/f2e/internal/domain/f2e"
+	"github.com/f2e/f2e/internal/domain/multiline"
 	"github.com/f2e/f2e/internal/platform/config"
 )
 
@@ -203,14 +202,14 @@ func (s Service) maxChunkBytes() int64 {
 // and returns the byte offset within data of the first line whose content at
 // breakPosition starts with breakMarker.
 // Returns -1 when no such line is found.
-func nextBreakOffset(data []byte, breakPosition int, breakMarker string) int {
+func nextBreakOffset(data []byte, fields []f2e.LineMatchField) int {
 	for start := 0; start < len(data); {
 		end := start
 		for end < len(data) && data[end] != '\r' && data[end] != '\n' {
 			end++
 		}
 		line := data[start:end]
-		if breakPosition >= 0 && breakPosition < len(line) && strings.HasPrefix(string(line[breakPosition:]), breakMarker) {
+		if multiline.Matches(line, fields) {
 			return start
 		}
 		if end >= len(data) {
@@ -229,8 +228,8 @@ func nextBreakOffset(data []byte, breakPosition int, breakMarker string) int {
 // always fall between logical records (never inside a record's constituent lines).
 func (s Service) multiLineJobs(ctx context.Context, file f2e.FileRequest, size int64, etag, versionID, executionID string) ([]f2e.ChunkJob, error) {
 	layout := file.MultiLineLayout
-	if layout.BreakMarker == "" {
-		return nil, fmt.Errorf("multi-line layout requires breakMarker")
+	if err := validateMultiLineLayout(layout); err != nil {
+		return nil, err
 	}
 	if layout.MaxBytesPerRecord < 1 {
 		return nil, fmt.Errorf("multi-line layout requires maxBytesPerRecord")
@@ -270,7 +269,7 @@ func (s Service) multiLineJobs(ctx context.Context, file f2e.FileRequest, size i
 			if closeErr != nil {
 				return nil, closeErr
 			}
-			at := nextBreakOffset(data, layout.BreakPosition, layout.BreakMarker)
+			at := nextBreakOffset(data, layout.BreakFields)
 			if at < 0 {
 				if lookEnd < size-1 {
 					return nil, fmt.Errorf("no record break found after byte %d within maxBytesPerRecord %d", ownedEnd, layout.MaxBytesPerRecord)
@@ -361,11 +360,20 @@ func (s Service) PlanWithSummary(ctx context.Context, request f2e.OrganizerReque
 
 func (s Service) Publish(ctx context.Context, jobs []f2e.ChunkJob) error {
 	jobIDs := make([]string, 0)
-	jobsToPublish := jobs
+	jobsToPublish := make([]f2e.ChunkJob, 0, len(jobs))
+	controls := make([]f2e.ChunkJob, 0)
+	for _, job := range jobs {
+		if job.Control == "completion" {
+			controls = append(controls, job)
+		} else {
+			jobsToPublish = append(jobsToPublish, job)
+		}
+	}
 	if s.Ledger != nil {
+		plannedJobs := jobsToPublish
 		jobsToPublish = nil
 		groups := make(map[string][]f2e.ChunkJob)
-		for _, job := range jobs {
+		for _, job := range plannedJobs {
 			groups[job.JobID] = append(groups[job.JobID], job)
 		}
 		for _, chunks := range groups {
@@ -382,6 +390,9 @@ func (s Service) Publish(ctx context.Context, jobs []f2e.ChunkJob) error {
 			jobIDs = append(jobIDs, first.JobID)
 		}
 	}
+	// Control messages are already backed by a terminal intent. They are sent
+	// after the empty manifest is durable, but are not manifest chunks.
+	jobsToPublish = append(jobsToPublish, controls...)
 	finish := func(err error) error {
 		if s.Ledger == nil {
 			return err
@@ -503,75 +514,30 @@ func (s Service) Replay(ctx context.Context, sourceJobID string, chunkIDs []stri
 	return jobs, nil
 }
 
-// jsonArrayJobs divides a JSON file's target array into chunk ranges whose boundaries
-// always fall between array elements (never inside an element's JSON structure).
+// jsonArrayJobs deliberately plans nominal byte ranges without reading object content.
+// Workers discover object boundaries from FirstFieldName with bounded overlap.
 func (s Service) jsonArrayJobs(ctx context.Context, file f2e.FileRequest, size int64, etag, versionID, executionID string) ([]f2e.ChunkJob, error) {
+	_ = ctx
 	layout := file.JSONArrayLayout
-	if layout.MaxBytesPerElement < 1 {
-		return nil, fmt.Errorf("json array layout requires maxBytesPerElement")
+	if layout.MaxBytesPerElement < 1 || layout.FirstFieldName == "" {
+		return nil, fmt.Errorf("json array layout requires firstFieldName and maxBytesPerElement")
 	}
 	if size == 0 {
 		return nil, fmt.Errorf("empty object")
-	}
-	searchBytes := s.Config.JSONArraySearchBytes
-	if searchBytes == 0 {
-		searchBytes = 1024 * 1024
-	}
-	// The target path must be found within the explicit bounded search window.
-	probeEnd := int64(searchBytes - 1)
-	if probeEnd >= size {
-		probeEnd = size - 1
-	}
-	arrayOffset, err := s.findJSONArrayOffset(ctx, f2e.ObjectIdentity{Bucket: file.Bucket, Key: file.Key, VersionID: versionID, ETag: etag, Size: size}, probeEnd, layout.ArrayPath)
-	if err != nil {
-		return nil, fmt.Errorf("find json array offset for %q within %d bytes: %w", layout.ArrayPath, searchBytes, err)
 	}
 	nominalSize := int64(s.Config.RecordsPerChunk) * layout.MaxBytesPerElement
 	if nominalSize < layout.MaxBytesPerElement {
 		return nil, fmt.Errorf("json array chunk size overflow")
 	}
-	if nominalSize > s.maxChunkBytes()-layout.MaxBytesPerElement {
-		return nil, fmt.Errorf("json array chunk plus boundary padding exceeds maximum %d", s.maxChunkBytes())
+	if nominalSize > s.maxChunkBytes() {
+		return nil, fmt.Errorf("json array chunk size exceeds maximum %d", s.maxChunkBytes())
 	}
 	fileID := fileID(file.Bucket, file.Key, versionID, etag, size)
 	var jobs []f2e.ChunkJob
-	for start, chunk := arrayOffset, int64(1); start < size; chunk++ {
+	for start, chunk := int64(0), int64(1); start < size; chunk++ {
 		ownedEnd := start + nominalSize - 1
 		if ownedEnd >= size {
 			ownedEnd = size - 1
-		}
-		padding := int64(0)
-		if ownedEnd < size-1 {
-			// start is an element boundary. Scanning from there preserves JSON
-			// string/escape state; beginning in the middle of an element can skip
-			// otherwise valid records at every chunk boundary.
-			lookEnd := ownedEnd + layout.MaxBytesPerElement
-			if lookEnd >= size {
-				lookEnd = size - 1
-			}
-			r, err := s.Store.GetRange(ctx, f2e.ObjectIdentity{Bucket: file.Bucket, Key: file.Key, VersionID: versionID, ETag: etag, Size: size}, start, lookEnd)
-			if err != nil {
-				return nil, fmt.Errorf("read json array padding: %w", err)
-			}
-			data, err := io.ReadAll(r)
-			closeErr := r.Close()
-			if err != nil {
-				return nil, err
-			}
-			if closeErr != nil {
-				return nil, closeErr
-			}
-			relPos := int(ownedEnd - start)
-			at := f2e.JSONElementEndAfter(data, relPos)
-			if at < 0 {
-				// ownedEnd already falls between elements — no padding needed.
-				padding = 0
-			} else {
-				// at is the exclusive end position within the window.
-				// file position of that end = contextStart + at - 1
-				// padding = that position - ownedEnd
-				padding = start + int64(at) - 1 - ownedEnd
-			}
 		}
 		jobs = append(jobs, f2e.ChunkJob{
 			SchemaVersion:        f2e.SchemaVersion,
@@ -585,91 +551,13 @@ func (s Service) jsonArrayJobs(ctx context.Context, file f2e.FileRequest, size i
 			VersionID:            versionID,
 			FileSize:             size,
 			StartByte:            start,
-			EndByteInclusive:     ownedEnd + padding,
+			EndByteInclusive:     ownedEnd,
 			MaxRecordLengthBytes: layout.MaxBytesPerElement,
-			TrailingPaddingBytes: padding,
 			DataType:             file.DataType,
 			JSONArrayLayout:      layout,
-			JSONArrayOffset:      arrayOffset,
 			Context:              file.Context,
 		})
-		start = ownedEnd + padding + 1
+		start = ownedEnd + 1
 	}
 	return jobs, nil
-}
-
-// findJSONArrayOffset reads the start of the file and returns the byte offset
-// immediately after the '[' of the target array.
-func (s Service) findJSONArrayOffset(ctx context.Context, object f2e.ObjectIdentity, probeEnd int64, arrayPath string) (int64, error) {
-	r, err := s.Store.GetRange(ctx, object, 0, probeEnd)
-	if err != nil {
-		return 0, err
-	}
-	data, err := io.ReadAll(r)
-	closeErr := r.Close()
-	if err != nil {
-		return 0, err
-	}
-	if closeErr != nil {
-		return 0, closeErr
-	}
-	dec := json.NewDecoder(bytes.NewReader(data))
-	if err := navigateToArrayStart(dec, arrayPath); err != nil {
-		return 0, err
-	}
-	return dec.InputOffset(), nil
-}
-
-// navigateToArrayStart advances dec to just after the '[' of the target array.
-func navigateToArrayStart(dec *json.Decoder, arrayPath string) error {
-	if arrayPath == "" {
-		t, err := dec.Token()
-		if err != nil {
-			return fmt.Errorf("read JSON root: %w", err)
-		}
-		if t != json.Delim('[') {
-			return fmt.Errorf("root is not a JSON array")
-		}
-		return nil
-	}
-	return navigateObjectPath(dec, strings.Split(arrayPath, "."))
-}
-
-// navigateObjectPath navigates through nested JSON objects following parts,
-// leaving dec positioned just after the '[' of the final array value.
-func navigateObjectPath(dec *json.Decoder, parts []string) error {
-	t, err := dec.Token()
-	if err != nil {
-		return err
-	}
-	if t != json.Delim('{') {
-		return fmt.Errorf("expected JSON object, got %v", t)
-	}
-	target, rest := parts[0], parts[1:]
-	for dec.More() {
-		kt, err := dec.Token()
-		if err != nil {
-			return err
-		}
-		ks, _ := kt.(string)
-		if ks != target {
-			var skip json.RawMessage
-			if err := dec.Decode(&skip); err != nil {
-				return err
-			}
-			continue
-		}
-		if len(rest) == 0 {
-			t, err := dec.Token()
-			if err != nil {
-				return err
-			}
-			if t != json.Delim('[') {
-				return fmt.Errorf("key %q is not a JSON array", target)
-			}
-			return nil
-		}
-		return navigateObjectPath(dec, rest)
-	}
-	return fmt.Errorf("key %q not found in JSON object", target)
 }

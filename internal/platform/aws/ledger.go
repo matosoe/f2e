@@ -223,10 +223,10 @@ func (a *AWS) Plan(ctx context.Context, plan f2e.JobPlan, chunks []f2e.ChunkJob)
 	// Seal only after every individual chunk write succeeded. This intentionally
 	// avoids a DynamoDB transaction sized by the number of chunks; a crash before
 	// this point is resumed by repeating the idempotent Plan call.
+	// Even an empty manifest remains PENDING until the Worker consumes its
+	// durable completion control message. This keeps terminal transition and
+	// outbox creation in the same Worker-owned transaction.
 	sealedStatus := f2e.JobPending
-	if len(chunks) == 0 {
-		sealedStatus = f2e.JobCompleted
-	}
 	_, err := a.DynamoDB.UpdateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName: aws.String(a.LedgerTable), Key: ledgerKey(plan.JobID, "JOB"),
 		ConditionExpression:       aws.String("fileId = :fileId AND expectedChunks = :expected AND (attribute_not_exists(manifestSealed) OR manifestSealed = :false)"),
@@ -245,6 +245,9 @@ func (a *AWS) Plan(ctx context.Context, plan f2e.JobPlan, chunks []f2e.ChunkJob)
 // PENDING -> RUNNING transition.
 func (a *AWS) MarkChunksScheduled(ctx context.Context, chunks []f2e.ChunkJob) error {
 	for _, chunk := range chunks {
+		if chunk.Control != "" {
+			continue
+		}
 		_, err := a.DynamoDB.UpdateItem(ctx, &dynamodb.UpdateItemInput{TableName: aws.String(a.LedgerTable), Key: ledgerKey(chunk.JobID, "CHUNK#"+chunk.ChunkID), ConditionExpression: aws.String("#s = :pending"), UpdateExpression: aws.String("SET scheduledAt = if_not_exists(scheduledAt, :now)"), ExpressionAttributeNames: map[string]string{"#s": "status"}, ExpressionAttributeValues: map[string]types.AttributeValue{":pending": text(string(f2e.ChunkStatePending)), ":now": text(time.Now().UTC().Format(time.RFC3339Nano))}})
 		if err != nil && !conditionalConflict(err) {
 			return err
@@ -432,9 +435,21 @@ func (a *AWS) chunkStatus(ctx context.Context, jobID, chunkID string) (string, e
 }
 
 func (a *AWS) reconcileJob(ctx context.Context, jobID string) error {
+	_, err := a.ReconcileCompletion(ctx, jobID)
+	return err
+}
+
+// ReconcileCompletion is the Worker-owned completion outbox.  The terminal
+// job mutation and its intent are committed in one DynamoDB transaction.  A
+// competing Worker reads the same intent, so retries cannot mint another
+// eventId.
+func (a *AWS) ReconcileCompletion(ctx context.Context, jobID string) (*f2e.CompletionIntent, error) {
 	out, err := a.DynamoDB.GetItem(ctx, &dynamodb.GetItemInput{TableName: aws.String(a.LedgerTable), Key: ledgerKey(jobID, "JOB"), ConsistentRead: aws.Bool(true)})
 	if err != nil {
-		return err
+		return nil, err
+	}
+	if out.Item == nil {
+		return nil, fmt.Errorf("job %s not found", jobID)
 	}
 	read := func(name string) int64 {
 		if value, ok := out.Item[name].(*types.AttributeValueMemberN); ok {
@@ -444,16 +459,88 @@ func (a *AWS) reconcileJob(ctx context.Context, jobID string) error {
 		return 0
 	}
 	expected, completed, failed := read("expectedChunks"), read("completedChunks"), read("failedChunks")
+	status := stringAttr(out.Item, "status")
+	if status == string(f2e.JobCompleted) || status == string(f2e.JobFailed) || status == string(f2e.JobStateRejected) {
+		return a.loadPendingIntent(ctx, jobID)
+	}
 	sealed, _ := out.Item["manifestSealed"].(*types.AttributeValueMemberBOOL)
-	if sealed == nil || !sealed.Value || expected == 0 || completed+failed < expected {
-		return nil
+	if sealed == nil || !sealed.Value || completed+failed < expected {
+		return nil, nil
 	}
-	status := f2e.JobCompleted
+	terminal := f2e.JobCompleted
 	if failed > 0 {
-		status = f2e.JobFailed
+		terminal = f2e.JobFailed
 	}
-	_, err = a.DynamoDB.UpdateItem(ctx, &dynamodb.UpdateItemInput{TableName: aws.String(a.LedgerTable), Key: ledgerKey(jobID, "JOB"), UpdateExpression: aws.String("SET #s = :status, completedAt = :now"), ExpressionAttributeNames: map[string]string{"#s": "status"}, ExpressionAttributeValues: map[string]types.AttributeValue{":status": text(string(status)), ":now": text(time.Now().UTC().Format(time.RFC3339Nano))}})
-	return err
+	counts := f2e.Counts{RecordsRead: read("recordsRead"), RecordsPublished: read("recordsPublished"), RecordsRejected: read("recordsRejected"), RecordsIgnored: read("recordsIgnored"), MessagesPublished: read("messagesPublished"), SendMessageBatchCalls: read("sendMessageBatchCalls"), PhysicalLinesIgnored: read("physicalLinesIgnored"), CountsComplete: failed == 0}
+	result := f2e.JobResultSuccess
+	if counts.RecordsRejected > 0 {
+		result = f2e.JobResultWithRejections
+	}
+	if terminal == f2e.JobFailed {
+		result = ""
+	}
+	now := time.Now().UTC()
+	event := completionEventFromItem(out.Item, jobID, terminal, result, counts, now)
+	intent := f2e.CompletionIntent{JobID: jobID, Version: 1, Status: terminal, Event: event, CreatedAt: now}
+	payload, err := json.Marshal(intent)
+	if err != nil {
+		return nil, fmt.Errorf("encode completion intent: %w", err)
+	}
+	_, err = a.DynamoDB.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{TransactItems: []types.TransactWriteItem{
+		{Update: &types.Update{TableName: aws.String(a.LedgerTable), Key: ledgerKey(jobID, "JOB"), ConditionExpression: aws.String("manifestSealed = :sealed AND completedChunks = :completed AND failedChunks = :failed AND (#s = :pending OR #s = :scheduled OR #s = :running)"), UpdateExpression: aws.String("SET #s = :terminal, #result = :result, counts = :counts, completedAt = :now, updatedAt = :now"), ExpressionAttributeNames: map[string]string{"#s": "status", "#result": "result"}, ExpressionAttributeValues: map[string]types.AttributeValue{":sealed": boolAttr(true), ":completed": number(completed), ":failed": number(failed), ":pending": text(string(f2e.JobPending)), ":scheduled": text(string(f2e.JobScheduled)), ":running": text(string(f2e.JobRunning)), ":terminal": text(string(terminal)), ":result": text(string(result)), ":counts": countsMap(counts), ":now": text(now.Format(time.RFC3339Nano))}}},
+		{Put: &types.Put{TableName: aws.String(a.LedgerTable), Item: map[string]types.AttributeValue{"pk": text("JOB#" + jobID), "sk": text(intentSortKey(intent.Version)), "jobId": text(jobID), "intentVersion": number(intent.Version), "intentStatus": text(string(terminal)), "intentPending": text(intentPendingMarker), "payload": text(string(payload)), "createdAt": text(now.Format(time.RFC3339Nano)), "expiresAt": number(a.jobRetention())}, ConditionExpression: aws.String("attribute_not_exists(pk) AND attribute_not_exists(sk)")}},
+	}})
+	if err == nil {
+		return &intent, nil
+	}
+	if transactionConflict(err) || conditionalConflict(err) {
+		return a.loadPendingIntent(ctx, jobID)
+	}
+	return nil, fmt.Errorf("finalize job and write completion intent: %w", err)
+}
+
+func (a *AWS) loadPendingIntent(ctx context.Context, jobID string) (*f2e.CompletionIntent, error) {
+	out, err := a.DynamoDB.GetItem(ctx, &dynamodb.GetItemInput{TableName: aws.String(a.LedgerTable), Key: ledgerKey(jobID, intentSortKey(1)), ConsistentRead: aws.Bool(true)})
+	if err != nil || out.Item == nil {
+		return nil, err
+	}
+	if _, pending := out.Item["intentPending"]; !pending {
+		return nil, nil
+	}
+	payload, ok := out.Item["payload"].(*types.AttributeValueMemberS)
+	if !ok {
+		return nil, fmt.Errorf("completion intent %s is malformed", jobID)
+	}
+	var intent f2e.CompletionIntent
+	if err := json.Unmarshal([]byte(payload.Value), &intent); err != nil {
+		return nil, fmt.Errorf("decode completion intent: %w", err)
+	}
+	return &intent, nil
+}
+
+func stringAttr(item map[string]types.AttributeValue, name string) string {
+	if value, ok := item[name].(*types.AttributeValueMemberS); ok {
+		return value.Value
+	}
+	return ""
+}
+
+func completionEventFromItem(item map[string]types.AttributeValue, jobID string, status f2e.JobStatus, result f2e.JobResult, counts f2e.Counts, completedAt time.Time) f2e.CompletionEvent {
+	var snapshot f2e.ConfigurationSnapshot
+	_ = json.Unmarshal([]byte(stringAttr(item, "configSnapshot")), &snapshot)
+	var received *time.Time
+	if parsed, err := time.Parse(time.RFC3339Nano, stringAttr(item, "receivedAt")); err == nil {
+		received = &parsed
+	}
+	return f2e.CompletionEvent{SchemaVersion: f2e.CompletionEventVersion, EventID: f2e.CompletionEventID(jobID, 1), JobID: jobID, FileID: stringAttr(item, "fileId"), PrefixID: stringAttr(item, "prefixId"), Source: f2e.CompletionSource{Bucket: stringAttr(item, "bucket"), Key: stringAttr(item, "key"), VersionID: stringAttr(item, "versionId"), ETag: stringAttr(item, "etag"), FileSize: attributeNumber(item, "size")}, Config: f2e.CompletionConfig{ConfigID: snapshot.ConfigHash, ParameterName: snapshot.ParameterName, ParameterVersion: snapshot.ParameterVersion}, Status: status, Result: result, Counts: f2e.CompletionCounts{RecordsRead: counts.RecordsRead, RecordsPublished: counts.RecordsPublished, RecordsRejected: counts.RecordsRejected, RecordsIgnored: counts.RecordsIgnored, CountsComplete: counts.CountsComplete}, Timestamps: f2e.CompletionTimestamps{ReceivedAt: received, CompletedAt: &completedAt}}
+}
+
+func attributeNumber(item map[string]types.AttributeValue, name string) int64 {
+	if value, ok := item[name].(*types.AttributeValueMemberN); ok {
+		n, _ := strconv.ParseInt(value.Value, 10, 64)
+		return n
+	}
+	return 0
 }
 
 func ledgerKey(jobID, sortKey string) map[string]types.AttributeValue {

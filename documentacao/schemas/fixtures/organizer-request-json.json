@@ -7,6 +7,7 @@
       "dataType": "json",
       "jsonArrayLayout": {
         "arrayPath": "events",
+        "firstFieldName": "id",
         "maxBytesPerElement": 65536
       }
     }

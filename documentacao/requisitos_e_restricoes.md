@@ -26,7 +26,7 @@ publica eventos em SQS; SNS não é um destino provisionado por este projeto.
 
 | Requisito | Critério de atendimento |
 |---|---|
-| Converter arquivo em eventos | Cada registro lógico elegível gera um Envelope v2, ou integra um bundle quando esse modo estiver configurado. |
+| Converter arquivo em eventos | Cada registro lógico elegível gera um Envelope v1, ou integra um bundle quando esse modo estiver configurado. |
 | Iniciar sob demanda | Um ObjectCreated do S3 ou uma requisição explícita entra na fila de intake e aciona o Organizer. |
 | Processar arquivos grandes em paralelo | O Organizer produz chunks e Workers processam-nos concorrentemente. |
 | Rastrear a execução | O ledger registra arquivo, job, chunks, contagens, falhas, configuração e estado terminal. |

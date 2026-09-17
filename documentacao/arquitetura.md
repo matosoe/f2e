@@ -37,7 +37,7 @@ flowchart LR
             direction LR
             chunks[[SQS: chunks do prefixo]]:::queue
             worker[Lambda Worker do prefixo<br/>leitura Range GET e parsing]:::compute
-            output[[SQS: output do prefixo<br/>Envelope v2 / bundles]]:::queue
+            output[[SQS: output do prefixo<br/>Envelope v1 / bundles]]:::queue
         end
 
         stream{{DynamoDB Streams}}:::data
@@ -98,7 +98,7 @@ flowchart LR
    versionado, registra a admissão e o plano de chunks no DynamoDB e envia os
    `ChunkJob`s para a fila exclusiva daquele prefixo.
 3. O Worker correspondente processa chunks em paralelo, lê apenas os intervalos
-   necessários do S3 e publica os registros como Envelope v2 na fila de saída
+   necessários do S3 e publica os registros como Envelope v1 na fila de saída
    exclusiva do prefixo.
 4. Ao alcançar o estado terminal, o ledger grava uma intenção de conclusão.
    O Stream aciona o Completion Publisher, que entrega um evento de conclusão
@@ -123,7 +123,9 @@ flowchart LR
 
 - `cmd/organizer`: entrada, seleção de configuração e planejamento.
 - `cmd/worker`: consumo dos chunks e publicação dos registros.
-- `cmd/completion-publisher`: entrega do outbox de conclusão.
+- O Worker cria a outbox na mesma transação que fecha o job e entrega a fila
+  `completion-events`; a marcação de entrega acontece somente após confirmação
+  do SQS. Redeliveries preservam o mesmo `eventId`.
 - `terraform/modules/f2e-prefix`: fila de chunks, fila de saída, DLQs e Worker
   para cada prefixo.
 - `terraform/dynamodb.tf`, `terraform/ssm.tf` e `terraform/lambda.tf`:

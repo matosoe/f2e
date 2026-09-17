@@ -18,16 +18,23 @@ type FileRequest struct {
 
 // MultiLineLayout describes grouping of physical lines into logical records.
 type MultiLineLayout struct {
-	BreakPosition     int      `json:"breakPosition,omitempty"`
-	BreakMarker       string   `json:"breakMarker"`
-	AcceptedPrefixes  []string `json:"acceptedPrefixes,omitempty"`
-	LineSeparator     string   `json:"lineSeparator,omitempty"`
-	MaxBytesPerRecord int64    `json:"maxBytesPerRecord"`
+	BreakFields       []LineMatchField `json:"breakFields"`
+	IncludeFields     []LineMatchField `json:"includeFields,omitempty"`
+	IgnoreFields      []LineMatchField `json:"ignoreFields,omitempty"`
+	LineSeparator     string           `json:"lineSeparator,omitempty"`
+	MaxBytesPerRecord int64            `json:"maxBytesPerRecord"`
+}
+
+type LineMatchField struct {
+	StartByte   int    `json:"startByte"`
+	LengthBytes int    `json:"lengthBytes"`
+	Value       string `json:"value"`
 }
 
 // JSONArrayLayout describes how to iterate a JSON array inside a file.
 type JSONArrayLayout struct {
 	ArrayPath          string `json:"arrayPath,omitempty"`
+	FirstFieldName     string `json:"firstFieldName"`
 	MaxBytesPerElement int64  `json:"maxBytesPerElement"`
 }
 

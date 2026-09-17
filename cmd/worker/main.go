@@ -38,7 +38,7 @@ func init() {
 		slog.Error("aws initialization failed", "service", "worker", "error", e)
 		os.Exit(1)
 	}
-	service = worker.Service{Resolver: a, Queue: a, Config: c}
+	service = worker.Service{Resolver: a, Queue: a, CompletionLedger: a, Config: c}
 	if c.LedgerTable != "" {
 		service.Ledger = a
 	}

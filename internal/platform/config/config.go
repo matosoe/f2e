@@ -11,9 +11,8 @@ import (
 
 type Config struct {
 	Endpoint, Region, InputBucket, IntakeQueueURL, ChunkQueueURL, OutputQueueURL string
-	// CompletionQueueURL is the SQS queue where the completion-publisher Lambda
-	// sends technical conclusion events. It is separate from the record-envelope
-	// output queue so consumers can subscribe independently.
+	// CompletionQueueURL is the SQS queue where the Worker sends technical
+	// conclusion events. It is separate from the record-envelope output queue.
 	CompletionQueueURL                             string
 	LedgerTable                                    string
 	Environment                                    string
@@ -22,7 +21,6 @@ type Config struct {
 	RecordsPerChunk, BatchSize, MaxReceiveCount    int
 	LedgerRetentionDays                            int
 	MaxEventBytes                                  int
-	JSONArraySearchBytes                           int
 	MaxFileBytes, MaxChunkBytes, TargetChunkBytes  int64
 	EventSchemaID, EventSchemaVersion, EventFormat string
 	// PublishConcurrency is the maximum number of SQS SendMessageBatch calls
@@ -32,7 +30,7 @@ type Config struct {
 }
 
 func Load() (Config, error) {
-	c := Config{Endpoint: os.Getenv("AWS_ENDPOINT_URL"), Region: value("AWS_REGION", "us-east-1"), InputBucket: value("F2E_INPUT_BUCKET", "f2e-input"), IntakeQueueURL: os.Getenv("F2E_INTAKE_QUEUE_URL"), ChunkQueueURL: os.Getenv("F2E_CHUNK_QUEUE_URL"), OutputQueueURL: os.Getenv("F2E_OUTPUT_QUEUE_URL")}
+	c := Config{Endpoint: os.Getenv("AWS_ENDPOINT_URL"), Region: value("AWS_REGION", "us-east-1"), InputBucket: value("F2E_INPUT_BUCKET", "f2e-input"), IntakeQueueURL: os.Getenv("F2E_INTAKE_QUEUE_URL"), ChunkQueueURL: os.Getenv("F2E_CHUNK_QUEUE_URL"), OutputQueueURL: os.Getenv("F2E_OUTPUT_QUEUE_URL"), CompletionQueueURL: os.Getenv("F2E_COMPLETION_QUEUE_URL")}
 	c.LedgerTable = os.Getenv("F2E_LEDGER_TABLE")
 	c.Environment = value("F2E_ENVIRONMENT", "local")
 	c.FileConfigPath = value("F2E_FILE_CONFIG_PATH", "/f2e/"+c.Environment+"/file-config")
@@ -44,13 +42,10 @@ func Load() (Config, error) {
 	if c.BatchSize, err = integer("F2E_BATCH_SIZE", 10); err != nil {
 		return c, err
 	}
-	if c.MaxEventBytes, err = integer("F2E_MAX_EVENT_BYTES", 256*1024); err != nil {
+	if c.MaxEventBytes, err = integer("F2E_MAX_EVENT_BYTES", port.DefaultMaxEventBytes); err != nil {
 		return c, err
 	}
 	if c.MaxReceiveCount, err = integer("F2E_MAX_RECEIVE_COUNT", 3); err != nil {
-		return c, err
-	}
-	if c.JSONArraySearchBytes, err = integer("F2E_JSON_ARRAY_SEARCH_BYTES", 1024*1024); err != nil {
 		return c, err
 	}
 	if c.LedgerRetentionDays, err = integer("F2E_LEDGER_RETENTION_DAYS", 90); err != nil {
@@ -68,7 +63,7 @@ func Load() (Config, error) {
 	if c.PublishConcurrency, err = integer("F2E_PUBLISH_CONCURRENCY", 1); err != nil {
 		return c, err
 	}
-	if c.RecordsPerChunk < 1 || c.BatchSize < 1 || c.BatchSize > 10 || c.MaxReceiveCount < 1 || c.LedgerRetentionDays < 1 || c.MaxEventBytes < 1024 || c.MaxEventBytes > port.MaxSQSMessageBytes || c.JSONArraySearchBytes < 1024 || c.JSONArraySearchBytes > 16*1024*1024 || c.MaxChunkBytes < 1024 || c.MaxFileBytes < c.MaxChunkBytes || (c.TargetChunkBytes != 0 && (c.TargetChunkBytes < 5*1024*1024 || c.TargetChunkBytes > 100*1024*1024 || c.TargetChunkBytes > c.MaxChunkBytes)) {
+	if c.RecordsPerChunk < 1 || c.BatchSize < 1 || c.BatchSize > 10 || c.MaxReceiveCount < 1 || c.LedgerRetentionDays < 1 || c.MaxEventBytes < 1024 || c.MaxEventBytes > port.MaxSQSMessageBytes || c.MaxChunkBytes < 1024 || c.MaxFileBytes < c.MaxChunkBytes || (c.TargetChunkBytes != 0 && (c.TargetChunkBytes < 5*1024*1024 || c.TargetChunkBytes > 100*1024*1024 || c.TargetChunkBytes > c.MaxChunkBytes)) {
 		return c, fmt.Errorf("invalid F2E numeric configuration")
 	}
 	if c.PublishConcurrency < 1 {

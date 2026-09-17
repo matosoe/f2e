@@ -26,7 +26,7 @@ func GenerateText(recordCount int) []byte {
 }
 
 // GenerateMultiLine produces a file with one header line (H), N data lines (D), and one trailer
-// line (T). The BreakMarker "D" and AcceptedPrefixes ["D"] cause header and trailer to be skipped
+// line (T). The D break/include field sets cause header and trailer to be skipped
 // by the F2E multi-line reader, yielding exactly N events.
 func GenerateMultiLine(recordCount int) []byte {
 	var buf bytes.Buffer

@@ -18,7 +18,6 @@ locals {
     F2E_TARGET_CHUNK_BYTES      = tostring(var.f2e_target_chunk_bytes)
     F2E_PUBLISH_CONCURRENCY     = tostring(var.worker_publish_concurrency)
     F2E_MAX_RECEIVE_COUNT       = tostring(var.sqs_max_receive_count)
-    F2E_JSON_ARRAY_SEARCH_BYTES = tostring(var.f2e_json_array_search_bytes)
     F2E_INTAKE_QUEUE_URL        = aws_sqs_queue.file_intake.url
     F2E_CHUNK_QUEUE_URL         = aws_sqs_queue.chunk_jobs.url
     F2E_OUTPUT_QUEUE_URL        = aws_sqs_queue.output_events.url
@@ -47,29 +46,31 @@ locals {
     maxFileBytes         = var.f2e_max_file_bytes
     maxChunkBytes        = var.f2e_max_chunk_bytes
     targetChunkBytes     = var.f2e_target_chunk_bytes
-    jsonArraySearchBytes = var.f2e_json_array_search_bytes
     maxRecordLengthBytes = 0
     eventSchemaId        = "f2e-record"
     eventSchemaVersion   = "1"
     eventFormat          = "json"
   }
 
+  # This catalog is the single source for prefix format and routing.  A
+  # dedicated queue is opt-in; every other prefix remains on output-events.
   file_configurations = {
-    "example-text"       = merge(local.file_configuration_base, { prefix = "example-text/", dataType = "text", maxRecordLengthBytes = 65536 })
-    "example-json"       = merge(local.file_configuration_base, { prefix = "example-json/", dataType = "json", jsonArrayLayout = { arrayPath = "", maxBytesPerElement = 65536 } })
-    "example-multi-line" = merge(local.file_configuration_base, { prefix = "example-multi-line/", dataType = "multi-line", multiLineLayout = { breakPosition = 0, breakMarker = "1", acceptedPrefixes = [], lineSeparator = "\u001c", maxBytesPerRecord = 65536 } })
+    "example-text"       = merge(local.file_configuration_base, { prefix = "example-text/", dataType = "text", maxRecordLengthBytes = 65536, dedicated_output_queue = false })
+    "example-json"       = merge(local.file_configuration_base, { prefix = "example-json/", dataType = "json", jsonArrayLayout = { arrayPath = "", firstFieldName = "id", maxBytesPerElement = 65536 }, dedicated_output_queue = true })
+    "example-multi-line" = merge(local.file_configuration_base, { prefix = "example-multi-line/", dataType = "multi-line", multiLineLayout = { breakFields = [{ startByte = 0, lengthBytes = 1, value = "1" }], lineSeparator = "\u001c", maxBytesPerRecord = 65536 }, dedicated_output_queue = false })
   }
 
+  dedicated_output_prefixes = { for id, cfg in local.file_configurations : id => cfg if cfg.dedicated_output_queue }
+
   global_limits = {
-    maxFileBytes            = var.f2e_max_file_bytes
-    maxChunkBytes           = var.f2e_max_chunk_bytes
-    maxEventBytes           = var.f2e_max_event_bytes
-    maxBatchSize            = 10
-    maxJsonArraySearchBytes = 16777216
+    maxFileBytes  = var.f2e_max_file_bytes
+    maxChunkBytes = var.f2e_max_chunk_bytes
+    maxEventBytes = var.f2e_max_event_bytes
+    maxBatchSize  = 10
     inputTypes = {
-      text         = { maxFileBytes = 10737418240, maxRecordBytes = 258048 }
-      json         = { maxFileBytes = 10737418240, maxRecordBytes = 258048 }
-      "multi-line" = { maxFileBytes = 10737418240, maxRecordBytes = 258048 }
+      text         = { maxFileBytes = 10737418240, maxRecordBytes = var.f2e_max_event_bytes - 4096 }
+      json         = { maxFileBytes = 10737418240, maxRecordBytes = var.f2e_max_event_bytes - 4096 }
+      "multi-line" = { maxFileBytes = 10737418240, maxRecordBytes = var.f2e_max_event_bytes - 4096 }
     }
   }
 }

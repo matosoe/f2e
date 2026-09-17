@@ -63,7 +63,7 @@ data "aws_iam_policy_document" "worker" {
   }
   statement {
     actions   = ["sqs:SendMessage"]
-    resources = [aws_sqs_queue.output_events.arn, aws_sqs_queue.completion_events.arn]
+    resources = concat([aws_sqs_queue.output_events.arn, aws_sqs_queue.completion_events.arn], [for queue in aws_sqs_queue.dedicated_output_events : queue.arn])
   }
   statement {
     actions   = ["s3:GetObject", "s3:GetObjectVersion"]

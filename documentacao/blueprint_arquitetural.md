@@ -68,7 +68,7 @@ ORIGEM                         F2E                              DESTINO
 ------                         ---                              -------
 Produz arquivo          ->     Admite e planeja            ->   Consome evento
 Define conteúdo         ->     Lê e interpreta registros   ->   Aplica negócio
-Envia ao S3             ->     Publica Envelope v2         ->   Persiste estado
+Envia ao S3             ->     Publica Envelope v1         ->   Persiste estado
                            Registra execução e conclusão       Deduplica efeitos
 ~~~
 
@@ -79,7 +79,7 @@ Envia ao S3             ->     Publica Envelope v2         ->   Persiste estado
 - Operar sobre a versão específica do objeto S3.
 - Planejar, agendar e processar unidades de trabalho.
 - Interpretar arquivos text, json em array e multi-line.
-- Publicar Envelope v2 por registro, ou bundles quando configurado.
+- Publicar Envelope v1 por registro, ou bundles quando configurado.
 - Registrar estados, contadores, falhas e conclusão do job.
 - Manter DLQs, logs, métricas e alarmes de infraestrutura.
 
@@ -298,7 +298,7 @@ nem ordenação garantida entre chunks processados em paralelo. O Worker preserv
 a montagem determinística dentro de um chunk, mas consumidores não devem tratar
 isso como garantia de ordem na fila.
 
-O contrato de registros é o Envelope v2, com origem, posição, identificadores
+O contrato de registros é o Envelope v1, com origem, posição, identificadores
 e versão de schema. O modo bundle muda a mensagem física para conter múltiplos
 envelopes e requer suporte explícito no consumidor.
 

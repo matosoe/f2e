@@ -35,14 +35,9 @@ const (
 
 // MultiLineLayout describes how to group physical lines into logical multi-line records.
 type MultiLineLayout struct {
-	// BreakPosition is the 0-based byte offset within a line to check for BreakMarker.
-	BreakPosition int `json:"breakPosition,omitempty"`
-	// BreakMarker is the string that, when found at BreakPosition, signals the start of a new record.
-	BreakMarker string `json:"breakMarker"`
-	// AcceptedPrefixes are strings (checked from BreakPosition) that indicate a line belongs to the current record.
-	// Lines matching neither BreakMarker nor any AcceptedPrefix are skipped (headers/trailers).
-	// When empty, all lines after a break line are included.
-	AcceptedPrefixes []string `json:"acceptedPrefixes,omitempty"`
+	BreakFields   []LineMatchField `json:"breakFields"`
+	IncludeFields []LineMatchField `json:"includeFields,omitempty"`
+	IgnoreFields  []LineMatchField `json:"ignoreFields,omitempty"`
 	// LineSeparator joins lines within a record. Defaults to "\x1C" (ASCII file separator).
 	LineSeparator string `json:"lineSeparator,omitempty"`
 	// MaxBytesPerRecord is the maximum total byte size of one complete record (all its lines including newlines).
@@ -50,10 +45,18 @@ type MultiLineLayout struct {
 	MaxBytesPerRecord int64 `json:"maxBytesPerRecord,omitempty"`
 }
 
+// LineMatchField compares value bytes at an exact zero-based byte position.
+type LineMatchField struct {
+	StartByte   int    `json:"startByte"`
+	LengthBytes int    `json:"lengthBytes"`
+	Value       string `json:"value"`
+}
+
 // JSONArrayLayout describes how to locate and iterate an array inside a JSON file.
 type JSONArrayLayout struct {
 	// ArrayPath is the dot-separated key path to the target array (empty = root array).
-	ArrayPath string `json:"arrayPath,omitempty"`
+	ArrayPath      string `json:"arrayPath,omitempty"`
+	FirstFieldName string `json:"firstFieldName"`
 	// MaxBytesPerElement is the maximum byte size of one array element; required for chunk planning.
 	MaxBytesPerElement int64 `json:"maxBytesPerElement"`
 }
@@ -116,7 +119,6 @@ type PrefixConfiguration struct {
 	// TargetChunkBytes is the nominal text chunk size. Zero selects the
 	// automatic planner, which targets approximately 100 chunks per file.
 	TargetChunkBytes     int64           `json:"targetChunkBytes,omitempty"`
-	JSONArraySearchBytes int             `json:"jsonArraySearchBytes"`
 	MaxRecordLengthBytes int64           `json:"maxRecordLengthBytes,omitempty"`
 	MultiLineLayout      MultiLineLayout `json:"multiLineLayout,omitempty"`
 	JSONArrayLayout      JSONArrayLayout `json:"jsonArrayLayout,omitempty"`
@@ -209,12 +211,11 @@ type InputTypeLimits struct {
 // GlobalLimits defines the ceilings that no per-prefix configuration may
 // exceed. The Organizer loads this document from SSM during cold start.
 type GlobalLimits struct {
-	MaxFileBytes            int64                        `json:"maxFileBytes"`
-	MaxChunkBytes           int64                        `json:"maxChunkBytes"`
-	MaxEventBytes           int                          `json:"maxEventBytes"`
-	MaxBatchSize            int                          `json:"maxBatchSize"`
-	MaxJSONArraySearchBytes int                          `json:"maxJsonArraySearchBytes"`
-	InputTypes              map[DataType]InputTypeLimits `json:"inputTypes"`
+	MaxFileBytes  int64                        `json:"maxFileBytes"`
+	MaxChunkBytes int64                        `json:"maxChunkBytes"`
+	MaxEventBytes int                          `json:"maxEventBytes"`
+	MaxBatchSize  int                          `json:"maxBatchSize"`
+	InputTypes    map[DataType]InputTypeLimits `json:"inputTypes"`
 }
 
 // JobConfiguration carries the selected prefix configuration to the Worker.
@@ -279,12 +280,15 @@ type ChunkJob struct {
 	DataType             DataType              `json:"dataType"`
 	MultiLineLayout      MultiLineLayout       `json:"multiLineLayout,omitempty"`
 	JSONArrayLayout      JSONArrayLayout       `json:"jsonArrayLayout,omitempty"`
-	JSONArrayOffset      int64                 `json:"jsonArrayOffset,omitempty"`
 	Context              CorporateContext      `json:"context,omitempty"`
 	VersionID            string                `json:"versionId,omitempty"`
 	FileSize             int64                 `json:"fileSize,omitempty"`
 	Configuration        JobConfiguration      `json:"configuration,omitempty"`
 	ConfigSnapshot       ConfigurationSnapshot `json:"configSnapshot,omitempty"`
+	// Control is a durable Worker control message. It never reads source data;
+	// completion is reconciled from the ledger by the same Worker that handles
+	// chunks.
+	Control string `json:"control,omitempty"`
 }
 
 // RecordPayload carries the raw parsed content of a single record.

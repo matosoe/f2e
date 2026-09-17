@@ -204,42 +204,16 @@ type Counts struct {
 type RejectionReason string
 
 const (
-	RejectionInvalidUTF8       RejectionReason = "INVALID_UTF8"
-	RejectionUnterminatedLine  RejectionReason = "UNTERMINATED_LINE"
-	RejectionOversizedRecord   RejectionReason = "OVERSIZED_RECORD"
-	RejectionEmptyFile         RejectionReason = "EMPTY_FILE"
-	RejectionInvalidConfig     RejectionReason = "INVALID_CONFIG"
-	RejectionUnsupportedType   RejectionReason = "UNSUPPORTED_TYPE"
-	RejectionProcessorRejected RejectionReason = "PROCESSOR_REJECTED"
-	RejectionInvalidDecision   RejectionReason = "INVALID_DECISION"
-	RejectionMessageTooLarge   RejectionReason = "MESSAGE_TOO_LARGE"
-	IgnoreProcessorFiltered    RejectionReason = "PROCESSOR_FILTERED"
-	IgnoreMultiLineHeader      RejectionReason = "MULTILINE_HEADER"
-	IgnoreMultiLineTrailer     RejectionReason = "MULTILINE_TRAILER"
+	RejectionInvalidUTF8      RejectionReason = "INVALID_UTF8"
+	RejectionUnterminatedLine RejectionReason = "UNTERMINATED_LINE"
+	RejectionOversizedRecord  RejectionReason = "OVERSIZED_RECORD"
+	RejectionEmptyFile        RejectionReason = "EMPTY_FILE"
+	RejectionInvalidConfig    RejectionReason = "INVALID_CONFIG"
+	RejectionUnsupportedType  RejectionReason = "UNSUPPORTED_TYPE"
+	RejectionMessageTooLarge  RejectionReason = "MESSAGE_TOO_LARGE"
+	IgnoreMultiLineHeader     RejectionReason = "MULTILINE_HEADER"
+	IgnoreMultiLineTrailer    RejectionReason = "MULTILINE_TRAILER"
 )
-
-// RecordDecisionKind is the explicit reconciliation outcome of one logical
-// record. Technical errors remain Go errors and are retried; they are never
-// silently converted into a record decision.
-type RecordDecisionKind string
-
-const (
-	RecordPublish RecordDecisionKind = "publish"
-	RecordReject  RecordDecisionKind = "reject"
-	RecordIgnore  RecordDecisionKind = "ignore"
-)
-
-// RecordDecision keeps the decision deliberately free of arbitrary payload or
-// personal-data dimensions. Reason is selected from the bounded catalog above.
-type RecordDecision struct {
-	Kind     RecordDecisionKind
-	Envelope *Envelope[RecordPayload]
-	Reason   RejectionReason
-}
-
-func PublishRecord(envelope Envelope[RecordPayload]) RecordDecision {
-	return RecordDecision{Kind: RecordPublish, Envelope: &envelope}
-}
 
 // Rejection records a single rejection decision and its reason for
 // reconciliation in the ledger.

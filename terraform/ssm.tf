@@ -17,7 +17,7 @@ resource "aws_ssm_parameter" "file_configuration" {
   type = "String"
   value = jsonencode(merge(each.value, {
     prefixId       = each.key
-    outputQueueURL = aws_sqs_queue.output_events.url
+    outputQueueURL = try(aws_sqs_queue.dedicated_output_events[each.key].url, aws_sqs_queue.output_events.url)
     chunkQueueURL  = aws_sqs_queue.chunk_jobs.url
   }))
   tags = local.tags

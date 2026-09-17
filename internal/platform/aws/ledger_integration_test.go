@@ -156,7 +156,7 @@ func TestLedgerAggregatesReasonCountsAgainstLocalStack(t *testing.T) {
 	if err := client.StartChunk(t.Context(), jobID, chunk.ChunkID, 1); err != nil {
 		t.Fatal(err)
 	}
-	counts := f2e.Counts{RecordsRead: 2, RecordsPublished: 1, RecordsRejected: 1, CountsComplete: true, Reasons: map[f2e.RejectionReason]int64{f2e.RejectionProcessorRejected: 1}}
+	counts := f2e.Counts{RecordsRead: 2, RecordsPublished: 1, RecordsRejected: 1, CountsComplete: true, Reasons: map[f2e.RejectionReason]int64{f2e.RejectionInvalidUTF8: 1}}
 	if err := client.CompleteChunk(t.Context(), f2e.ChunkResult{JobID: jobID, ChunkID: chunk.ChunkID, Attempt: 1, RecordsProduced: 1, BytesProcessed: 1, OccurredAt: time.Now().UTC(), Counts: counts}); err != nil {
 		t.Fatal(err)
 	}

@@ -14,9 +14,8 @@
   "endByteInclusive": 4095999,
   "dataType": "multi-line",
   "multiLineLayout": {
-    "breakPosition": 0,
-    "breakMarker": "HDR",
-    "acceptedPrefixes": ["DET", "TRL"],
+    "breakFields": [{"startByte": 0, "lengthBytes": 3, "value": "HDR"}],
+    "includeFields": [{"startByte": 0, "lengthBytes": 3, "value": "DET"}],
     "lineSeparator": "\u001c",
     "maxBytesPerRecord": 8192
   },

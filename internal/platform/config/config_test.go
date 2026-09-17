@@ -22,7 +22,7 @@ func TestLoadUsesSafeDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.BatchSize != 10 || c.MaxEventBytes != 256*1024 || c.MaxReceiveCount != 3 || c.JSONArraySearchBytes != 1024*1024 || c.LedgerRetentionDays != 90 || c.MaxFileBytes != 10*1024*1024*1024 || c.MaxChunkBytes != 64*1024*1024 {
+	if c.BatchSize != 10 || c.MaxEventBytes != port.DefaultMaxEventBytes || c.MaxReceiveCount != 3 || c.LedgerRetentionDays != 90 || c.MaxFileBytes != 10*1024*1024*1024 || c.MaxChunkBytes != 64*1024*1024 {
 		t.Fatalf("unexpected defaults: %+v", c)
 	}
 }

@@ -11,8 +11,7 @@ import (
 // ValidateGlobalLimits checks that the global limits are within acceptable bounds.
 func ValidateGlobalLimits(limits f2e.GlobalLimits) error {
 	if limits.MaxFileBytes < 1024 || limits.MaxChunkBytes < 1024 || limits.MaxFileBytes < limits.MaxChunkBytes ||
-		limits.MaxEventBytes < 1024 || limits.MaxEventBytes > port.MaxSQSMessageBytes || limits.MaxBatchSize < 1 || limits.MaxBatchSize > 10 ||
-		limits.MaxJSONArraySearchBytes < 1024 || limits.MaxJSONArraySearchBytes > 16*1024*1024 {
+		limits.MaxEventBytes < 1024 || limits.MaxEventBytes > port.MaxSQSMessageBytes || limits.MaxBatchSize < 1 || limits.MaxBatchSize > 10 {
 		return fmt.Errorf("invalid numeric global limits")
 	}
 	for _, dataType := range []f2e.DataType{f2e.DataTypeText, f2e.DataTypeJSON, f2e.DataTypeMultiLine} {
@@ -34,16 +33,23 @@ func ValidatePrefixConfiguration(c f2e.PrefixConfiguration, limits f2e.GlobalLim
 	typeLimits, knownType := limits.InputTypes[c.DataType]
 	if c.RecordsPerChunk < 1 || c.BatchSize < 1 || c.BatchSize > 10 ||
 		c.MaxEventBytes < 1024 || c.MaxEventBytes > port.MaxSQSMessageBytes || c.MaxChunkBytes < 1024 ||
-		c.MaxFileBytes < c.MaxChunkBytes || c.JSONArraySearchBytes < 1024 || c.JSONArraySearchBytes > 16*1024*1024 ||
+		c.MaxFileBytes < c.MaxChunkBytes ||
 		c.EventSchemaID == "" || c.EventSchemaVersion == "" || c.EventFormat == "" {
 		return fmt.Errorf("invalid SSM configuration for s3://%s/%s", c.Bucket, c.Prefix)
 	}
 	if !knownType || c.MaxFileBytes > limits.MaxFileBytes || c.MaxFileBytes > typeLimits.MaxFileBytes ||
 		c.MaxChunkBytes > limits.MaxChunkBytes || c.MaxEventBytes > limits.MaxEventBytes || c.BatchSize > limits.MaxBatchSize ||
-		c.JSONArraySearchBytes > limits.MaxJSONArraySearchBytes ||
 		c.MaxRecordLengthBytes > typeLimits.MaxRecordBytes || c.MultiLineLayout.MaxBytesPerRecord > typeLimits.MaxRecordBytes ||
 		c.JSONArrayLayout.MaxBytesPerElement > typeLimits.MaxRecordBytes {
 		return fmt.Errorf("SSM configuration for s3://%s/%s exceeds global limits", c.Bucket, c.Prefix)
+	}
+	if c.DataType == f2e.DataTypeJSON && (c.JSONArrayLayout.FirstFieldName == "" || c.JSONArrayLayout.MaxBytesPerElement < 1) {
+		return fmt.Errorf("invalid JSON layout for s3://%s/%s", c.Bucket, c.Prefix)
+	}
+	if c.DataType == f2e.DataTypeMultiLine {
+		if err := validateMultiLineLayout(c.MultiLineLayout); err != nil {
+			return fmt.Errorf("invalid multi-line layout for s3://%s/%s: %w", c.Bucket, c.Prefix, err)
+		}
 	}
 	// ── Bundle output mode validation (T15) ───────────────────────────────────
 	switch c.OutputMode {
@@ -80,6 +86,26 @@ func ValidatePrefixConfiguration(c f2e.PrefixConfiguration, limits f2e.GlobalLim
 	}
 	if c.TargetChunkBytes != 0 && (c.TargetChunkBytes < 5*1024*1024 || c.TargetChunkBytes > 100*1024*1024 || c.TargetChunkBytes > c.MaxChunkBytes) {
 		return fmt.Errorf("invalid SSM configuration for s3://%s/%s: targetChunkBytes must be between 5 MiB and min(100 MiB, maxChunkBytes)", c.Bucket, c.Prefix)
+	}
+	return nil
+}
+
+func validateMultiLineLayout(layout f2e.MultiLineLayout) error {
+	for name, fields := range map[string][]f2e.LineMatchField{"breakFields": layout.BreakFields, "includeFields": layout.IncludeFields, "ignoreFields": layout.IgnoreFields} {
+		if name == "breakFields" && len(fields) == 0 {
+			return fmt.Errorf("breakFields is required")
+		}
+		if len(fields) > 99 {
+			return fmt.Errorf("%s has more than 99 fields", name)
+		}
+		for _, field := range fields {
+			if field.StartByte < 0 || field.LengthBytes < 1 || len(field.Value) != field.LengthBytes {
+				return fmt.Errorf("invalid %s field", name)
+			}
+		}
+	}
+	if layout.MaxBytesPerRecord < 1 {
+		return fmt.Errorf("maxBytesPerRecord is required")
 	}
 	return nil
 }

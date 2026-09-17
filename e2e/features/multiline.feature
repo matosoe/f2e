@@ -5,7 +5,7 @@ Feature: Multi-line file processing with header and trailer
     D<seq><data>...  — N data lines (break marker "D" at position 0), each becomes one event
     T<count>         — one trailer line (marker "T"), skipped by the reader
 
-  The organizer uses BreakMarker="D", AcceptedPrefixes=["D"], MaxBytesPerRecord=128.
+  The organizer uses breakFields/includeFields for "D" at byte 0 and MaxBytesPerRecord=128.
   Files with ≤1000 data records fit in a single chunk; larger files produce multiple chunks.
 
   @smoke @regression

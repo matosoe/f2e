@@ -14,6 +14,7 @@ root="$(cd "$(dirname "$0")" && pwd)"
 framework="$(cd "$root/.." && pwd)"
 
 export E2E_METRICS_FILE="${E2E_METRICS_FILE:-$framework/e2e/e2e-metrics.json}"
+export E2E_CONCURRENCY="${E2E_CONCURRENCY:-8}"
 
 cd "$framework/e2e"
 go test -v -timeout 20m ./...

@@ -154,9 +154,8 @@ func (s *scenarioCtx) haveMultiLineFile(count int) error {
 	s.expectedCount = count
 	// MaxBytesPerRecord is always required by the organizer for multi-line.
 	s.multiLineLayout = MultiLineLayout{
-		BreakMarker:       "D",
-		BreakPosition:     0,
-		AcceptedPrefixes:  []string{"D"},
+		BreakFields:       []LineMatchField{{StartByte: 0, LengthBytes: 1, Value: "D"}},
+		IncludeFields:     []LineMatchField{{StartByte: 0, LengthBytes: 1, Value: "D"}},
 		MaxBytesPerRecord: maxRecordBytesMultiLine,
 	}
 	s.metrics.SetupMs += t.ElapsedMs()
@@ -170,6 +169,7 @@ func (s *scenarioCtx) haveJSONArrayFile(count int) error {
 	s.expectedCount = count
 	// MaxBytesPerElement is always required by the organizer for json type.
 	s.jsonArrayLayout = JSONArrayLayout{
+		FirstFieldName:     "id",
 		MaxBytesPerElement: maxBytesPerJSONElement,
 	}
 	s.metrics.SetupMs += t.ElapsedMs()
@@ -277,17 +277,18 @@ func (s *scenarioCtx) receiveExactly(ctx context.Context, expected, timeoutSec i
 		return nil
 	}
 
-	// Count-only path for large files: measure wait separately from drain.
+	// Count-only path for large files: do not receive/delete every output
+	// message. The dedicated E2E queue is purged once after its final count.
 	waitTimer := StartPhase()
 	actual, err := s.aws.WaitForCount(ctx, expected, timeout)
 	s.metrics.WaitMs = waitTimer.ElapsedMs()
 	if err != nil {
 		return fmt.Errorf("expected %d messages, last observed ~%d: %w", expected, actual, err)
 	}
-	drainTimer := StartPhase()
-	drainErr := s.aws.DrainOutputQueue(ctx)
-	s.metrics.ConsumeMs = drainTimer.ElapsedMs()
-	return drainErr
+	purgeTimer := StartPhase()
+	purgeErr := s.aws.PurgeOutputQueue(ctx)
+	s.metrics.ConsumeMs = purgeTimer.ElapsedMs()
+	return purgeErr
 }
 
 // noEventsWithin asserts that no messages appear for this scenario's job within

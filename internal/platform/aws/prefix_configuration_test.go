@@ -47,7 +47,7 @@ func TestResolvePrefixConfigurationSelectsMostSpecificPrefix(t *testing.T) {
 }
 
 func TestLoadGlobalLimitsDecodesSSMDocument(t *testing.T) {
-	want := f2e.GlobalLimits{MaxFileBytes: 1024, MaxChunkBytes: 1024, MaxEventBytes: 1024, MaxBatchSize: 1, MaxJSONArraySearchBytes: 1024, InputTypes: map[f2e.DataType]f2e.InputTypeLimits{f2e.DataTypeText: {MaxFileBytes: 1024, MaxRecordBytes: 512}}}
+	want := f2e.GlobalLimits{MaxFileBytes: 1024, MaxChunkBytes: 1024, MaxEventBytes: 1024, MaxBatchSize: 1, InputTypes: map[f2e.DataType]f2e.InputTypeLimits{f2e.DataTypeText: {MaxFileBytes: 1024, MaxRecordBytes: 512}}}
 	value, err := json.Marshal(want)
 	if err != nil {
 		t.Fatal(err)

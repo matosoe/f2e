@@ -15,9 +15,9 @@
   "dataType": "json",
   "jsonArrayLayout": {
     "arrayPath": "events",
+    "firstFieldName": "id",
     "maxBytesPerElement": 65536
   },
-  "jsonArrayOffset": 24,
   "configuration": {
     "batchSize": 10,
     "maxEventBytes": 262144,

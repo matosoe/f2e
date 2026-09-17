@@ -49,6 +49,9 @@ const (
 	// MaxSQSMessageBytes is the AWS hard limit for an individual message and
 	// the total payload of a SendMessageBatch request: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/APIReference/API_SendMessageBatch.html
 	MaxSQSMessageBytes = 1024 * 1024
+	// DefaultMaxEventBytes leaves room for SQS message attributes and their wire
+	// representation while keeping an individual event close to the 1 MiB limit.
+	DefaultMaxEventBytes = MaxSQSMessageBytes - 4*1024
 
 	MaxPhysicalMessageBytes   = MaxSQSMessageBytes
 	MaxMultiMessageBatchBytes = MaxSQSMessageBytes
@@ -84,6 +87,15 @@ type PrefixConfigurationResolver interface {
 
 type Queue interface {
 	Send(context.Context, string, []OutboundMessage) ([]int, error)
+}
+
+// CompletionLedger is the deliberately small part of the ledger used by the
+// Worker to close a job and deliver its outbox entry.  Keeping it separate
+// avoids making record-processing tests depend on terminal-job persistence.
+// ReconcileCompletion is safe to call after a duplicate chunk delivery.
+type CompletionLedger interface {
+	ReconcileCompletion(context.Context, string) (*f2e.CompletionIntent, error)
+	MarkIntentDelivered(context.Context, string, int64) error
 }
 
 // JobLedger persists the technical state required for reconciliation and replay.
@@ -197,10 +209,4 @@ func (ErrNotImplemented) Error() string { return "not implemented" }
 // access method (S3 bucket/key or pre-signed URL).
 type SourceResolver interface {
 	OpenChunkRange(ctx context.Context, job f2e.ChunkJob, start, end int64) (io.ReadCloser, error)
-}
-
-// RecordProcessor is an optional extension point invoked before each event is
-// published. It returns an explicit publish/reject/ignore decision.
-type RecordProcessor interface {
-	Process(ctx context.Context, envelope f2e.Envelope[f2e.RecordPayload]) (f2e.RecordDecision, error)
 }

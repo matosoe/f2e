@@ -53,7 +53,7 @@ Data: 2026-09-05. Parte do plano `evolucao_f2e_tres_modos_operacao_e_performance
 | `MultiLineLayout` | Preservado | Sem alterações de campos nesta tarefa |
 | `JSONArrayLayout` | Preservado | Sem alterações de campos nesta tarefa |
 | `ChunkJob` core (jobId, chunkId, fileId, bucket, key...) | Preservado | Campos de identidade não mudam em T01 |
-| Envelope v2 (`eventId`, `sourceRecordId`, `metadata`, `source`, `processing`, `data.raw`) | Preservado | `data.fields` e `data.base64` removidos em T04 |
+| Envelope v1 (`eventId`, `sourceRecordId`, `metadata`, `source`, `processing`, `data.raw`) | Preservado | `data.fields` e `data.base64` removidos em T04 |
 
 ## 3. Versões de contrato e estratégia para jobs legados
 
@@ -101,7 +101,7 @@ Estratégia para jobs legados em fila no momento da migração:
 | `terraform/locals.tf` | Remover variáveis de tipos removidos | T05 |
 | `documentacao/contratos.md` | Atualizar lista de tipos, campos e exemplos | T05 |
 | `documentacao/adr/0004-formatos-suportados.md` | Marcar supersedido por ADR 0005 | T01 (já registrado) |
-| `documentacao/schemas/envelope-v2.schema.json` | Remover `fields` e `base64` de `data` | T04 |
+| `documentacao/schemas/envelope-v1.schema.json` | Remover `fields` e `base64` de `data` | T04 |
 
 ## 5. Fixtures de contratos
 
@@ -114,4 +114,4 @@ Fixtures estão em `documentacao/schemas/fixtures/`:
 - `chunk-job-text.json` — `ChunkJob` com `text`.
 - `chunk-job-json.json` — `ChunkJob` com `json`.
 - `chunk-job-multi-line.json` — `ChunkJob` com `multi-line`.
-- `envelope-v2-text.json` — Envelope de saída com `data.raw` de registro `text`.
+- `envelope-v1-text.json` — Envelope de saída com `data.raw` de registro `text`.
