@@ -31,7 +31,7 @@ flowchart LR
         intake[[SQS: file-intake]]:::queue
         organizer[Lambda Organizer<br/>admissão e planejamento]:::compute
         ssm[(SSM Parameter Store<br/>limites globais e configuração por prefixo)]:::data
-        ledger[(DynamoDB: job-ledger<br/>jobs, chunks, quota e outbox)]:::data
+        ledger[(DynamoDB: job-ledger<br/>jobs, chunks e outbox)]:::data
 
         subgraph PREFIX[Recursos isolados por prefixo configurado]
             direction LR
@@ -40,11 +40,7 @@ flowchart LR
             output[[SQS: output do prefixo<br/>Envelope v1 / bundles]]:::queue
         end
 
-        stream{{DynamoDB Streams}}:::data
-        publisher[Lambda Completion Publisher]:::compute
         completion[[SQS: completion-events]]:::queue
-
-        scheduler[EventBridge<br/>a cada 1 / 5 min]:::schedule
 
         intakeDLQ[[DLQ: file-intake]]:::failure
         chunksDLQ[[DLQ: chunks do prefixo]]:::failure
@@ -59,7 +55,7 @@ flowchart LR
     intake -->|evento SQS; falhas parciais de lote| organizer
     organizer <-->|resolve a configuração<br/>pela maior correspondência de prefixo| ssm
     organizer -->|HeadObject da versão ou ETag atual| s3
-    organizer <-->|admite job, reserva quota,<br/>grava plano e estados| ledger
+    organizer <-->|admite job e grava plano/estados| ledger
     organizer -->|ChunkJob com snapshot<br/>da configuração| chunks
     chunks -->|evento SQS| worker
     worker -->|S3 Range GET da versão| s3
@@ -67,24 +63,19 @@ flowchart LR
     worker -->|eventos por registro| output
     output --> consumer
 
-    ledger -->|COMPLETION_INTENT pendente| stream
-    stream --> publisher
-    publisher -->|CompletionEvent| completion
-    publisher -->|marca intent como entregue| ledger
+    worker <-->|fecha job e cria outbox<br/>na mesma transação| ledger
+    worker -->|CompletionEvent| completion
+    worker -->|marca intent como entregue| ledger
     completion --> completionConsumer
 
-    scheduler -.->|libera admissões WAITING| organizer
-    scheduler -.->|reprocessa intents pendentes| publisher
 
     intake -.->|excedeu tentativas| intakeDLQ
     chunks -.->|excedeu tentativas| chunksDLQ
     output -.->|excedeu tentativas de consumo| outputDLQ
     completion -.->|excedeu tentativas| completionDLQ
-    stream -.->|falha após retries| completionDLQ
 
     organizer -.-> observability
     worker -.-> observability
-    publisher -.-> observability
     intake -.-> observability
     chunks -.-> observability
     completion -.-> observability
@@ -100,18 +91,14 @@ flowchart LR
 3. O Worker correspondente processa chunks em paralelo, lê apenas os intervalos
    necessários do S3 e publica os registros como Envelope v1 na fila de saída
    exclusiva do prefixo.
-4. Ao alcançar o estado terminal, o ledger grava uma intenção de conclusão.
-   O Stream aciona o Completion Publisher, que entrega um evento de conclusão
-   e confirma a entrega no outbox. A recuperação agendada consulta intenções
-   ainda pendentes para cobrir falhas ou expiração do Stream.
+4. Ao alcançar o estado terminal, o Worker fecha o job e cria a intenção de
+   conclusão na mesma transação. Ele envia o evento e só então confirma a
+   entrega no outbox; um crash nessa janela pode redeliver o mesmo `eventId`.
 
 ## Garantias e recuperação
 
 - As filas e os Workers são isolados por prefixo; uma carga não consome a
   capacidade de processamento ou a fila de chunks de outro prefixo.
-- A admissão pode ficar em `WAITING` quando o limite de jobs ativos do prefixo
-  é atingido. O EventBridge tenta liberar essas admissões periodicamente, sem
-  manter uma Lambda aguardando.
 - Falhas de processamento usam `ReportBatchItemFailures`, portanto mensagens
   SQS já bem-sucedidas no mesmo lote não são repetidas. Após o máximo de
   tentativas, seguem para a DLQ correspondente.

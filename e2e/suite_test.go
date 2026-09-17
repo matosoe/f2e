@@ -124,9 +124,9 @@ func TestE2E(t *testing.T) {
 			t.Fatalf("unexpected DLQ counts: intake=%d (want 2), chunks=%d (want 0)", intakeDLQ, chunkDLQ)
 		}
 	}
-	// 14 valid scenarios (text:4, multi-line:4, json-array:5 including empty, ssm:1)
-	// create ledger jobs.
-	if err := client.AssertLedgerComplete(t.Context(), 14); err != nil {
+	// Four empty text/multi-line scenarios are rejected; every other scenario,
+	// including the empty JSON array, creates a ledger job.
+	if err := client.AssertLedgerComplete(t.Context(), 17); err != nil {
 		t.Fatal(err)
 	}
 	writeMetricsReport(t, runID, runStart, target, scenarioMetrics, intakeDLQ, chunkDLQ, benchmarkResult)

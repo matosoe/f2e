@@ -167,13 +167,6 @@ type PrefixConfiguration struct {
 	// These ARNs are not enforced at the code level; they are stored here so
 	// that Terraform can generate corresponding SQS/Lambda resource policies.
 	AllowedSourceARNs []string `json:"allowedSourceARNs,omitempty"`
-
-	// MaxActiveJobs is the maximum number of jobs that may be in a non-terminal
-	// state for this prefix at any given time. 0 means no quota (unlimited).
-	// When the quota is reached, further admissions return ErrQuotaExceeded and
-	// the message is allowed to be retried by the SQS visibility timeout without
-	// causing a DLQ redrive (the organizer does not fail the batch item).
-	MaxActiveJobs int `json:"maxActiveJobs,omitempty"`
 }
 
 // ConfigurationSnapshot captures the immutable provenance of a prefix

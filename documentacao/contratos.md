@@ -59,7 +59,7 @@ O envelope de notificação S3 aceita múltiplos `Records`; somente `ObjectCreat
 
 ## Contexto corporativo e identidades de mensagem
 
-`transactionId`, `correlationId`, `traceId` e `sourceSystem` atravessam organizer e worker e são incorporados ao body final. Os Message Attributes são construídos após o `RecordProcessor` e refletem `schema` e `format` finais. Extensões não podem remover ou trocar IDs e localização técnica.
+`transactionId`, `correlationId`, `traceId` e `sourceSystem` atravessam organizer e worker e são incorporados ao body final. Os Message Attributes refletem `schema` e `format` finais. O processamento não possui plugin de transformação: IDs e localização técnica não podem ser removidos ou trocados.
 
 ## Envelope v1
 

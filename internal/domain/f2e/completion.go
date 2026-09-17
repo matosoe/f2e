@@ -105,10 +105,8 @@ type CompletionTimestamps struct {
 	CompletedAt *time.Time `json:"completedAt"`
 }
 
-// CompletionIntent is the outbox record written atomically to the DynamoDB job
-// item when a terminal state transition occurs. A separate publisher (T13)
-// reads these via DynamoDB Streams or a recovery index and sends the event to
-// the completion queue.
+// CompletionIntent is the Worker-owned outbox record written atomically with a
+// terminal DynamoDB transition. The Worker sends it to the completion queue.
 type CompletionIntent struct {
 	// JobID identifies the job this intent belongs to. The DynamoDB item lives
 	// under the same partition key as the job (JOB#<jobId>).

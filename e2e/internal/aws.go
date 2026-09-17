@@ -334,6 +334,12 @@ func (c *AWSClient) ConsumeAllConcurrent(ctx context.Context, expected, workers 
 	deadline := time.Now().Add(timeout)
 	ctxDeadline, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
+	emptyLimit, pollSeconds := 3, int32(5)
+	if !RealAWS() {
+		// LocalStack is deterministic enough for a short quiet period. This
+		// avoids spending 15 seconds per positive scenario in idle long polls.
+		emptyLimit, pollSeconds = 1, 1
+	}
 
 	type result struct {
 		envs    []Envelope
@@ -350,14 +356,14 @@ func (c *AWSClient) ConsumeAllConcurrent(ctx context.Context, expected, workers 
 		go func() {
 			defer wg.Done()
 			emptyRuns := 0
-			for emptyRuns < 3 {
+			for emptyRuns < emptyLimit {
 				if ctxDeadline.Err() != nil {
 					return
 				}
 				out, err := c.sqsClient.ReceiveMessage(ctxDeadline, &sqs.ReceiveMessageInput{
 					QueueUrl:              aws.String(c.outputQueueURL),
 					MaxNumberOfMessages:   10,
-					WaitTimeSeconds:       5, // long polling
+					WaitTimeSeconds:       pollSeconds,
 					MessageAttributeNames: []string{"All"},
 				})
 				if err != nil {

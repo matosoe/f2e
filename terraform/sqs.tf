@@ -173,11 +173,9 @@ resource "aws_sqs_queue_redrive_allow_policy" "chunk_jobs" {
   queue_url            = aws_sqs_queue.chunk_jobs_dlq.id
   redrive_allow_policy = jsonencode({ redrivePermission = "byQueue", sourceQueueArns = [aws_sqs_queue.chunk_jobs.arn] })
 }
-# ── Completion events queue (T13) ─────────────────────────────────────────────
-#
-# The completion-publisher Lambda writes a single terminal-state event per job
-# to this queue. Consumers subscribe here for job-completion notifications; they
-# are separate from the record-envelope output_events queue.
+# ── Completion events queue ──────────────────────────────────────────────────
+# The Worker writes one logical terminal-state event per job to this queue.
+# It is separate from the record-envelope output queue.
 
 resource "aws_sqs_queue" "completion_events_dlq" {
   name                       = "${var.resource_prefix}-${var.environment}-completion-events-dlq"

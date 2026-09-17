@@ -13,15 +13,10 @@ import (
 // without processing or publishing its records again.
 var ErrAlreadyCompleted = errors.New("chunk already completed")
 
-// ErrQuotaExceeded is returned by ReserveSlot when the prefix has reached its
-// maxActiveJobs limit. The Organizer should return the SQS message to the
-// queue (do not add it to BatchItemFailures) so it can be retried naturally
-// when an active job completes and releases its slot.
+// Deprecated compatibility types remain private to the DynamoDB adapter while
+// historic ledger rows are drained. They are not part of JobLedger.
 var ErrQuotaExceeded = errors.New("prefix active-job quota exceeded")
 
-// WaitingAdmission is an immutable S3 notification held outside SQS while a
-// prefix has no available active-job slot. Its ordering key is assigned by the
-// ledger, not by delivery order from the standard intake queue.
 type WaitingAdmission struct {
 	FileID   string
 	PrefixID string
@@ -140,33 +135,6 @@ type JobLedger interface {
 	CompleteChunk(context.Context, f2e.ChunkResult) error
 	FailChunk(context.Context, f2e.ChunkResult) error
 
-	// FinalizeJob records the terminal result and counts of a job.
-	FinalizeJob(context.Context, string, f2e.JobResult, f2e.Counts) error
-
-	// WriteCompletionIntent atomically writes an outbox record when a job
-	// reaches a terminal state. The intent is created together with the
-	// terminal transition so a crash cannot leave a terminal job without a
-	// pending delivery intent.
-	//
-	// If an intent already exists for this jobId (concurrent terminal from a
-	// retry), the call is a no-op and the existing intent is preserved.
-	WriteCompletionIntent(context.Context, f2e.CompletionIntent) error
-
-	// PendingCompletionIntents returns completion intents that have not been
-	// marked as delivered yet. The publisher (T13) uses this for recovery after
-	// a DynamoDB Streams expiration or a publisher crash.
-	//
-	// The implementation must not return intents whose TTL has already expired
-	// without delivery; the caller is responsible for deciding whether to
-	// re-derive the event from the job item.
-	PendingCompletionIntents(ctx context.Context, limit int) ([]f2e.CompletionIntent, error)
-
-	// MarkIntentDelivered records that a completion intent has been
-	// successfully sent to the completion queue. The publisher calls this only
-	// after SQS confirms the send; a crash between send and mark may cause a
-	// duplicate delivery, which consumers handle via the stable eventId.
-	MarkIntentDelivered(ctx context.Context, jobID string, version int64) error
-
 	Replay(context.Context, string, string, []string) ([]f2e.ChunkJob, error)
 
 	// ReserveSlot atomically increments the active-job counter for prefixID and
@@ -179,31 +147,19 @@ type JobLedger interface {
 	// ReleaseSlot when the job reaches a terminal state, and must call
 	// RecoverQuotaLeaks during startup to release slots for jobs that crashed
 	// before reaching terminal.
-	ReserveSlot(ctx context.Context, prefixID string, maxActiveJobs int) error
 
 	// ReleaseSlot atomically decrements the active-job counter for prefixID.
 	// ReleaseSlot is idempotent: if the counter is already 0 it remains 0.
 	// It must be called exactly once per terminal job state transition, even if
 	// the completion event publication fails. A second call due to a retry or
 	// duplicate terminal is a no-op.
-	ReleaseSlot(ctx context.Context, prefixID string) error
 
 	// EnqueueWaitingAdmission durably records an admission that could not obtain
 	// quota. Repeated S3/SQS deliveries for the same physical file are a no-op.
-	EnqueueWaitingAdmission(ctx context.Context, admission WaitingAdmission) error
 	// ClaimWaitingAdmissions returns the oldest waiting admission for each
 	// prefix and marks it RELEASING. The caller must either remove it after a
 	// successful admission or return it to WAITING.
-	ClaimWaitingAdmissions(ctx context.Context, limit int) ([]WaitingAdmission, error)
-	CompleteWaitingAdmission(ctx context.Context, fileID string) error
-	ReturnWaitingAdmission(ctx context.Context, fileID string) error
 }
-
-// ErrNotImplemented is returned by phased ledger operations whose persistence
-// is introduced in a later task (T08) but are already declared in the port.
-type ErrNotImplemented struct{}
-
-func (ErrNotImplemented) Error() string { return "not implemented" }
 
 // SourceResolver fetches a byte range for a chunk job, hiding the underlying
 // access method (S3 bucket/key or pre-signed URL).

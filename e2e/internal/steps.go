@@ -296,6 +296,11 @@ func (s *scenarioCtx) receiveExactly(ctx context.Context, expected, timeoutSec i
 // channel; in sequential mode it checks the shared queue approximate count.
 func (s *scenarioCtx) noEventsWithin(ctx context.Context, waitSec int) error {
 	wait := time.Duration(waitSec) * time.Second
+	if !RealAWS() && wait > 3*time.Second {
+		// The local emulator has no eventual-consistency delay worth waiting
+		// fifteen seconds for; keep the longer feature timeout for real AWS.
+		wait = 3 * time.Second
+	}
 	select {
 	case <-time.After(wait):
 	case <-ctx.Done():

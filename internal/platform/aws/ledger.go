@@ -675,7 +675,6 @@ func (a *AWS) Admit(ctx context.Context, receipt f2e.Receipt) (f2e.AcquisitionRe
 		"leaseExpiresAt": number(admissionLeaseExpiry()),
 		"configSnapshot": text(string(snapshot)),
 	}
-	// T22: persist prefixId so FinalizeJob/RejectJob can release the quota slot.
 	if receipt.PrefixID != "" {
 		item["prefixId"] = text(receipt.PrefixID)
 	}
@@ -744,25 +743,6 @@ func (a *AWS) BeginValidation(ctx context.Context, jobID string) error {
 	return err
 }
 
-// releaseQuotaIfNeeded reads the prefixId from the job item and, if set,
-// decrements the per-prefix active-job counter. It is called by RejectJob and
-// FinalizeJob after a successful terminal transition so the freed slot becomes
-// immediately available to new admissions.
-func (a *AWS) releaseQuotaIfNeeded(ctx context.Context, jobID string) {
-	out, err := a.DynamoDB.GetItem(ctx, &dynamodb.GetItemInput{
-		TableName:            aws.String(a.LedgerTable),
-		Key:                  ledgerKey(jobID, "JOB"),
-		ConsistentRead:       aws.Bool(true),
-		ProjectionExpression: aws.String("prefixId"),
-	})
-	if err != nil || out.Item == nil {
-		return
-	}
-	if v, ok := out.Item["prefixId"].(*types.AttributeValueMemberS); ok && v.Value != "" {
-		_ = a.ReleaseSlot(ctx, v.Value)
-	}
-}
-
 // RejectJob moves a RECEIVED or VALIDATING job into REJECTED with a reason.
 func (a *AWS) RejectJob(ctx context.Context, jobID string, rejection f2e.Rejection) error {
 	reason := string(rejection.Reason)
@@ -773,7 +753,6 @@ func (a *AWS) RejectJob(ctx context.Context, jobID string, rejection f2e.Rejecti
 	extraValues := map[string]types.AttributeValue{":rejection": text(string(rejectionJSON))}
 	err := a.advanceJob(ctx, jobID, []f2e.JobStatus{f2e.JobStateReceived, f2e.JobStateValidating}, f2e.JobStateRejected, reason, "rejection = :rejection", extraValues)
 	if err == nil {
-		a.releaseQuotaIfNeeded(ctx, jobID)
 		return nil
 	}
 	if !conditionalConflict(err) {
@@ -847,30 +826,6 @@ func (a *AWS) AcquireChunk(ctx context.Context, jobID, chunkID string) (f2e.Acqu
 	}
 }
 
-// FinalizeJob records the terminal result and counts of a PROCESSING job. It
-// moves the job to COMPLETED (never regressing a terminal) and stores the
-// aggregate counts with the countsComplete flag.
-func (a *AWS) FinalizeJob(ctx context.Context, jobID string, result f2e.JobResult, counts f2e.Counts) error {
-	reason := string(result)
-	extraValues := map[string]types.AttributeValue{":result": text(string(result)), ":counts": countsMap(counts)}
-	err := a.advanceJob(ctx, jobID, []f2e.JobStatus{f2e.JobStateProcessing}, f2e.JobStateCompleted, reason, "#result = :result, counts = :counts, completedAt = :now", extraValues)
-	if err == nil {
-		a.releaseQuotaIfNeeded(ctx, jobID)
-		return nil
-	}
-	if !conditionalConflict(err) {
-		return err
-	}
-	status, readErr := a.jobStatus(ctx, jobID)
-	if readErr != nil {
-		return readErr
-	}
-	if f2e.JobStatus(status) == f2e.JobStateCompleted {
-		return nil
-	}
-	return err
-}
-
 // ---------------------------------------------------------------------------
 // T12 — completion outbox
 // ---------------------------------------------------------------------------
@@ -893,82 +848,6 @@ const intentSortKeyPrefix = "COMPLETION_INTENT#"
 
 func intentSortKey(version int64) string {
 	return fmt.Sprintf("%s%020d", intentSortKeyPrefix, version)
-}
-
-// WriteCompletionIntent writes an outbox record atomically under the job
-// partition. It uses attribute_not_exists to guarantee idempotence: if a
-// concurrent terminal transition already wrote the intent, this call is a
-// no-op and preserves the existing one.
-func (a *AWS) WriteCompletionIntent(ctx context.Context, intent f2e.CompletionIntent) error {
-	if a.LedgerTable == "" {
-		return fmt.Errorf("ledger table is not configured")
-	}
-	payload, err := json.Marshal(intent)
-	if err != nil {
-		return fmt.Errorf("encode completion intent: %w", err)
-	}
-	item := map[string]types.AttributeValue{
-		"pk":            text("JOB#" + intent.JobID),
-		"sk":            text(intentSortKey(intent.Version)),
-		"jobId":         text(intent.JobID),
-		"intentVersion": number(intent.Version),
-		"intentStatus":  text(string(intent.Status)),
-		"intentPending": text(intentPendingMarker),
-		"payload":       text(string(payload)),
-		"createdAt":     text(intent.CreatedAt.UTC().Format(time.RFC3339Nano)),
-		"expiresAt":     number(a.jobRetention()),
-	}
-	_, err = a.DynamoDB.PutItem(ctx, &dynamodb.PutItemInput{
-		TableName:           aws.String(a.LedgerTable),
-		Item:                item,
-		ConditionExpression: aws.String("attribute_not_exists(pk) AND attribute_not_exists(sk)"),
-	})
-	if err != nil {
-		if conditionalConflict(err) {
-			// Intent already exists (concurrent terminal transition). No-op.
-			return nil
-		}
-		return fmt.Errorf("write completion intent: %w", err)
-	}
-	return nil
-}
-
-// PendingCompletionIntents queries the sparse GSI for intents whose
-// intentPending attribute is still set. The publisher calls this to recover
-// undelivered intents after a DynamoDB Streams expiration or a publisher crash.
-func (a *AWS) PendingCompletionIntents(ctx context.Context, limit int) ([]f2e.CompletionIntent, error) {
-	if a.LedgerTable == "" {
-		return nil, fmt.Errorf("ledger table is not configured")
-	}
-	if limit <= 0 {
-		limit = 100
-	}
-	lim := int32(limit)
-	out, err := a.DynamoDB.Query(ctx, &dynamodb.QueryInput{
-		TableName:              aws.String(a.LedgerTable),
-		IndexName:              aws.String("pending-intents-index"),
-		KeyConditionExpression: aws.String("intentPending = :pending"),
-		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":pending": text(intentPendingMarker),
-		},
-		Limit: &lim,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("query pending completion intents: %w", err)
-	}
-	intents := make([]f2e.CompletionIntent, 0, len(out.Items))
-	for _, item := range out.Items {
-		payloadAttr, ok := item["payload"].(*types.AttributeValueMemberS)
-		if !ok {
-			continue
-		}
-		var intent f2e.CompletionIntent
-		if err := json.Unmarshal([]byte(payloadAttr.Value), &intent); err != nil {
-			return nil, fmt.Errorf("decode completion intent: %w", err)
-		}
-		intents = append(intents, intent)
-	}
-	return intents, nil
 }
 
 // quotaKey returns the DynamoDB primary key for a per-prefix active-job counter.

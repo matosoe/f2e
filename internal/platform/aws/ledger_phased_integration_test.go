@@ -140,40 +140,6 @@ func TestPhasedRejectAgainstLocalStack(t *testing.T) {
 	}
 }
 
-// TestPhasedFinalizeAgainstLocalStack verifies FinalizeJob records the terminal
-// result + counts atomically and never regresses.
-func TestPhasedFinalizeAgainstLocalStack(t *testing.T) {
-	client := newPhasedClient(t)
-	jobID := "phased-finalize-" + time.Now().UTC().Format("20060102150405.000000000")
-	seedJob(t, client, jobID, f2e.JobStateProcessing)
-
-	counts := f2e.Counts{RecordsRead: 5, RecordsPublished: 4, RecordsRejected: 1, MessagesPublished: 4, CountsComplete: true}
-	if err := client.FinalizeJob(t.Context(), jobID, f2e.JobResultWithRejections, counts); err != nil {
-		t.Fatalf("finalize: %v", err)
-	}
-	// Idempotent — a duplicate finalize must not regress or error.
-	if err := client.FinalizeJob(t.Context(), jobID, f2e.JobResultWithRejections, counts); err != nil {
-		t.Fatalf("finalize (repeat): %v", err)
-	}
-
-	out, err := client.DynamoDB.GetItem(t.Context(), &dynamodb.GetItemInput{TableName: aws.String("f2e-job-ledger"), Key: ledgerKey(jobID, "JOB"), ConsistentRead: aws.Bool(true)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if status := out.Item["status"].(*types.AttributeValueMemberS).Value; status != string(f2e.JobStateCompleted) {
-		t.Fatalf("status=%s, want COMPLETED", status)
-	}
-	if result := out.Item["result"].(*types.AttributeValueMemberS).Value; result != string(f2e.JobResultWithRejections) {
-		t.Fatalf("result=%s, want WITH_REJECTIONS", result)
-	}
-	if _, ok := out.Item["counts"].(*types.AttributeValueMemberM); !ok {
-		t.Fatalf("counts missing")
-	}
-	if _, ok := out.Item["completedAt"].(*types.AttributeValueMemberS); !ok {
-		t.Fatalf("completedAt missing")
-	}
-}
-
 // TestPhasedNoRegressionAgainstLocalStack proves a terminal job never regresses:
 // validation, planning and rejection writes all fail without changing state.
 func TestPhasedNoRegressionAgainstLocalStack(t *testing.T) {
