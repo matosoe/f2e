@@ -1,4 +1,4 @@
-# ADR 0013 — Implantação simples com recursos compartilhados
+# ADR 0009 — Implantação simples com recursos compartilhados
 
 **Status:** aceito em 2026-09-16
 
@@ -24,5 +24,7 @@ simples.
 ## Consequências
 
 O módulo `f2e-prefix` e os recursos por prefixo são removidos. Esta decisão
-supersede o modelo de recursos dedicados do ADR 0008 e o catálogo de topologia
-do ADR 0011, mantendo SSM para resolver e registrar o contrato por prefixo.
+descarta o modelo de recursos dedicados e seu catálogo Terraform de prefixos.
+A implantação compartilhada foi escolhida por simplicidade operacional, menor
+custo e menor superfície de Terraform, IAM e alarmes. O SSM permanece para
+resolver e registrar o contrato por prefixo.

@@ -14,7 +14,10 @@ root="$(cd "$(dirname "$0")" && pwd)"
 framework="$(cd "$root/.." && pwd)"
 
 export E2E_METRICS_FILE="${E2E_METRICS_FILE:-$framework/e2e/e2e-metrics.json}"
-export E2E_CONCURRENCY="${E2E_CONCURRENCY:-8}"
+# O LocalStack 3.8.x apresenta uma condição de corrida no SQS com cenários
+# paralelos. A execução local é sequencial por padrão; benchmarks podem definir
+# E2E_CONCURRENCY explicitamente.
+export E2E_CONCURRENCY="${E2E_CONCURRENCY:-1}"
 
 cd "$framework/e2e"
 go test -v -timeout 20m ./...

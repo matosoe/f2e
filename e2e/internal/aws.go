@@ -22,9 +22,14 @@ import (
 )
 
 const (
-	localStackEndpoint = "http://localhost:4566"
-	schemaVersion      = "1"
+	defaultLocalStackEndpoint = "http://127.0.0.1:4566"
+	schemaVersion             = "1"
 )
+
+// LocalStackEndpoint retorna o endpoint usado pela suíte E2E local.
+func LocalStackEndpoint() string {
+	return env("F2E_E2E_ENDPOINT", defaultLocalStackEndpoint)
+}
 
 // AWSClient wraps S3 and SQS clients pre-configured for LocalStack.
 type AWSClient struct {
@@ -45,7 +50,7 @@ type AWSClient struct {
 // LocalStackAvailable returns true when the LocalStack health endpoint responds.
 func LocalStackAvailable() bool {
 	c := &http.Client{Timeout: 3 * time.Second}
-	resp, err := c.Get(localStackEndpoint + "/_localstack/health")
+	resp, err := c.Get(LocalStackEndpoint() + "/_localstack/health")
 	if err != nil {
 		return false
 	}
@@ -69,7 +74,7 @@ func NewAWSClient() *AWSClient {
 	region := env("F2E_E2E_AWS_REGION", "us-east-1")
 	options := []func(*awsconfig.LoadOptions) error{awsconfig.WithRegion(region)}
 	if !RealAWS() {
-		options = append(options, awsconfig.WithBaseEndpoint(localStackEndpoint))
+		options = append(options, awsconfig.WithBaseEndpoint(LocalStackEndpoint()))
 	}
 	cfg, err := awsconfig.LoadDefaultConfig(ctx, options...)
 	if err != nil {

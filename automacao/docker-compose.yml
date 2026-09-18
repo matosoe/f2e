@@ -1,6 +1,8 @@
 services:
   localstack:
-    image: localstack/localstack@sha256:b279c01f4cfb8f985a482e4014cabc1e2697b9d7a6c8c8db2e40f4d9f93687c7
+    # A 4.14.0 é a última versão sem token de autenticação e suporta
+    # paralelismo das Lambdas usado pela suíte E2E local.
+    image: localstack/localstack@sha256:75ba7a4bda54a3020019fba23e99c61bbff7dbf23eea12919e5b75b15c6f03f2
     container_name: localstack-main
     hostname: localstack
     ports:

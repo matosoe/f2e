@@ -38,7 +38,7 @@ import (
 
 func TestE2E(t *testing.T) {
 	if !internal.RealAWS() && !internal.LocalStackAvailable() {
-		t.Fatal("LocalStack not available at http://localhost:4566 — run automacao/subir-ambiente.sh before executing the E2E suite")
+		t.Fatalf("LocalStack indisponível em %s — execute automacao/subir-ambiente.sh antes da suíte E2E", internal.LocalStackEndpoint())
 	}
 
 	client := internal.NewAWSClient()

@@ -1,4 +1,4 @@
-# ADR 0014 — SSM dinâmico para operação e breaking glass
+# ADR 0010 — SSM dinâmico para operação e breaking glass
 
 **Status:** aceito em 2026-09-16
 

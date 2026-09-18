@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -580,6 +581,21 @@ func TestJSONArrayWorkerMultiChunk(t *testing.T) {
 	}
 	if len(raws) != 4 {
 		t.Fatalf("expected 4 elements, got %d: %v", len(raws), raws)
+	}
+}
+
+func TestAlignJSONReadResynchronizesAfterPartialString(t *testing.T) {
+	data := []byte(`record-999"},
+  {"id":1000,"name":"record-1000"},
+  {"id":1001,"name":"record-1001"}
+]`)
+	aligned, offset := alignJSONRead(data, 512000-256, "id")
+	if offset != 512000-256+int64(bytes.Index(data, []byte(`{"id":1000`))) {
+		t.Fatalf("deslocamento inesperado: %d", offset)
+	}
+	starts := f2e.FindJSONObjectStarts(aligned, "id")
+	if len(starts) != 2 {
+		t.Fatalf("objetos encontrados: %d", len(starts))
 	}
 }
 

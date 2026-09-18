@@ -39,7 +39,7 @@ O F2E suporta três modos de delimitação:
 | `json` | Um objeto delimitado pelo nome de campo configurado para sua primeira propriedade. |
 | `multi-line` | Linhas físicas agrupadas por marcadores configurados. |
 
-Tipos removidos (`fixed-width`, `jsonl`, `ndjson`, `csv`, `binary`) produzem erro explícito. Para informações sobre migração, consulte [contratos](documentacao/contratos.md) e o [ADR 0005](documentacao/adr/0005-tres-modos-de-delimitacao.md).
+Tipos removidos (`fixed-width`, `jsonl`, `ndjson`, `csv`, `binary`) produzem erro explícito. Para informações sobre migração, consulte [contratos](documentacao/contratos.md) e o [ADR 0004](documentacao/adr/0004-tres-modos-de-delimitacao.md).
 
 Para `text` com arquivos grandes (mais de `F2E_RECORDS_PER_CHUNK` linhas), informe `maxRecordLengthBytes`. Esse limite permite que o Organizer defina as fronteiras dos chunks e que os Workers tratem registros que cruzam uma fronteira sem gerar duplicatas ou lacunas. Arquivos pequenos podem omitir `maxRecordLengthBytes` (modo single-chunk).
 
@@ -138,7 +138,7 @@ conteúdo com muito escape JSON pode atingir o limite antes do tamanho nominal a
 }
 ```
 
-A decisão formal está no [ADR 0005](documentacao/adr/0005-tres-modos-de-delimitacao.md) e nos [contratos](documentacao/contratos.md).
+A decisão formal está no [ADR 0004](documentacao/adr/0004-tres-modos-de-delimitacao.md) e nos [contratos](documentacao/contratos.md).
 
 ## Evento de saída e rastreabilidade
 

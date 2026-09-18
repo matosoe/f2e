@@ -1,4 +1,4 @@
-# ADR 0007 — Modo de saída bundle (múltiplos envelopes por mensagem SQS)
+# ADR 0006 — Modo de saída bundle (múltiplos envelopes por mensagem SQS)
 
 **Status:** aceito em 2026-09-05
 

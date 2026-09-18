@@ -603,6 +603,7 @@ func readJSONArray(ctx context.Context, r io.Reader, j f2e.ChunkJob, readStart i
 	if err != nil {
 		return err
 	}
+	data, readStart = alignJSONRead(data, readStart, j.JSONArrayLayout.FirstFieldName)
 	var n int64
 	for _, element := range f2e.FindJSONObjectStarts(data, j.JSONArrayLayout.FirstFieldName) {
 		if err := ctx.Err(); err != nil {
@@ -620,6 +621,26 @@ func readJSONArray(ctx context.Context, r io.Reader, j f2e.ChunkJob, readStart i
 		}
 	}
 	return nil
+}
+
+// alignJSONRead descarta o prefixo parcial de uma leitura com sobreposição até
+// o primeiro objeto completo. Sem esse realinhamento, uma faixa que começa no
+// meio de uma string deixa o analisador léxico fora de sincronia e faz com que
+// ele ignore os objetos seguintes.
+func alignJSONRead(data []byte, readStart int64, firstFieldName string) ([]byte, int64) {
+	for offset := 0; offset < len(data); {
+		relative := bytes.IndexByte(data[offset:], '{')
+		if relative < 0 {
+			break
+		}
+		offset += relative
+		starts := f2e.FindJSONObjectStarts(data[offset:], firstFieldName)
+		if len(starts) != 0 && starts[0][0] == 0 {
+			return data[offset:], readStart + int64(offset)
+		}
+		offset++
+	}
+	return data, readStart
 }
 
 // nextCompleteElement returns the [start, end) byte positions of the next

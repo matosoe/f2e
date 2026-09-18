@@ -1,4 +1,4 @@
-# ADR 0012 — Módulo Go único e automação canônica
+# ADR 0008 — Módulo Go único e automação canônica
 
 **Status:** aceito em 2026-09-16
 

@@ -1,4 +1,4 @@
-# ADR 0005 — Três modos de delimitação
+# ADR 0004 — Três modos de delimitação
 
 **Status:** aceito em 2026-09-05
 
@@ -54,6 +54,13 @@ lógicos. Terminador de linhas físicas também é obrigatório neste modo.
 
 ### Remoção
 
+### Decisão anterior descartada
+
+O catálogo que mantinha todos os formatos de produção foi descartado. A
+redução para três modos elimina sobreposições e caminhos de parsing pouco usados,
+priorizando simplicidade do contrato, menor custo de manutenção e testes mais
+confiáveis.
+
 Tipos removidos: `fixed-width`, `csv`, `binary`, `jsonl`, `ndjson`.
 Campo `bypassJsonValidation` / `BypassJSONValidation` removido.
 Campo `RecordLengthBytes` de `PrefixConfiguration` removido (substituído por
@@ -78,6 +85,5 @@ Nomes antigos não são aceitos silenciosamente como aliases.
 - O organizer rejeita `DataType` fora do conjunto `{text, json, multi-line}`.
 - Jobs anteriores em tipos removidos não são reinterpretados silenciosamente;
   a estratégia de drenagem é declarada na seção de versões de contratos (T01).
-- `ADR 0004` fica supersedido por este ADR.
 - O leitor compartilhado é criado em T03; a remoção efetiva do código legado
   ocorre em T04.

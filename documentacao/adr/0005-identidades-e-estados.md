@@ -1,4 +1,4 @@
-# ADR 0006 — Identidades, estados e máquina de jobs
+# ADR 0005 — Identidades, estados e máquina de jobs
 
 **Status:** aceito em 2026-09-05
 
