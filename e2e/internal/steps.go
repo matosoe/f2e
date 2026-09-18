@@ -2,8 +2,11 @@ package internal
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -277,18 +280,11 @@ func (s *scenarioCtx) receiveExactly(ctx context.Context, expected, timeoutSec i
 		return nil
 	}
 
-	// Count-only path for large files: do not receive/delete every output
-	// message. The dedicated E2E queue is purged once after its final count.
-	waitTimer := StartPhase()
-	actual, err := s.aws.WaitForCount(ctx, expected, timeout)
-	s.metrics.WaitMs = waitTimer.ElapsedMs()
-	if err != nil {
-		return fmt.Errorf("expected %d messages, last observed ~%d: %w", expected, actual, err)
-	}
-	purgeTimer := StartPhase()
-	purgeErr := s.aws.PurgeOutputQueue(ctx)
-	s.metrics.ConsumeMs = purgeTimer.ElapsedMs()
-	return purgeErr
+	// Large files are streamed to the JSONL report while being consumed.
+	consumeTimer := StartPhase()
+	err := s.aws.DrainOutputForReport(ctx, expected, timeout)
+	s.metrics.ConsumeMs = consumeTimer.ElapsedMs()
+	return err
 }
 
 // noEventsWithin asserts that no messages appear for this scenario's job within
@@ -354,8 +350,10 @@ func (s *scenarioCtx) allEventsAreValidEnvelopes(_ context.Context) error {
 		eventIDs[env.Metadata.EventID] = struct{}{}
 		sourceRecordIDs[env.Metadata.SourceRecordID] = struct{}{}
 		// Capture AWS-side timestamps from envelope.metadata.createdAt.
-		// These use the Worker's clock and must not be subtracted from local times.
+		// Render them in the report timezone. They must not be subtracted from
+		// local durations because the source clock is independent.
 		if ts := env.Metadata.CreatedAt; ts != "" {
+			ts = localRFC3339Timestamp(ts)
 			if earliest == "" || ts < earliest {
 				earliest = ts
 			}
@@ -381,10 +379,10 @@ func (s *scenarioCtx) allEventsAreValidEnvelopes(_ context.Context) error {
 		if env.Processing.ChunkID == "" {
 			return fmt.Errorf("message[%d]: processing.chunkId is empty", i)
 		}
-		if env.Processing.RecordNumber == nil {
-			return fmt.Errorf("message[%d]: processing.recordNumber is nil", i)
-		}
-		if *env.Processing.RecordNumber < 1 {
+		// Independently planned chunks do not carry a globally provable ordinal
+		// after the first chunk. The following record-number assertion validates
+		// every generated payload in that case.
+		if env.Processing.RecordNumber != nil && *env.Processing.RecordNumber < 1 {
 			return fmt.Errorf("message[%d]: processing.recordNumber = %d, want >= 1", i, *env.Processing.RecordNumber)
 		}
 		switch s.dataType {
@@ -409,15 +407,20 @@ func (s *scenarioCtx) recordNumbersArePresent(_ context.Context, from, to int) e
 		return fmt.Errorf("no messages received")
 	}
 	seen := make(map[int64]bool, len(s.receivedMessages))
+	usePayloadOrdinal := false
 	for _, env := range s.receivedMessages {
 		if env.Processing.RecordNumber == nil {
-			return fmt.Errorf("nil recordNumber in received message")
+			usePayloadOrdinal = true
+			continue
 		}
 		n := *env.Processing.RecordNumber
 		if seen[n] {
 			return fmt.Errorf("duplicate recordNumber %d", n)
 		}
 		seen[n] = true
+	}
+	if usePayloadOrdinal {
+		return s.payloadRecordNumbersArePresent(from, to)
 	}
 
 	missing := make([]int64, 0)
@@ -434,4 +437,57 @@ func (s *scenarioCtx) recordNumbersArePresent(_ context.Context, from, to int) e
 		return fmt.Errorf("missing record numbers: %v", missing)
 	}
 	return nil
+}
+
+// payloadRecordNumbersArePresent preserves per-record E2E coverage for files
+// split into independently planned chunks. Those chunks intentionally lack a
+// global processing.recordNumber, so the deterministic ordinal embedded in the
+// generated record payload is used to prove that each input record was read.
+func (s *scenarioCtx) payloadRecordNumbersArePresent(from, to int) error {
+	seen := make(map[int64]bool, len(s.receivedMessages))
+	for i, env := range s.receivedMessages {
+		n, err := payloadRecordNumber(s.dataType, env.Data.Raw)
+		if err != nil {
+			return fmt.Errorf("message[%d]: %w", i, err)
+		}
+		if seen[n] {
+			return fmt.Errorf("duplicate payload record number %d", n)
+		}
+		seen[n] = true
+	}
+	for n := int64(from); n <= int64(to); n++ {
+		if !seen[n] {
+			return fmt.Errorf("payload record number %d is missing", n)
+		}
+	}
+	return nil
+}
+
+func payloadRecordNumber(dataType, raw string) (int64, error) {
+	switch dataType {
+	case "text":
+		parts := strings.SplitN(strings.TrimPrefix(raw, "record-"), "-", 2)
+		if len(parts) != 2 {
+			return 0, fmt.Errorf("invalid text payload %q", raw)
+		}
+		return strconv.ParseInt(parts[0], 10, 64)
+	case "multi-line":
+		if len(raw) < 9 || raw[0] != 'D' {
+			return 0, fmt.Errorf("invalid multi-line payload %q", raw)
+		}
+		return strconv.ParseInt(raw[1:9], 10, 64)
+	case "json":
+		var item struct {
+			ID int64 `json:"id"`
+		}
+		if err := json.Unmarshal([]byte(raw), &item); err != nil {
+			return 0, fmt.Errorf("decode JSON payload: %w", err)
+		}
+		if item.ID < 1 {
+			return 0, fmt.Errorf("invalid JSON payload id %d", item.ID)
+		}
+		return item.ID, nil
+	default:
+		return 0, fmt.Errorf("unsupported data type %q", dataType)
+	}
 }

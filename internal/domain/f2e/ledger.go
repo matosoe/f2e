@@ -33,6 +33,7 @@ type JobPlan struct {
 	Key            string
 	VersionID      string
 	ETag           string
+	FileSize       int64
 	ExpectedChunks int
 	CreatedAt      time.Time
 	ConfigSnapshot ConfigurationSnapshot

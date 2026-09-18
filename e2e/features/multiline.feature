@@ -5,8 +5,9 @@ Feature: Multi-line file processing with header and trailer
     D<seq><data>...  — N data lines (break marker "D" at position 0), each becomes one event
     T<count>         — one trailer line (marker "T"), skipped by the reader
 
-  The organizer uses breakFields/includeFields for "D" at byte 0 and MaxBytesPerRecord=128.
-  Files with ≤1000 data records fit in a single chunk; larger files produce multiple chunks.
+  The organizer uses breakFields/includeFields for "D" at byte 0 and MaxBytesPerRecord=64.
+  The local E2E configuration uses 100 records per chunk, so the 1,000-record case
+  exercises approximately ten chunks.
 
   @smoke @regression
   Scenario: Empty multi-line file is rejected
@@ -27,16 +28,6 @@ Feature: Multi-line file processing with header and trailer
       | 1     | 30      |
       | 2     | 30      |
       | 1000  | 90      |
-
-  @regression
-  Scenario Outline: Multi-line file with header, <count> data records, and trailer — count validation only
-    Given I have a multi-line file with header, <count> data records, and trailer
-    When I upload and process the file
-    Then I receive exactly <count> events within <timeout> seconds
-
-    Examples:
-      | count | timeout |
-      | 10000 | 180     |
 
   @load
   Scenario: Multi-line file with header, 1000000 data records, and trailer

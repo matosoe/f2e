@@ -201,8 +201,19 @@ go test ./...
 (cd lambdas && go test ./...)
 
 # Testes end-to-end, com o ambiente ativo
-(cd e2e && go test -v -timeout 25m ./...)
+(cd e2e && go test -count=1 -v -timeout 25m ./...)
 ```
+
+Cada execução E2E grava cinco arquivos em `e2e/relatorios/`, com a data e hora
+local do início e o offset do sistema no começo do nome, por exemplo
+`20260918T183500.000000000-0300-resumo.json`. Os arquivos são `*-resumo.json`
+(cenários, registros e tempos), `*-eventos.jsonl` (corpo original de cada
+mensagem SQS recebida da fila de saída), `*-completion-events.jsonl`,
+`*-dlq.jsonl` (intake, chunk-jobs e completion) e `*-dynamodb.json` (itens
+completos do ledger ao final). Cada linha JSONL
+representa uma mensagem física SQS, inclusive quando ela contém um bundle.
+O campo `sentAt` usa RFC 3339 e o offset da máquina que executa o E2E.
+A pasta é ignorada pelo Git. `E2E_REPORT_DIR` altera seu destino.
 
 Veja instruções operacionais e limitações do simulador em [Operação local](documentacao/operacao_local.md).
 Para uma conta AWS real, consulte [Operação na AWS](documentacao/operacao_aws.md).

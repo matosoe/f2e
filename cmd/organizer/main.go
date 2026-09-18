@@ -18,6 +18,7 @@ import (
 	"github.com/f2e/f2e/internal/domain/f2e"
 	awsclient "github.com/f2e/f2e/internal/platform/aws"
 	"github.com/f2e/f2e/internal/platform/config"
+	"github.com/f2e/f2e/internal/platform/runtimeclock"
 )
 
 var service organizer.Service
@@ -28,6 +29,10 @@ var globalLimitsParameter string
 
 func init() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+	if err := runtimeclock.ConfigureLocalTimezone(); err != nil {
+		slog.Error("invalid timezone configuration", "service", "organizer", "error", err)
+		os.Exit(1)
+	}
 	ctx := context.Background()
 	c, e := config.Load()
 	if e != nil {
@@ -138,7 +143,7 @@ func jobsFor(ctx context.Context, body []byte, executionID string) ([]f2e.ChunkJ
 		}
 		fileID := f2e.FileID(object)
 		if configured.Ledger != nil {
-			outcome, admitErr := configured.Ledger.Admit(ctx, f2e.Receipt{ReceiptID: executionID, FileID: fileID, Source: object, Environment: configured.Config.Environment, ReceivedAt: time.Now().UTC(), ConfigSnapshot: configSnapshot, PrefixID: prefixConfig.PrefixID})
+			outcome, admitErr := configured.Ledger.Admit(ctx, f2e.Receipt{ReceiptID: executionID, FileID: fileID, Source: object, Environment: configured.Config.Environment, ReceivedAt: time.Now().Local(), ConfigSnapshot: configSnapshot, PrefixID: prefixConfig.PrefixID})
 			if admitErr != nil {
 				return nil, fmt.Errorf("admit immutable S3 object: %w", admitErr)
 			}
@@ -168,7 +173,7 @@ func jobsFor(ctx context.Context, body []byte, executionID string) ([]f2e.ChunkJ
 		// A selected empty JSON array has no Worker message. Seal and complete
 		// its zero-chunk manifest directly so admission never remains PLANNING.
 		if len(execution.Jobs) == 0 && configured.Ledger != nil {
-			if err := configured.Ledger.Plan(ctx, f2e.JobPlan{JobID: fileID, FileID: fileID, Bucket: object.Bucket, Key: object.Key, VersionID: object.VersionID, ETag: object.ETag, ExpectedChunks: 0, CreatedAt: time.Now().UTC(), ConfigSnapshot: configSnapshot}, nil); err != nil {
+			if err := configured.Ledger.Plan(ctx, f2e.JobPlan{JobID: fileID, FileID: fileID, Bucket: object.Bucket, Key: object.Key, VersionID: object.VersionID, ETag: object.ETag, FileSize: object.Size, ExpectedChunks: 0, CreatedAt: time.Now().Local(), ConfigSnapshot: configSnapshot}, nil); err != nil {
 				return nil, fmt.Errorf("seal empty manifest: %w", err)
 			}
 			// The Worker owns completion publication even for an empty array. This

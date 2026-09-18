@@ -26,7 +26,7 @@ publica eventos em SQS; SNS não é um destino provisionado por este projeto.
 
 | Requisito | Critério de atendimento |
 |---|---|
-| Converter arquivo em eventos | Cada registro lógico elegível gera um Envelope v1, ou integra um bundle quando esse modo estiver configurado. |
+| Converter arquivo em eventos | Cada registro lógico elegível gera um Envelope v1. No modo `single`, ele ocupa uma mensagem SQS; no modo `bundle`, vários envelopes integram uma mensagem. |
 | Iniciar sob demanda | Um ObjectCreated do S3 ou uma requisição explícita entra na fila de intake e aciona o Organizer. |
 | Processar arquivos grandes em paralelo | O Organizer produz chunks e Workers processam-nos concorrentemente. |
 | Rastrear a execução | O ledger registra arquivo, job, chunks, contagens, falhas, configuração e estado terminal. |
@@ -53,6 +53,13 @@ O arquivo deve respeitar os máximos configurados para tamanho total, chunk,
 registro e mensagem. O Organizer rejeita contratos ou arquivos fora desses
 limites; o Worker falha o chunk quando não consegue provar uma fronteira válida
 dentro do limite declarado.
+
+No modo `text` divisível, o Organizer planeja faixas nominais de bytes: por
+padrão, busca aproximadamente 100 chunks por arquivo, respeitando o mínimo de
+5 MiB e `maxChunkBytes`; arquivos menores que 5 MiB formam um único chunk.
+`targetChunkBytes`, quando informado, ajusta o alvo
+entre 5 MiB e o menor valor de 100 MiB e `maxChunkBytes`. A fronteira real do
+registro é resolvida pelo Worker dentro de `maxRecordLengthBytes`.
 
 ### Não elegíveis sem extensão específica
 
@@ -88,6 +95,8 @@ sem fronteira previsível, dividir o arquivo pode corromper o registro lógico.
 - Intake, chunks, eventos de saída e conclusão são filas SQS.
 - As filas são Standard: a entrega é at-least-once e não há ordenação global.
 - Corpo, atributos e overhead serializado devem caber no máximo de mensagem.
+- `batchSize` limita mensagens físicas por chamada `SendMessageBatch` (até 10),
+  não a quantidade de envelopes quando a saída usa `bundle`.
 - A redrive policy move mensagens que excedem as tentativas para DLQs.
 - Consumidores downstream são responsáveis pela exclusão da mensagem, DLQ de
   saída e idempotência dos próprios efeitos.
@@ -107,8 +116,10 @@ sem fronteira previsível, dividir o arquivo pode corromper o registro lógico.
 - DynamoDB é o ledger técnico: não substitui a persistência de negócio dos
   consumidores.
 - SSM guarda configuração por prefixo e limites globais.
-- O snapshot de configuração entra no job; alterar SSM afeta somente novas
-  admissões.
+- Para notificações S3, o prefixo mais específico seleciona a configuração
+  SSM, registrada no snapshot do job; alterar SSM afeta somente novas
+  admissões. Requisições explícitas usam o contrato recebido e os padrões da
+  Lambda, sem seleção de prefixo no SSM.
 
 ## 5. Ordem, entrega e conclusão
 
@@ -129,6 +140,21 @@ consumidor idempotente
 Use eventId para deduplicar retries da mesma execução e sourceRecordId para
 deduplicar o mesmo registro físico entre replays. Não há transação distribuída
 entre SQS e DynamoDB.
+
+O modo de saída padrão é `single`: cada mensagem contém um Envelope v1. O modo
+`bundle` deve ser escolhido para o prefixo no SSM ou, em requisições explícitas,
+por `F2E_OUTPUT_MODE=bundle` na Lambda. Nesse modo, a mensagem contém um
+`BundleEnvelope` (`schemaVersion: "f2e-bundle/1"`) com envelopes completos do
+mesmo chunk. `maxEnvelopesPerMessage` limita a quantidade de envelopes; `0`
+deixa o limite de bytes determinar o agrupamento. `maxMessageBytes` limita o
+tamanho físico, incluindo wrapper e atributos; `0` usa o limite físico padrão.
+Cada envelope também respeita `maxEventBytes`. Um envelope que não cabe sozinho
+no bundle causa erro, sem truncamento.
+
+O consumidor do modo `bundle` precisa reconhecer o wrapper, processar cada
+item e deduplicar pelo `eventId` individual: uma nova entrega da mensagem pode
+repetir todos os seus itens. Contagens de registros e de mensagens SQS são
+grandezas distintas nesse modo.
 
 O job pode terminar em:
 
@@ -151,14 +177,17 @@ o registro é a unidade lógica de saída.
 arquivo -> chunks -> Workers paralelos -> eventos
 ~~~
 
-O throughput depende do número de chunks, concorrência SQS-Lambda, limites AWS
-e capacidade de consumidores. Backlogs nas filas são o mecanismo de
+O throughput depende do número de chunks, concorrência SQS-Lambda, limites AWS,
+modo de saída e capacidade de consumidores. Backlogs nas filas são o mecanismo de
 desacoplamento e um sinal operacional de que uma etapa está mais lenta que a
 anterior.
 
 Os jobs preservam no snapshot a fila de saída escolhida pelo prefixo. Por
 padrão ela é compartilhada; um prefixo pode usar fila dedicada. A fila de
-chunks e a fila de conclusão permanecem únicas.
+chunks e a fila de conclusão permanecem únicas. Todos os prefixos compartilham
+o Worker e sua concorrência; uma carga intensa pode atrasar os demais. Para
+capacidade ou fronteira de segurança isolada, implante uma instância F2E
+dedicada de ponta a ponta.
 
 ## 7. Decisão de adoção
 
@@ -169,7 +198,8 @@ Antes de adotar o building block, confirme:
 3. A regra de fronteira e o tamanho máximo do registro são conhecidos.
 4. O arquivo, chunk, registro e mensagem cabem nos limites configurados.
 5. A janela de processamento cabe na capacidade dimensionada de Lambda e SQS.
-6. O consumidor é idempotente e suporta o contrato de saída escolhido.
+6. O consumidor é idempotente e suporta o contrato de saída escolhido,
+   inclusive o wrapper e a deduplicação por item quando usar `bundle`.
 7. Há responsável por alarmes, DLQs, retenção e autorização.
 8. O replay é seguro para os efeitos de negócio; se ele for obrigatório, a
    versão do S3 deve ser retida.

@@ -157,7 +157,7 @@ func (a *AWS) QueryJobsByStatus(ctx context.Context, status f2e.JobStatus, after
 //   - its status is one of RECEIVED, VALIDATING, PLANNING, or PROCESSING
 //   - its updatedAt timestamp has not advanced for at least stuckThreshold
 func (a *AWS) StuckJobs(ctx context.Context, stuckThreshold time.Duration, limit int) ([]JobSummary, error) {
-	before := time.Now().UTC().Add(-stuckThreshold).Format(time.RFC3339Nano)
+	before := time.Now().Local().Add(-stuckThreshold).Format(time.RFC3339Nano)
 	nonTerminal := []f2e.JobStatus{
 		f2e.JobStateReceived,
 		f2e.JobStateValidating,

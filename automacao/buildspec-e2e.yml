@@ -11,16 +11,19 @@
 #   F2E_E2E_LEDGER_TABLE       — DynamoDB table for the job ledger
 #   F2E_E2E_INTAKE_DLQ_NAME    — DLQ name for intake failures
 #   F2E_E2E_CHUNK_DLQ_NAME     — DLQ name for chunk failures
+#   F2E_E2E_COMPLETION_QUEUE_NAME — completion events queue name
+#   F2E_E2E_COMPLETION_DLQ_NAME   — completion DLQ name
 #
 # Optional:
 #   E2E_LOAD_TESTS   — set to "true" to include @load scenarios (timeout 60m)
 #   E2E_TAGS         — custom Godog tag expression (e.g. "@smoke", "@regression")
-#   E2E_METRICS_FILE — output path for the JSON metrics report (default: e2e-metrics.json)
+#   E2E_REPORT_DIR   — output directory for five reports (default: e2e/relatorios)
 #
 # IAM permissions required by the CodeBuild service role:
 #   s3:PutObject on the F2E input bucket
 #   sqs:SendMessage, sqs:ReceiveMessage, sqs:DeleteMessageBatch,
-#     sqs:GetQueueUrl, sqs:GetQueueAttributes on intake, output, and DLQ queues
+#     sqs:ChangeMessageVisibility, sqs:GetQueueUrl, sqs:GetQueueAttributes
+#     on intake, output, completion, and DLQ queues
 #   dynamodb:Scan on the ledger table
 #
 # SQS visibility timeout note:
@@ -61,12 +64,6 @@ phases:
 
 artifacts:
   files:
-    - e2e/e2e-metrics.json
-  name: e2e-metrics-$(date +%Y%m%dT%H%M%SZ)
-  discard-paths: yes
-
-reports:
-  e2e-metrics:
-    files:
-      - "e2e/e2e-metrics.json"
-    file-format: JSON
+    - e2e/relatorios/**/*
+  name: e2e-reports-$(date +%Y%m%dT%H%M%SZ)
+  discard-paths: no

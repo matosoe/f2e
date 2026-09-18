@@ -1,4 +1,5 @@
 .build/
+e2e/relatorios/
 lambdas/bin/
 automacao/dados/
 automacao/resultados/

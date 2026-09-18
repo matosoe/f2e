@@ -55,7 +55,7 @@ func (a *AWS) ResolvePrefixConfiguration(ctx context.Context, bucket, key string
 		ParameterName:    selectedParamName,
 		ParameterVersion: selectedParamVersion,
 		Responsible:      selected.Responsible,
-		LoadedAt:         time.Now().UTC().Format(time.RFC3339Nano),
+		LoadedAt:         time.Now().Local().Format(time.RFC3339Nano),
 	}
 	return selected, snapshot, nil
 }

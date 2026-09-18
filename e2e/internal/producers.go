@@ -9,8 +9,8 @@ import (
 const (
 	// maxRecordBytes* are used for variable-length formats when chunking is needed (>1000 records).
 	maxRecordBytesText      int64 = 64
-	maxRecordBytesMultiLine int64 = 128
-	maxBytesPerJSONElement  int64 = 256
+	maxRecordBytesMultiLine int64 = 64
+	maxBytesPerJSONElement  int64 = 64
 	// smallFileThreshold is the maximum record count processed as a single chunk.
 	smallFileThreshold = 1000
 )

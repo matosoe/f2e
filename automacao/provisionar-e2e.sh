@@ -8,6 +8,7 @@ set -euo pipefail
 root="$(cd "$(dirname "$0")" && pwd)"
 for cmd in docker go aws; do command -v "$cmd" >/dev/null || { echo "$cmd não encontrado" >&2; exit 1; }; done
 docker info >/dev/null 2>&1 || { echo 'Docker não está disponível.' >&2; exit 1; }
+export F2E_TIMEZONE_OFFSET="$(date +%:z)"
 
 bash "$root/build-lambdas.sh"
 

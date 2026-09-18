@@ -1,15 +1,12 @@
 # Arquitetura do F2E
 
-Este diagrama descreve a implantação AWS criada pelo Terraform. Também é a
-referência do fluxo executado localmente pelo LocalStack; nesse caso, os
-serviços AWS representados são emulados.
+Este diagrama representa a implantação criada pelo Terraform na AWS. O fluxo
+local usa os mesmos componentes emulados pelo LocalStack. As decisões de projeto
+estão no [índice de ADRs](adr/README.md).
 
-As decisões que governam esta arquitetura estão no [índice de ADRs](adr/README.md).
-
-> Escopo: este é um building block inbound, de arquivo para eventos SQS. Ele
-> não cobre Event-to-File, SNS como destino, ordenação global ou layouts sem
-> fronteira de registro previsível. Consulte [Requisitos e restrições](requisitos_e_restricoes.md)
-> antes de adotar o fluxo.
+> Escopo: este é um building block inbound, de arquivo S3 para eventos SQS. Ele
+> não cobre Event-to-File, SNS como destino nem ordenação global. Consulte
+> [Requisitos e restrições](requisitos_e_restricoes.md) antes de adotar o fluxo.
 
 ```mermaid
 flowchart LR
@@ -19,61 +16,51 @@ flowchart LR
     classDef data fill:#ecfdf5,stroke:#059669,color:#064e3b
     classDef external fill:#f8fafc,stroke:#475569,color:#0f172a
     classDef failure fill:#fef2f2,stroke:#dc2626,color:#7f1d1d
-    classDef schedule fill:#fff1f2,stroke:#e11d48,color:#881337
 
     producer[Produtor de arquivos<br/>ou integração]:::external
     consumer[Consumidores de registros]:::external
+    dedicatedConsumer[Consumidores do prefixo<br/>com saída dedicada]:::external
     completionConsumer[Consumidores de conclusão]:::external
 
     subgraph AWS[Ambiente AWS / LocalStack]
-        direction LR
-        s3[(S3: bucket de entrada<br/>versionado ou com ETag condicional)]:::aws
+        s3[(S3: bucket de entrada<br/>versionado; ETag condicional se necessário)]:::aws
         intake[[SQS: file-intake]]:::queue
         organizer[Lambda Organizer<br/>admissão e planejamento]:::compute
         ssm[(SSM Parameter Store<br/>limites globais e configuração por prefixo)]:::data
         ledger[(DynamoDB: job-ledger<br/>jobs, chunks e outbox)]:::data
-
-        subgraph PREFIX[Recursos isolados por prefixo configurado]
-            direction LR
-            chunks[[SQS: chunks do prefixo]]:::queue
-            worker[Lambda Worker do prefixo<br/>leitura Range GET e parsing]:::compute
-            output[[SQS: output do prefixo<br/>Envelope v1 / bundles]]:::queue
-        end
-
+        chunks[[SQS: chunk-jobs<br/>compartilhada]]:::queue
+        worker[Lambda Worker<br/>compartilhada]:::compute
+        output[[SQS: output-events<br/>saída padrão]]:::queue
+        dedicated[[SQS: output-events<br/>dedicada, opcional por prefixo]]:::queue
         completion[[SQS: completion-events]]:::queue
-
         intakeDLQ[[DLQ: file-intake]]:::failure
-        chunksDLQ[[DLQ: chunks do prefixo]]:::failure
-        outputDLQ[[DLQ: output do prefixo]]:::failure
-        completionDLQ[[DLQ: completion-events<br/>e falhas do Stream]]:::failure
+        chunksDLQ[[DLQ: chunk-jobs]]:::failure
+        completionDLQ[[DLQ: completion-events]]:::failure
         observability[CloudWatch Logs, métricas,<br/>dashboard e alarmes]:::aws
     end
 
     producer -->|envia arquivo| s3
     producer -.->|OrganizerRequest explícito| intake
-    s3 -->|ObjectCreated por prefixo| intake
+    s3 -->|ObjectCreated dos prefixos configurados| intake
     intake -->|evento SQS; falhas parciais de lote| organizer
-    organizer <-->|resolve a configuração<br/>pela maior correspondência de prefixo| ssm
-    organizer -->|HeadObject da versão ou ETag atual| s3
-    organizer <-->|admite job e grava plano/estados| ledger
-    organizer -->|ChunkJob com snapshot<br/>da configuração| chunks
+    organizer <-->|configuração com maior<br/>correspondência de prefixo| ssm
+    organizer -->|HeadObject da versão ou do objeto atual| s3
+    organizer <-->|admissão, plano e agendamento| ledger
+    organizer -->|ChunkJobs com snapshot<br/>da configuração| chunks
     chunks -->|evento SQS| worker
-    worker -->|S3 Range GET da versão| s3
-    worker <-->|inicia, conclui ou falha chunk| ledger
-    worker -->|eventos por registro| output
+    worker -->|S3 Range GET da versão<br/>ou leitura condicional por ETag| s3
+    worker <-->|estados dos chunks e<br/>outbox de conclusão| ledger
+    worker -->|Envelope v1 ou bundles| output
+    worker -->|rota configurada no ChunkJob| dedicated
     output --> consumer
-
-    worker <-->|fecha job e cria outbox<br/>na mesma transação| ledger
-    worker -->|CompletionEvent| completion
-    worker -->|marca intent como entregue| ledger
+    dedicated --> dedicatedConsumer
+    worker -->|CompletionEvent pendente| completion
+    worker -->|marca intenção entregue<br/>após envio ao SQS| ledger
     completion --> completionConsumer
-
 
     intake -.->|excedeu tentativas| intakeDLQ
     chunks -.->|excedeu tentativas| chunksDLQ
-    output -.->|excedeu tentativas de consumo| outputDLQ
-    completion -.->|excedeu tentativas| completionDLQ
-
+    completion -.->|excedeu tentativas de consumo| completionDLQ
     organizer -.-> observability
     worker -.-> observability
     intake -.-> observability
@@ -83,37 +70,55 @@ flowchart LR
 
 ## Leitura do fluxo
 
-1. Um upload no S3 gera uma notificação para `file-intake`; alternativamente,
-   uma integração pode publicar um `OrganizerRequest` nessa fila.
-2. O Organizer encontra a configuração do prefixo no SSM, valida o arquivo
-   versionado, registra a admissão e o plano de chunks no DynamoDB e envia os
-   `ChunkJob`s para a fila exclusiva daquele prefixo.
-3. O Worker correspondente processa chunks em paralelo, lê apenas os intervalos
-   necessários do S3 e publica os registros como Envelope v1 na fila de saída
-   exclusiva do prefixo.
-4. Ao alcançar o estado terminal, o Worker fecha o job e cria a intenção de
-   conclusão na mesma transação. Ele envia o evento e só então confirma a
-   entrega no outbox; um crash nessa janela pode redeliver o mesmo `eventId`.
+1. Um upload em um prefixo configurado do S3 gera uma notificação para
+   `file-intake`. Uma integração também pode publicar um `OrganizerRequest`
+   explícito nessa fila.
+2. Para notificações S3, o Organizer escolhe no SSM a configuração mais
+   específica para bucket e chave, valida os limites globais, fixa a identidade
+   do objeto e registra no ledger a admissão e o plano. Ele publica os
+   `ChunkJob`s na fila `chunk-jobs` compartilhada. Cada job carrega um snapshot
+   da configuração e a rota de saída selecionada.
+3. O Worker compartilhado processa chunks em paralelo, lê os intervalos
+   necessários do S3 e publica registros como Envelope v1 ou, quando
+   configurado, bundles. A fila `output-events` é o destino padrão; prefixos
+   configurados podem ter uma fila de saída dedicada.
+4. Quando o job atinge um estado terminal, o Worker reconcilia a intenção de
+   conclusão persistida no ledger, envia o `CompletionEvent` para
+   `completion-events` e marca a intenção como entregue após o envio. Para um
+   array JSON vazio, o Organizer agenda uma mensagem de controle na fila de
+   chunks para que o Worker faça essa entrega.
+
+No catálogo Terraform atual, `example-json/` usa uma fila de saída dedicada;
+`example-text/` e `example-multi-line/` usam a fila padrão. A configuração da
+suíte local em `automacao/localstack/init-aws.sh` usa bundles de até três
+envelopes e `recordsPerChunk` igual a 100 para os três exemplos.
 
 ## Garantias e recuperação
 
-- As filas e os Workers são isolados por prefixo; uma carga não consome a
-  capacidade de processamento ou a fila de chunks de outro prefixo.
-- Falhas de processamento usam `ReportBatchItemFailures`, portanto mensagens
-  SQS já bem-sucedidas no mesmo lote não são repetidas. Após o máximo de
-  tentativas, seguem para a DLQ correspondente.
+- O ledger é compartilhado entre prefixos, assim como a fila de chunks e a
+  concorrência máxima do Worker. Um pico de um prefixo pode atrasar os demais.
+  Uma fila de saída dedicada isola somente o destino dos registros daquele
+  prefixo; não cria capacidade de processamento independente.
+- As filas de intake e chunks têm DLQs e as Lambdas usam
+  `ReportBatchItemFailures` para repetir apenas as mensagens do lote que
+  falharam. A fila de conclusão também tem DLQ para falhas de consumo. O
+  provisionamento atual não cria DLQ para as filas de saída dos registros:
+  consumidores devem definir sua política de falha e redrive.
 - A entrega de registros e de eventos de conclusão é *at-least-once*.
-  Consumidores devem deduplicar pelo `eventId`; para registros, o
-  `sourceRecordId` também permite deduplicação entre replays.
+  Consumidores devem deduplicar registros pelo `eventId` durante retries e
+  pelo `sourceRecordId` entre replays. Um envio de conclusão confirmado no SQS
+  seguido de falha antes da marcação no ledger pode reenviar o mesmo `eventId`.
+- O evento de conclusão sinaliza o estado terminal do job, mas não confirma que
+  os consumidores já processaram todos os eventos de registro. As filas SQS
+  Standard também não preservam ordem global entre chunks.
 
 ## Código e infraestrutura relacionados
 
-- `cmd/organizer`: entrada, seleção de configuração e planejamento.
-- `cmd/worker`: consumo dos chunks e publicação dos registros.
-- O Worker cria a outbox na mesma transação que fecha o job e entrega a fila
-  `completion-events`; a marcação de entrega acontece somente após confirmação
-  do SQS. Redeliveries preservam o mesmo `eventId`.
-- `terraform/modules/f2e-prefix`: fila de chunks, fila de saída, DLQs e Worker
-  para cada prefixo.
-- `terraform/dynamodb.tf`, `terraform/ssm.tf` e `terraform/lambda.tf`:
-  persistência, configuração, agendamentos e gatilhos.
+- `cmd/organizer` e `internal/application/organizer`: entrada, seleção de
+  configuração, admissão, planejamento e publicação de chunks.
+- `cmd/worker` e `internal/application/worker`: leitura, parsing, publicação de
+  registros e entrega da outbox de conclusão.
+- `internal/platform/aws/ledger.go`: estados e intenção durável de conclusão.
+- `terraform/s3.tf`, `terraform/ssm.tf`, `terraform/sqs.tf` e
+  `terraform/lambda.tf`: entrada, configuração, filas e gatilhos.
+- `terraform/dynamodb.tf` e `terraform/monitoring.tf`: ledger e observabilidade.

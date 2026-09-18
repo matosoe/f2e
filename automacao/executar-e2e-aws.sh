@@ -33,5 +33,7 @@ export F2E_E2E_OUTPUT_QUEUE_NAME="$(terraform -chdir="$terraform_dir" output -ra
 export F2E_E2E_LEDGER_TABLE="$(terraform -chdir="$terraform_dir" output -raw ledger_table_name)"
 export F2E_E2E_INTAKE_DLQ_NAME="$(terraform -chdir="$terraform_dir" output -raw file_intake_dlq_name)"
 export F2E_E2E_CHUNK_DLQ_NAME="$(terraform -chdir="$terraform_dir" output -raw chunk_jobs_dlq_name)"
+export F2E_E2E_COMPLETION_QUEUE_NAME="$(terraform -chdir="$terraform_dir" output -raw completion_events_queue_name)"
+export F2E_E2E_COMPLETION_DLQ_NAME="$(terraform -chdir="$terraform_dir" output -raw completion_events_dlq_name)"
 
 (cd "$root/../e2e" && go test -count=1 -v -timeout 60m ./...)

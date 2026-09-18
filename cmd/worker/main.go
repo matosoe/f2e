@@ -16,6 +16,7 @@ import (
 	awsclient "github.com/f2e/f2e/internal/platform/aws"
 	"github.com/f2e/f2e/internal/platform/config"
 	"github.com/f2e/f2e/internal/platform/processmetrics"
+	"github.com/f2e/f2e/internal/platform/runtimeclock"
 )
 
 var service worker.Service
@@ -27,6 +28,10 @@ const (
 
 func init() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+	if err := runtimeclock.ConfigureLocalTimezone(); err != nil {
+		slog.Error("invalid timezone configuration", "service", "worker", "error", err)
+		os.Exit(1)
+	}
 	ctx := context.Background()
 	c, e := config.Load()
 	if e != nil {

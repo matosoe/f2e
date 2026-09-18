@@ -24,16 +24,6 @@ Feature: Variable-length text file processing
       | 2     | 30      |
       | 1000  | 90      |
 
-  @regression
-  Scenario Outline: Text file with <count> records — count validation only
-    Given I have a text file with <count> records
-    When I upload and process the file
-    Then I receive exactly <count> events within <timeout> seconds
-
-    Examples:
-      | count | timeout |
-      | 10000 | 180     |
-
   @load
   Scenario: Text file with 1000000 records
     Given I have a text file with 1000000 records

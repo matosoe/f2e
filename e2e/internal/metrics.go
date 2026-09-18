@@ -73,10 +73,11 @@ type ScenarioMetrics struct {
 
 // RunReport is the top-level document written as JSON after a complete test run.
 type RunReport struct {
-	// RunID is the UTC start time of the test run, used as a stable identifier.
+	// RunID is the local start time and UTC offset, used as a stable identifier.
 	RunID     string `json:"runId"`
 	StartedAt string `json:"startedAt"`
 	EndedAt   string `json:"endedAt"`
+	TimeZone  string `json:"timeZone"`
 	TotalMs   int64  `json:"totalMs"`
 
 	// Target distinguishes "localstack" from "aws" runs. AWS-side timing data
@@ -84,11 +85,14 @@ type RunReport struct {
 	// and is not reproduced here as a baseline.
 	Target string `json:"target"`
 
-	Scenarios []ScenarioMetrics `json:"scenarios"`
+	Scenarios     []ScenarioMetrics `json:"scenarios"`
+	ScenarioCount int               `json:"scenarioCount"`
+	TotalRecords  int               `json:"totalRecords"`
 
 	// Suite-level DLQ counts measured after all scenarios complete.
-	IntakeDLQCount int `json:"intakeDlqCount"`
-	ChunkDLQCount  int `json:"chunkDlqCount"`
+	IntakeDLQCount     int `json:"intakeDlqCount"`
+	ChunkDLQCount      int `json:"chunkDlqCount"`
+	CompletionDLQCount int `json:"completionDlqCount"`
 
 	// Benchmark holds a side-by-side comparison of sequential vs parallel runs.
 	// Present only when E2E_BENCHMARK=true.

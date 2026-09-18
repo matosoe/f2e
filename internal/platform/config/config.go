@@ -7,6 +7,7 @@ import (
 	"strconv"
 
 	"github.com/f2e/f2e/internal/application/port"
+	"github.com/f2e/f2e/internal/domain/f2e"
 )
 
 type Config struct {
@@ -23,6 +24,11 @@ type Config struct {
 	MaxEventBytes                                  int
 	MaxFileBytes, MaxChunkBytes, TargetChunkBytes  int64
 	EventSchemaID, EventSchemaVersion, EventFormat string
+	// OutputMode and its limits are copied to explicit organizer jobs. Prefix
+	// configurations override these values for S3-triggered admissions.
+	OutputMode             f2e.OutputMode
+	MaxEnvelopesPerMessage int
+	MaxMessageBytes        int
 	// PublishConcurrency is the maximum number of SQS SendMessageBatch calls
 	// that may be in-flight simultaneously within a single chunk processing.
 	// Default is 1 (sequential). Values 2–16 are valid; higher is capped to 16.
@@ -63,6 +69,13 @@ func Load() (Config, error) {
 	if c.PublishConcurrency, err = integer("F2E_PUBLISH_CONCURRENCY", 1); err != nil {
 		return c, err
 	}
+	c.OutputMode = f2e.OutputMode(os.Getenv("F2E_OUTPUT_MODE"))
+	if c.MaxEnvelopesPerMessage, err = integer("F2E_MAX_ENVELOPES_PER_MESSAGE", 0); err != nil {
+		return c, err
+	}
+	if c.MaxMessageBytes, err = integer("F2E_MAX_MESSAGE_BYTES", 0); err != nil {
+		return c, err
+	}
 	if c.RecordsPerChunk < 1 || c.BatchSize < 1 || c.BatchSize > 10 || c.MaxReceiveCount < 1 || c.LedgerRetentionDays < 1 || c.MaxEventBytes < 1024 || c.MaxEventBytes > port.MaxSQSMessageBytes || c.MaxChunkBytes < 1024 || c.MaxFileBytes < c.MaxChunkBytes || (c.TargetChunkBytes != 0 && (c.TargetChunkBytes < 5*1024*1024 || c.TargetChunkBytes > 100*1024*1024 || c.TargetChunkBytes > c.MaxChunkBytes)) {
 		return c, fmt.Errorf("invalid F2E numeric configuration")
 	}
@@ -70,6 +83,12 @@ func Load() (Config, error) {
 		c.PublishConcurrency = 1
 	} else if c.PublishConcurrency > 16 {
 		c.PublishConcurrency = 16
+	}
+	if c.OutputMode != "" && c.OutputMode != f2e.OutputModeSingle && c.OutputMode != f2e.OutputModeBundle {
+		return c, fmt.Errorf("invalid F2E_OUTPUT_MODE %q", c.OutputMode)
+	}
+	if c.MaxEnvelopesPerMessage < 0 || c.MaxMessageBytes < 0 || (c.MaxMessageBytes > 0 && c.MaxMessageBytes > port.MaxSQSMessageBytes) {
+		return c, fmt.Errorf("invalid F2E output packing configuration")
 	}
 	c.EventSchemaID = value("F2E_EVENT_SCHEMA_ID", "f2e-record")
 	c.EventSchemaVersion = value("F2E_EVENT_SCHEMA_VERSION", "1")

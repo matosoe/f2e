@@ -18,7 +18,7 @@
 //
 //	cd e2e && E2E_LOAD_TESTS=true go test -v -timeout 30m ./...
 //
-// A JSON metrics report is written to E2E_METRICS_FILE (default: e2e-metrics.json) after each run.
+// Five reports are written to E2E_REPORT_DIR (default: relatorios) after each run.
 // All durations are local wall-clock milliseconds. AWS-side timestamps from envelope.metadata.createdAt
 // are stored separately and must not be compared with local durations.
 package e2e_test
@@ -28,6 +28,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"testing"
 	"time"
@@ -42,6 +43,10 @@ func TestE2E(t *testing.T) {
 	}
 
 	client := internal.NewAWSClient()
+	baselineIntake, baselineChunk, err := client.DLQCounts(t.Context())
+	if err != nil {
+		t.Fatalf("read initial DLQ counts: %v", err)
+	}
 
 	tags := "~@load"
 	if os.Getenv("E2E_LOAD_TESTS") == "true" {
@@ -64,10 +69,30 @@ func TestE2E(t *testing.T) {
 	}
 
 	runStart := time.Now()
-	runID := runStart.UTC().Format("20060102T150405Z")
+	runID := runStart.Local().Format("20060102T150405.000000000-0700")
+	reportDir := os.Getenv("E2E_REPORT_DIR")
+	if reportDir == "" {
+		reportDir = "relatorios"
+	}
+	if err := os.MkdirAll(reportDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := func(kind, ext string) string { return filepath.Join(reportDir, runID+"-"+kind+"."+ext) }
+	recorder, err := internal.NewMessageRecorder(path("eventos", "jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.Recorder = recorder
 
 	var scenarioMetrics []internal.ScenarioMetrics
 	var benchmarkResult *internal.BenchmarkComparison
+	intakeDLQ, chunkDLQ := 0, 0
+	defer func() {
+		if err := recorder.Close(); err != nil {
+			t.Errorf("event report: %v", err)
+		}
+		writeExecutionReports(t, client, path, runID, runStart, target, scenarioMetrics, intakeDLQ, chunkDLQ, benchmarkResult)
+	}()
 
 	if os.Getenv("E2E_BENCHMARK") == "true" && concurrency > 1 {
 		benchmarkResult = runBenchmark(t, client, tags, concurrency)
@@ -103,33 +128,33 @@ func TestE2E(t *testing.T) {
 	// A focused tag run is useful during development; its scenario count and
 	// expected DLQ state intentionally differ from the full regression suite.
 	if os.Getenv("E2E_TAGS") != "" {
-		writeMetricsReport(t, runID, runStart, target, scenarioMetrics, 0, 0, benchmarkResult)
 		return
 	}
-	// Two empty-file scenarios (text and multi-line) are rejected by the organizer.
-	// They must be auditable in intake DLQ; no worker job is expected to be poison.
-	intakeDLQ, chunkDLQ := 0, 0
+	// The local suite has three deterministic empty-file rejections. They must
+	// be auditable in intake DLQ; no worker job is expected to be poison.
 	if internal.RealAWS() {
-		if err := client.WaitForDLQCounts(t.Context(), 2, 0, 8*time.Minute); err != nil {
+		if err := client.WaitForDLQCounts(t.Context(), baselineIntake+3, baselineChunk, 8*time.Minute); err != nil {
 			t.Fatal(err)
 		}
-		intakeDLQ, chunkDLQ = 2, 0
+		intakeDLQ, chunkDLQ = 3, 0
 	} else {
 		var err error
 		intakeDLQ, chunkDLQ, err = client.DLQCounts(t.Context())
 		if err != nil {
 			t.Fatalf("read DLQs: %v", err)
 		}
-		if intakeDLQ != 2 || chunkDLQ != 0 {
-			t.Fatalf("unexpected DLQ counts: intake=%d (want 2), chunks=%d (want 0)", intakeDLQ, chunkDLQ)
+		intakeDLQ -= baselineIntake
+		chunkDLQ -= baselineChunk
+		if intakeDLQ != 3 || chunkDLQ != 0 {
+			t.Fatalf("unexpected new DLQ counts: intake=%d (want 3), chunks=%d (want 0)", intakeDLQ, chunkDLQ)
 		}
 	}
 	// Four empty text/multi-line scenarios are rejected; every other scenario,
-	// including the empty JSON array, creates a ledger job.
-	if err := client.AssertLedgerComplete(t.Context(), 17); err != nil {
+	// including the empty JSON array, creates a ledger job. The three 10,000-
+	// record cases were intentionally removed from the local suite.
+	if err := client.AssertLedgerComplete(t.Context(), 14, runStart); err != nil {
 		t.Fatal(err)
 	}
-	writeMetricsReport(t, runID, runStart, target, scenarioMetrics, intakeDLQ, chunkDLQ, benchmarkResult)
 }
 
 // runBenchmark runs the scenario suite twice — first sequential, then parallel
@@ -188,18 +213,19 @@ func runBenchmark(t *testing.T, client *internal.AWSClient, tags string, concurr
 	}
 }
 
-// writeMetricsReport persists the RunReport to the file named by E2E_METRICS_FILE
-// (default: e2e-metrics.json in the working directory). Failures to write are
-// logged as test warnings rather than fatal errors so they don't mask suite results.
-func writeMetricsReport(t *testing.T, runID string, runStart time.Time, target string, scenarios []internal.ScenarioMetrics, intakeDLQ, chunkDLQ int, benchmark *internal.BenchmarkComparison) {
+// writeExecutionReports persists the summary and the queue/ledger snapshots.
+func writeExecutionReports(t *testing.T, client *internal.AWSClient, path func(string, string) string, runID string, runStart time.Time, target string, scenarios []internal.ScenarioMetrics, intakeDLQ, chunkDLQ int, benchmark *internal.BenchmarkComparison) {
 	t.Helper()
+	sort.Slice(scenarios, func(i, j int) bool { return scenarios[i].ScenarioName < scenarios[j].ScenarioName })
 	report := internal.RunReport{
 		RunID:          runID,
-		StartedAt:      runStart.UTC().Format(time.RFC3339),
-		EndedAt:        time.Now().UTC().Format(time.RFC3339),
+		StartedAt:      runStart.Local().Format(time.RFC3339),
+		EndedAt:        time.Now().Local().Format(time.RFC3339),
+		TimeZone:       runStart.Local().Format("-07:00"),
 		TotalMs:        time.Since(runStart).Milliseconds(),
 		Target:         target,
 		Scenarios:      scenarios,
+		ScenarioCount:  len(scenarios),
 		IntakeDLQCount: intakeDLQ,
 		ChunkDLQCount:  chunkDLQ,
 		Benchmark:      benchmark,
@@ -209,23 +235,79 @@ func writeMetricsReport(t *testing.T, runID string, runStart time.Time, target s
 			fmt.Sprintf("Target: %s. AWS-side latency has not been independently measured; the reported 50-minute figure is not reproduced here as a baseline.", target),
 		},
 	}
-
-	dest := os.Getenv("E2E_METRICS_FILE")
-	if dest == "" {
-		dest = "e2e-metrics.json"
+	for _, scenario := range scenarios {
+		report.TotalRecords += scenario.RecordCount
 	}
-	dest, _ = filepath.Abs(dest)
 
-	data, err := json.MarshalIndent(report, "", "  ")
+	writeJSON := func(dest string, value any) {
+		data, err := json.MarshalIndent(value, "", "  ")
+		if err != nil {
+			t.Errorf("marshal %s: %v", dest, err)
+			return
+		}
+		if err := os.WriteFile(dest, data, 0o600); err != nil {
+			t.Errorf("write %s: %v", dest, err)
+		}
+	}
+	ctx := t.Context()
+	completion, err := client.SnapshotQueue(ctx, envOr("F2E_E2E_COMPLETION_QUEUE_NAME", "completion-events"), runStart)
 	if err != nil {
-		t.Logf("WARNING: failed to marshal metrics report: %v", err)
+		t.Errorf("completion snapshot: %v", err)
+	}
+	writeJSONLines(t, path("completion-events", "jsonl"), completion)
+	dlq := make([]internal.MessageReport, 0)
+	completionDLQName := envOr("F2E_E2E_COMPLETION_DLQ_NAME", "completion-events-dlq")
+	for _, name := range []string{envOr("F2E_E2E_INTAKE_DLQ_NAME", "file-intake-dlq"), envOr("F2E_E2E_CHUNK_DLQ_NAME", "chunk-jobs-dlq"), completionDLQName} {
+		messages, snapshotErr := client.SnapshotQueue(ctx, name, runStart)
+		if snapshotErr != nil {
+			t.Errorf("DLQ %s snapshot: %v", name, snapshotErr)
+		}
+		if name == completionDLQName {
+			report.CompletionDLQCount = len(messages)
+		}
+		dlq = append(dlq, messages...)
+	}
+	writeJSONLines(t, path("dlq", "jsonl"), dlq)
+	ledger, err := client.SnapshotLedger(ctx)
+	if err != nil {
+		t.Errorf("ledger snapshot: %v", err)
+	}
+	writeJSON(path("dynamodb", "json"), ledger)
+	writeJSON(path("resumo", "json"), report)
+	if legacy := os.Getenv("E2E_METRICS_FILE"); legacy != "" {
+		writeJSON(legacy, report)
+	}
+	t.Logf("reports written under %s", filepath.Dir(path("resumo", "json")))
+}
+
+func envOr(name, fallback string) string {
+	if v := os.Getenv(name); v != "" {
+		return v
+	}
+	return fallback
+}
+
+func writeJSONLines(t *testing.T, dest string, entries []internal.MessageReport) {
+	t.Helper()
+	f, err := os.Create(dest)
+	if err != nil {
+		t.Errorf("create %s: %v", dest, err)
 		return
 	}
-	if err := os.WriteFile(dest, data, 0o600); err != nil {
-		t.Logf("WARNING: failed to write metrics report to %s: %v", dest, err)
-		return
+	for _, entry := range entries {
+		data, err := json.Marshal(entry)
+		if err != nil {
+			t.Errorf("marshal %s: %v", dest, err)
+			break
+		}
+		if _, err := f.Write(append(data, '\n')); err != nil {
+			t.Errorf("write %s: %v", dest, err)
+			break
+		}
 	}
-	t.Logf("metrics report written to %s (%d scenarios)", dest, len(scenarios))
+	if err := f.Close(); err != nil {
+		t.Errorf("close %s: %v", dest, err)
+	}
 }
 
 func TestUndefinedStepFailsStrictSuite(t *testing.T) {

@@ -118,6 +118,20 @@ func (s Service) Plan(ctx context.Context, request f2e.OrganizerRequest) ([]f2e.
 			Context:              file.Context,
 		})
 	}
+	for i := range jobs {
+		jobs[i].Configuration = f2e.JobConfiguration{
+			BatchSize:              s.Config.BatchSize,
+			MaxEventBytes:          s.Config.MaxEventBytes,
+			MaxChunkBytes:          s.Config.MaxChunkBytes,
+			TargetChunkBytes:       s.Config.TargetChunkBytes,
+			EventSchemaID:          s.Config.EventSchemaID,
+			EventSchemaVersion:     s.Config.EventSchemaVersion,
+			EventFormat:            s.Config.EventFormat,
+			OutputMode:             s.Config.OutputMode,
+			MaxEnvelopesPerMessage: s.Config.MaxEnvelopesPerMessage,
+			MaxMessageBytes:        s.Config.MaxMessageBytes,
+		}
+	}
 	return jobs, nil
 }
 
@@ -378,7 +392,7 @@ func (s Service) Publish(ctx context.Context, jobs []f2e.ChunkJob) error {
 		}
 		for _, chunks := range groups {
 			first := chunks[0]
-			plan := f2e.JobPlan{JobID: first.JobID, FileID: first.FileID, Bucket: first.Bucket, Key: first.Key, VersionID: first.VersionID, ETag: first.ETag, ExpectedChunks: len(chunks), CreatedAt: time.Now().UTC(), ConfigSnapshot: first.ConfigSnapshot}
+			plan := f2e.JobPlan{JobID: first.JobID, FileID: first.FileID, Bucket: first.Bucket, Key: first.Key, VersionID: first.VersionID, ETag: first.ETag, FileSize: first.FileSize, ExpectedChunks: len(chunks), CreatedAt: time.Now().Local(), ConfigSnapshot: first.ConfigSnapshot}
 			if err := s.Ledger.Plan(ctx, plan, chunks); err != nil {
 				return fmt.Errorf("persist job plan: %w", err)
 			}

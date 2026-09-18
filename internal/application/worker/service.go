@@ -75,7 +75,7 @@ func (s Service) ProcessAttempt(ctx context.Context, body []byte, attempt int) e
 				failureCtx, cancel = context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
 				defer cancel()
 			}
-			if failErr := s.Ledger.FailChunk(failureCtx, f2e.ChunkResult{JobID: job.JobID, ChunkID: job.ChunkID, Attempt: attempt, Error: err.Error(), OccurredAt: time.Now().UTC()}); failErr != nil {
+			if failErr := s.Ledger.FailChunk(failureCtx, f2e.ChunkResult{JobID: job.JobID, ChunkID: job.ChunkID, Attempt: attempt, Error: err.Error(), OccurredAt: time.Now().Local()}); failErr != nil {
 				slog.Error("could not mark incomplete chunk", "service", "worker", "jobId", job.JobID, "chunkId", job.ChunkID, "error", failErr)
 			}
 		}
@@ -196,7 +196,7 @@ func (s Service) processWithMetrics(ctx context.Context, body []byte, attempt in
 		TPS:                  f2e.CalculateTPS(counts.RecordsRead, duration),
 	}
 	if s.Ledger != nil {
-		if err := s.Ledger.CompleteChunk(ctx, f2e.ChunkResult{JobID: j.JobID, ChunkID: j.ChunkID, Attempt: attempt, RecordsProduced: counts.RecordsPublished, BytesProcessed: readEnd - readStart + 1, OccurredAt: time.Now().UTC(), Counts: counts}); err != nil {
+		if err := s.Ledger.CompleteChunk(ctx, f2e.ChunkResult{JobID: j.JobID, ChunkID: j.ChunkID, Attempt: attempt, RecordsProduced: counts.RecordsPublished, BytesProcessed: readEnd - readStart + 1, OccurredAt: time.Now().Local(), Counts: counts}); err != nil {
 			return nil, fmt.Errorf("complete chunk ledger: %w", err)
 		}
 		if err := s.publishCompletion(ctx, j.JobID); err != nil {
@@ -463,7 +463,7 @@ func (s Service) streamWithMetrics(ctx context.Context, j f2e.ChunkJob, r io.Rea
 				SourceRecordID: sourceRecordID,
 				Schema:         f2e.Schema{ID: s.Config.EventSchemaID, Version: s.Config.EventSchemaVersion},
 				Format:         s.Config.EventFormat,
-				CreatedAt:      time.Now().UTC().Format(time.RFC3339),
+				CreatedAt:      time.Now().Local().Format(time.RFC3339),
 				TransactionID:  j.Context.TransactionID,
 				CorrelationID:  j.Context.CorrelationID,
 				TraceID:        j.Context.TraceID,

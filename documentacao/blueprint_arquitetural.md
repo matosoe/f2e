@@ -17,8 +17,9 @@ as decisões e os trade-offs da implementação atual.
 
 O F2E fica entre uma origem baseada em arquivos e consumidores orientados a
 eventos. Ele admite uma identidade de arquivo — uma versão imutável quando
-disponível, ou `ETag` condicional —, divide o trabalho em
-chunks, extrai registros e os publica em filas de saída.
+disponível, ou `ETag` condicional —, divide o trabalho em chunks, extrai
+registros e os publica em uma fila de saída compartilhada ou dedicada ao
+prefixo. A implantação possui uma fila de chunks e um Worker compartilhados.
 
 ~~~text
 Arquivo versionado no S3
@@ -30,13 +31,13 @@ SQS file-intake
 Lambda Organizer
           |
           v
-Filas de chunks por prefixo
+SQS chunk-jobs (compartilhada)
           |
           v
-Lambdas Worker por prefixo
+Lambda Worker (compartilhada)
           |
           v
-Filas de eventos por prefixo
+SQS output-events (padrão) ou fila dedicada de saída
           |
           v
 Consumidores downstream
@@ -78,7 +79,7 @@ Envia ao S3             ->     Publica Envelope v1         ->   Persiste estado
 - Interpretar arquivos text, json em array e multi-line.
 - Publicar Envelope v1 por registro, ou bundles quando configurado.
 - Registrar estados, contadores, falhas e conclusão do job.
-- Manter DLQs, logs, métricas e alarmes de infraestrutura.
+- Manter as DLQs provisionadas, logs, métricas e alarmes de infraestrutura.
 
 ### Responsabilidades fora do F2E
 
@@ -122,29 +123,37 @@ agendamento e paralelismo. O registro é a unidade lógica entregue ao destino.
      +--> chunk 00000003 --> vários registros --> eventos de saída
 ~~~
 
-O Organizer cria faixas de bytes para texto e respeita fronteiras estruturais
-para JSON e multi-line. O Worker usa S3 Range GET para ler apenas o trecho que
-precisa processar.
+O Organizer cria faixas nominais de bytes para texto; o Worker resolve as
+fronteiras dos registros ao ler as faixas. JSON e multi-line usam suas regras
+estruturais de delimitação. O Worker usa S3 Range GET para ler apenas o trecho
+que precisa processar. Em `text`, `targetChunkBytes` pode orientar o número de
+chunks; sem esse valor, o planejamento visa 100 chunks, respeitando os
+limites mínimo e máximo de tamanho.
 
 O paralelismo real é limitado por:
 
 - Quantidade de chunks planejados.
-- Mensagens na fila de chunks do prefixo.
-- Concorrência do mapeamento SQS para Lambda.
+- Mensagens na fila compartilhada de chunks.
+- Concorrência global do mapeamento SQS para o Worker.
 - Concorrência reservada, memória e timeout do Worker.
 - Limites de conta e capacidade de S3, SQS e DynamoDB.
-- Capacidade dos consumidores da fila de saída.
+- Capacidade dos consumidores da fila de saída compartilhada ou dedicada.
 
 Mais concorrência não aumenta throughput quando o arquivo gera um único chunk
 ou quando o destino é o gargalo.
 
 ---
 
-## 6. Configuração e isolamento por prefixo
+## 6. Configuração e roteamento por prefixo
 
-Cada prefixo registrado possui uma configuração no SSM Parameter Store. O
-Organizer escolhe a correspondência de prefixo mais longa e anexa um snapshot
-imutável ao job; mudanças posteriores não alteram jobs já admitidos.
+Cada prefixo registrado possui uma configuração no SSM Parameter Store. Para
+notificações S3, o Organizer escolhe a correspondência de prefixo mais longa e
+anexa um snapshot ao job, incluindo a versão e o hash do parâmetro. Mudanças
+posteriores afetam novas admissões, sem alterar jobs já admitidos. Limites
+globais também vêm do SSM. Requisições explícitas usam a configuração do
+contrato e os padrões da Lambda, sem seleção de prefixo no SSM. Os padrões de
+`outputMode`, `maxEnvelopesPerMessage` e `maxMessageBytes` também entram na
+configuração dos chunks dessas requisições.
 
 ~~~text
 s3://bucket/financeiro/arquivo.txt  --> configuração financeiro/
@@ -152,13 +161,19 @@ s3://bucket/financeiro/diario/x.txt --> configuração financeiro/diario/
                                           (correspondência mais específica)
 ~~~
 
-Para cada prefixo, a infraestrutura cria uma fila de chunks e DLQ, um Worker,
-uma fila de saída e DLQ, e permissões para que o Worker leia o S3, atualize o
-ledger e publique somente na fila de saída do próprio prefixo.
+A infraestrutura cria uma fila de chunks com DLQ, um Worker e uma fila de saída
+padrão. Um prefixo pode optar por uma fila de saída dedicada; o Terraform
+provisiona essa fila e grava sua URL na configuração SSM. `prefixId` e a URL de
+saída seguem no snapshot do job. O Worker publica na fila indicada pelo job ou,
+na ausência dela, na fila padrão. O exemplo `example-json/` usa fila dedicada;
+os exemplos `example-text/` e `example-multi-line/` usam a fila padrão.
 
-Isso impede que Workers de prefixos diferentes consumam os chunks uns dos
-outros. O ledger DynamoDB é compartilhado: oferece rastreabilidade
-centralizada, mas não isolamento de dados item a item por IAM.
+Chunks de todos os prefixos disputam a mesma capacidade do Worker. A role IAM
+do Worker pode publicar nas filas de saída provisionadas e na fila de conclusão;
+não há isolamento de execução ou permissão por prefixo. O ledger DynamoDB
+também é compartilhado e não isola itens por IAM. Quando uma carga exigir
+capacidade ou fronteira de segurança própria, a decisão é implantar um F2E
+dedicado de ponta a ponta, conforme o [ADR 0009](adr/0009-implantacao-simples-compartilhada.md).
 
 ---
 
@@ -226,10 +241,9 @@ retry local limitado
 | Caminho | Destino de falha |
 |---|---|
 | file-intake | DLQ de intake |
-| chunks | DLQ de chunks do prefixo |
-| saída | DLQ de saída do prefixo, caso o consumidor falhe |
+| chunk-jobs | DLQ de chunks compartilhada |
+| saída | O F2E não provisiona DLQ de consumo para a fila padrão ou dedicada; o consumidor define seu redrive. |
 | conclusão | DLQ de completion-events |
-| DynamoDB Streams | DLQ de completion-events após retries |
 
 DLQ isola a mensagem problemática; não a corrige nem a reprocessa sozinha. A
 operação deve investigar a causa e confirmar se o replay é seguro.
@@ -242,12 +256,14 @@ As filas SQS desacoplam a velocidade da origem, processamento e consumo.
 
 ~~~text
 S3 mais rápido que Organizer    --> backlog em file-intake
-Organizer mais rápido que Worker --> backlog em chunks
-Worker mais rápido que destino   --> backlog na fila de saída
+Organizer mais rápido que Worker --> backlog em chunk-jobs compartilhada
+Worker mais rápido que destino   --> backlog na fila de saída usada pelo job
 ~~~
 
 O dimensionamento de filas, concorrência, tamanho de arquivo e capacidade
 downstream controla o backlog. Não há quota de admissão persistida no ledger.
+Uma carga de um prefixo pode atrasar os demais na fila de chunks compartilhada.
+Uma fila de saída dedicada separa apenas o backlog de consumo daquele prefixo.
 
 ---
 
@@ -270,8 +286,8 @@ Job terminal + intenção pendente (DynamoDB)
        marca a intenção como entregue
 ~~~
 
- Uma nova entrega do chunk ou da mensagem de controle reconcilia intenções
- pendentes. Isso cobre falha entre registrar a intenção e entregá-la. Se
+Uma nova entrega do chunk ou da mensagem de controle reconcilia intenções
+pendentes. Isso cobre falha entre registrar a intenção e entregá-la. Se
 a falha ocorrer depois do envio e antes da confirmação, pode haver duplicação;
 o eventId de conclusão permanece estável.
 
@@ -288,8 +304,12 @@ a montagem determinística dentro de um chunk, mas consumidores não devem trata
 isso como garantia de ordem na fila.
 
 O contrato de registros é o Envelope v1, com origem, posição, identificadores
-e versão de schema. O modo bundle muda a mensagem física para conter múltiplos
-envelopes e requer suporte explícito no consumidor.
+e versão de schema. No modo `single`, cada mensagem contém um envelope. No modo
+`bundle`, uma mensagem contém múltiplos envelopes, até os limites configurados
+de quantidade e bytes; o consumidor precisa suportar esse formato. O lote SQS
+(`batchSize`) controla quantas mensagens físicas são enviadas por chamada, não
+quantos registros cabem em cada bundle. O Worker pode enviar lotes em paralelo
+conforme `F2E_PUBLISH_CONCURRENCY`, sem criar garantia de ordem na fila.
 
 O ledger armazena o plano imutável e checkpoints de agendamento. Ele permite:
 
@@ -304,18 +324,19 @@ disponibilidade da versão original no S3.
 
 ## 12. Observabilidade operacional
 
-O Terraform provisiona logs estruturados em CloudWatch, métricas, dashboard e
-alarmes para Lambdas, filas e DLQs. Acompanhe principalmente:
+O Terraform provisiona logs em CloudWatch, dashboard e alarmes para Lambdas,
+filas principais e DLQs de intake, chunks e conclusão. O monitoramento definido
+em `terraform/monitoring.tf` não inclui as filas de saída dedicadas.
+Acompanhe principalmente:
 
 - Idade e quantidade de mensagens nas filas.
 - Qualquer mensagem em DLQ.
 - Erros, throttles, duração e concorrência das Lambdas.
-- IteratorAge do Stream de conclusão.
 - Contadores do ledger e IDs jobId, fileId, chunkId e eventId.
 - IDs de correlação propagados no envelope.
 
-O procedimento de atraso do Stream está em
-[runbooks/streams-iterator-age.md](runbooks/streams-iterator-age.md).
+Não há DynamoDB Stream no caminho de conclusão: o Worker reconcilia e publica
+a intenção persistida no ledger.
 
 ---
 
@@ -328,16 +349,17 @@ O procedimento de atraso do Stream está em
 | SQS Standard | Desacoplamento e escala simples | Duplicatas e ausência de ordenação. |
 | Chunks paralelos | Throughput para arquivos grandes | Ordem entre chunks não é preservada. |
 | Ledger DynamoDB | Auditoria, recuperação e replay | Estado operacional e custo de escrita. |
-| Outbox + Stream | Conclusão resiliente a falhas | Entrega continua at-least-once. |
-| Recursos por prefixo | Isolamento de capacidade e filas | Mais recursos para operar. |
+| Outbox no ledger + reconciliação pelo Worker | Conclusão recuperável após reentrega de chunk ou controle | Entrega continua at-least-once. |
+| Worker e fila de chunks compartilhados | Menos recursos e operação mais simples | Prefixos disputam a mesma capacidade. |
+| Fila de saída dedicada opcional | Separa o backlog de consumo de um prefixo | Exige provisionamento e operação da fila adicional. |
 
 Antes de incluir um prefixo, formato ou consumidor, responda:
 
 - Qual é o volume, tamanho máximo e perfil de pico dos arquivos?
-- Quantos chunks serão criados e onde estará o gargalo de throughput?
+- Quantos chunks serão criados e como a carga dividirá a capacidade compartilhada?
 - O consumidor suporta duplicação, replays e, se aplicável, bundles?
 - Existe requisito real de ordenação? Se sim, qual é a chave?
-- Quem monitora cada DLQ e quem aprova seu reprocessamento?
+- Quem monitora as DLQs de intake, chunks e conclusão, e o redrive do consumidor?
 - A versão do arquivo continua acessível durante a janela de recuperação?
 - Quais identidades podem publicar requisições explícitas?
 - Retenção, criptografia, dados sensíveis e alarmes têm responsáveis definidos?
@@ -350,6 +372,6 @@ Antes de incluir um prefixo, formato ou consumidor, responda:
 - cmd/worker: processamento, publicação de registros e conclusões.
 - internal/application: casos de uso e portas.
 - internal/domain/f2e: contratos, estados, envelopes e identificadores.
-- terraform: recursos AWS e módulos por prefixo.
+- terraform: recursos AWS compartilhados e fila de saída dedicada opcional.
 - [Desenho arquitetural](arquitetura.md): topologia visual.
 - [Operação na AWS](operacao_aws.md) e [runbooks](runbooks.md): operação.

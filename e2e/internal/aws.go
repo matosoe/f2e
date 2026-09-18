@@ -45,6 +45,7 @@ type AWSClient struct {
 	// Counters is swapped per scenario by the step initializer.
 	// Nil means no instrumentation (e.g. during teardown).
 	Counters *APICounters
+	Recorder *MessageRecorder
 }
 
 // LocalStackAvailable returns true when the LocalStack health endpoint responds.
@@ -113,14 +114,17 @@ func (c *AWSClient) Fork() *AWSClient {
 		ledgerTable:    c.ledgerTable,
 		intakeDLQName:  c.intakeDLQName,
 		chunkDLQName:   c.chunkDLQName,
+		Recorder:       c.Recorder,
 	}
 }
 
 // AssertLedgerComplete proves that every planned E2E job and chunk reached a
 // reconciled terminal state, with no double-counted or missing chunk.
-func (c *AWSClient) AssertLedgerComplete(ctx context.Context, expectedJobs int) error {
+func (c *AWSClient) AssertLedgerComplete(ctx context.Context, expectedJobs int, started time.Time) error {
 	input := &dynamodb.ScanInput{TableName: aws.String(c.ledgerTable), ConsistentRead: aws.Bool(true)}
 	jobs, chunks := 0, 0
+	currentJobs := make(map[string]struct{})
+	allChunks := make(map[string][]map[string]dynamodbtypes.AttributeValue)
 	for {
 		out, err := c.dynamoClient.Scan(ctx, input)
 		if err != nil {
@@ -133,6 +137,19 @@ func (c *AWSClient) AssertLedgerComplete(ctx context.Context, expectedJobs int) 
 				continue
 			}
 			if sk.Value == "JOB" {
+				created, _ := item["createdAt"].(*dynamodbtypes.AttributeValueMemberS)
+				if created == nil {
+					continue
+				}
+				createdAt, parseErr := time.Parse(time.RFC3339Nano, created.Value)
+				if parseErr != nil || createdAt.Before(started) {
+					continue
+				}
+				pk, _ := item["pk"].(*dynamodbtypes.AttributeValueMemberS)
+				if pk == nil {
+					continue
+				}
+				currentJobs[pk.Value] = struct{}{}
 				jobs++
 				expected := ledgerNumber(item, "expectedChunks")
 				completed := ledgerNumber(item, "completedChunks")
@@ -141,9 +158,9 @@ func (c *AWSClient) AssertLedgerComplete(ctx context.Context, expectedJobs int) 
 					return fmt.Errorf("unreconciled job: status=%s expected=%d completed=%d failed=%d", status.Value, expected, completed, failed)
 				}
 			} else if strings.HasPrefix(sk.Value, "CHUNK#") {
-				chunks++
-				if status.Value != "COMPLETED" {
-					return fmt.Errorf("unreconciled chunk %s: status=%s", sk.Value, status.Value)
+				pk, _ := item["pk"].(*dynamodbtypes.AttributeValueMemberS)
+				if pk != nil {
+					allChunks[pk.Value] = append(allChunks[pk.Value], item)
 				}
 			}
 		}
@@ -151,6 +168,15 @@ func (c *AWSClient) AssertLedgerComplete(ctx context.Context, expectedJobs int) 
 			break
 		}
 		input.ExclusiveStartKey = out.LastEvaluatedKey
+	}
+	for pk := range currentJobs {
+		for _, item := range allChunks[pk] {
+			chunks++
+			status, _ := item["status"].(*dynamodbtypes.AttributeValueMemberS)
+			if status == nil || status.Value != "COMPLETED" {
+				return fmt.Errorf("unreconciled chunk for %s", pk)
+			}
+		}
 	}
 	if jobs != expectedJobs || chunks < jobs {
 		return fmt.Errorf("unexpected ledger cardinality: jobs=%d (want %d), chunks=%d", jobs, expectedJobs, chunks)
@@ -211,6 +237,46 @@ func (c *AWSClient) SendOrganizerRequest(ctx context.Context, req OrganizerReque
 func (c *AWSClient) PurgeOutputQueue(ctx context.Context) error {
 	if _, err := c.sqsClient.PurgeQueue(ctx, &sqs.PurgeQueueInput{QueueUrl: aws.String(c.outputQueueURL)}); err != nil {
 		return fmt.Errorf("purge output queue: %w", err)
+	}
+	return nil
+}
+
+// DrainOutputForReport consumes a large run without retaining envelopes in memory.
+func (c *AWSClient) DrainOutputForReport(ctx context.Context, expected int, timeout time.Duration) error {
+	deadline, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	count := 0
+	for count < expected {
+		out, err := c.sqsClient.ReceiveMessage(deadline, &sqs.ReceiveMessageInput{
+			QueueUrl: aws.String(c.outputQueueURL), MaxNumberOfMessages: 10, WaitTimeSeconds: 2,
+			MessageAttributeNames: []string{"All"}, MessageSystemAttributeNames: []sqstypes.MessageSystemAttributeName{"SentTimestamp"},
+		})
+		if err != nil {
+			return err
+		}
+		if len(out.Messages) == 0 {
+			continue
+		}
+		entries := make([]sqstypes.DeleteMessageBatchRequestEntry, 0, len(out.Messages))
+		for _, msg := range out.Messages {
+			c.Recorder.Record("output-events", msg)
+			envs, err := expandMessage(aws.ToString(msg.Body))
+			if err != nil {
+				return err
+			}
+			count += len(envs)
+			entries = append(entries, sqstypes.DeleteMessageBatchRequestEntry{Id: msg.MessageId, ReceiptHandle: msg.ReceiptHandle})
+		}
+		deleted, err := c.sqsClient.DeleteMessageBatch(deadline, &sqs.DeleteMessageBatchInput{QueueUrl: aws.String(c.outputQueueURL), Entries: entries})
+		if err != nil {
+			return err
+		}
+		if len(deleted.Failed) > 0 {
+			return fmt.Errorf("delete output batch: %d failures", len(deleted.Failed))
+		}
+	}
+	if count != expected {
+		return fmt.Errorf("received %d events, expected %d", count, expected)
 	}
 	return nil
 }
@@ -331,8 +397,10 @@ func (c *AWSClient) ConsumeAllConcurrent(ctx context.Context, expected, workers 
 		workers = 1
 	}
 
-	// First wait for enough messages to be visible (using approx count).
-	if _, err := c.WaitForCount(ctx, expected, timeout); err != nil {
+	// Queue depth counts physical SQS messages, while a bundle can hold several
+	// logical envelopes. Waiting for one message avoids assuming a packing ratio;
+	// the collector below expands every bundle and enforces the logical count.
+	if _, err := c.WaitForCount(ctx, 1, timeout); err != nil {
 		return nil, err
 	}
 
@@ -341,9 +409,9 @@ func (c *AWSClient) ConsumeAllConcurrent(ctx context.Context, expected, workers 
 	defer cancel()
 	emptyLimit, pollSeconds := 3, int32(5)
 	if !RealAWS() {
-		// LocalStack is deterministic enough for a short quiet period. This
-		// avoids spending 15 seconds per positive scenario in idle long polls.
-		emptyLimit, pollSeconds = 1, 1
+		// Bundled output can arrive in waves as independent chunks complete.
+		// Keep a short quiet period so every logical record is collected.
+		emptyLimit, pollSeconds = 5, 1
 	}
 
 	type result struct {
@@ -366,10 +434,11 @@ func (c *AWSClient) ConsumeAllConcurrent(ctx context.Context, expected, workers 
 					return
 				}
 				out, err := c.sqsClient.ReceiveMessage(ctxDeadline, &sqs.ReceiveMessageInput{
-					QueueUrl:              aws.String(c.outputQueueURL),
-					MaxNumberOfMessages:   10,
-					WaitTimeSeconds:       pollSeconds,
-					MessageAttributeNames: []string{"All"},
+					QueueUrl:                    aws.String(c.outputQueueURL),
+					MaxNumberOfMessages:         10,
+					WaitTimeSeconds:             pollSeconds,
+					MessageAttributeNames:       []string{"All"},
+					MessageSystemAttributeNames: []sqstypes.MessageSystemAttributeName{"SentTimestamp"},
 				})
 				if err != nil {
 					resultCh <- result{err: err}
@@ -391,6 +460,7 @@ func (c *AWSClient) ConsumeAllConcurrent(ctx context.Context, expected, workers 
 				var envs []Envelope
 				var entries []sqstypes.DeleteMessageBatchRequestEntry
 				for _, m := range out.Messages {
+					c.Recorder.Record("output-events", m)
 					expanded, er := expandMessage(aws.ToString(m.Body))
 					if er != nil {
 						resultCh <- result{err: fmt.Errorf("msgId=%s: %w", aws.ToString(m.MessageId), er)}
@@ -481,6 +551,9 @@ func (c *AWSClient) ConsumeAllConcurrent(ctx context.Context, expected, workers 
 	if len(allEnvelopes) < expected {
 		return allEnvelopes, fmt.Errorf("concurrent collect: got %d envelopes, want %d", len(allEnvelopes), expected)
 	}
+	if len(allEnvelopes) > expected {
+		return allEnvelopes, fmt.Errorf("concurrent collect: got %d envelopes, want exactly %d", len(allEnvelopes), expected)
+	}
 	return allEnvelopes, nil
 }
 
@@ -505,10 +578,11 @@ func (c *AWSClient) ConsumeAll(ctx context.Context, expected int, timeout time.D
 
 	for len(envelopes) < limit && emptyRuns < 3 {
 		out, err := c.sqsClient.ReceiveMessage(ctx, &sqs.ReceiveMessageInput{
-			QueueUrl:              aws.String(c.outputQueueURL),
-			MaxNumberOfMessages:   10,
-			WaitTimeSeconds:       1,
-			MessageAttributeNames: []string{"All"},
+			QueueUrl:                    aws.String(c.outputQueueURL),
+			MaxNumberOfMessages:         10,
+			WaitTimeSeconds:             1,
+			MessageAttributeNames:       []string{"All"},
+			MessageSystemAttributeNames: []sqstypes.MessageSystemAttributeName{"SentTimestamp"},
 		})
 		if err != nil {
 			return nil, err
@@ -528,6 +602,7 @@ func (c *AWSClient) ConsumeAll(ctx context.Context, expected int, timeout time.D
 
 		entries := make([]sqstypes.DeleteMessageBatchRequestEntry, 0, len(out.Messages))
 		for _, m := range out.Messages {
+			c.Recorder.Record("output-events", m)
 			var env Envelope
 			if err := json.Unmarshal([]byte(*m.Body), &env); err != nil {
 				return nil, fmt.Errorf("unmarshal envelope (msgId=%s): %w", *m.MessageId, err)
@@ -574,10 +649,11 @@ func (c *AWSClient) ConsumeAllTimed(ctx context.Context, expected int, timeout t
 
 	for len(envelopes) < limit && emptyRuns < 3 {
 		out, receiveErr := c.sqsClient.ReceiveMessage(ctx, &sqs.ReceiveMessageInput{
-			QueueUrl:              aws.String(c.outputQueueURL),
-			MaxNumberOfMessages:   10,
-			WaitTimeSeconds:       1,
-			MessageAttributeNames: []string{"All"},
+			QueueUrl:                    aws.String(c.outputQueueURL),
+			MaxNumberOfMessages:         10,
+			WaitTimeSeconds:             1,
+			MessageAttributeNames:       []string{"All"},
+			MessageSystemAttributeNames: []sqstypes.MessageSystemAttributeName{"SentTimestamp"},
 		})
 		if receiveErr != nil {
 			return nil, waitMs, 0, receiveErr
@@ -597,6 +673,7 @@ func (c *AWSClient) ConsumeAllTimed(ctx context.Context, expected int, timeout t
 
 		entries := make([]sqstypes.DeleteMessageBatchRequestEntry, 0, len(out.Messages))
 		for _, m := range out.Messages {
+			c.Recorder.Record("output-events", m)
 			var env Envelope
 			if unmarshalErr := json.Unmarshal([]byte(*m.Body), &env); unmarshalErr != nil {
 				return nil, waitMs, 0, fmt.Errorf("unmarshal envelope (msgId=%s): %w", *m.MessageId, unmarshalErr)

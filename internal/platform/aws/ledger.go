@@ -160,7 +160,7 @@ func (a *AWS) Replay(ctx context.Context, sourceJobID, newJobID string, chunkIDs
 		return nil, fmt.Errorf("replay chunks not found or incomplete")
 	}
 	sort.Slice(jobs, func(i, j int) bool { return jobs[i].ChunkID < jobs[j].ChunkID })
-	now := time.Now().UTC()
+	now := time.Now().Local()
 	retentionDays := a.LedgerRetentionDays
 	if retentionDays < 1 {
 		retentionDays = 90
@@ -181,7 +181,7 @@ func (a *AWS) Plan(ctx context.Context, plan f2e.JobPlan, chunks []f2e.ChunkJob)
 	}
 	configSnapshotJSON, _ := json.Marshal(plan.ConfigSnapshot)
 	values := map[string]types.AttributeValue{
-		":jobId": text(plan.JobID), ":fileId": text(plan.FileID), ":bucket": text(plan.Bucket), ":key": text(plan.Key), ":versionId": text(plan.VersionID), ":etag": text(plan.ETag),
+		":jobId": text(plan.JobID), ":fileId": text(plan.FileID), ":bucket": text(plan.Bucket), ":key": text(plan.Key), ":versionId": text(plan.VersionID), ":etag": text(plan.ETag), ":size": number(plan.FileSize),
 		":pending": text(string(f2e.JobPending)), ":expected": number(int64(plan.ExpectedChunks)), ":zero": number(0), ":created": text(plan.CreatedAt.Format(time.RFC3339Nano)),
 		":configSnapshot": text(string(configSnapshotJSON)),
 	}
@@ -194,8 +194,8 @@ func (a *AWS) Plan(ctx context.Context, plan f2e.JobPlan, chunks []f2e.ChunkJob)
 	if _, err := a.DynamoDB.UpdateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName: aws.String(a.LedgerTable), Key: ledgerKey(plan.JobID, "JOB"),
 		ConditionExpression:      aws.String("attribute_not_exists(pk) OR (fileId = :fileId AND (attribute_not_exists(expectedChunks) OR expectedChunks = :expected))"),
-		UpdateExpression:         aws.String("SET jobId = :jobId, fileId = :fileId, #bucket = :bucket, #key = :key, versionId = :versionId, etag = :etag, #s = if_not_exists(#s, :pending), expectedChunks = :expected, completedChunks = if_not_exists(completedChunks, :zero), failedChunks = if_not_exists(failedChunks, :zero), recordsProduced = if_not_exists(recordsProduced, :zero), createdAt = if_not_exists(createdAt, :created), expiresAt = if_not_exists(expiresAt, :expiresAt), configSnapshot = if_not_exists(configSnapshot, :configSnapshot), manifestSealed = if_not_exists(manifestSealed, :false)"),
-		ExpressionAttributeNames: map[string]string{"#s": "status", "#bucket": "bucket", "#key": "key"}, ExpressionAttributeValues: func() map[string]types.AttributeValue { values[":false"] = boolAttr(false); return values }(),
+		UpdateExpression:         aws.String("SET jobId = :jobId, fileId = :fileId, #bucket = :bucket, #key = :key, versionId = :versionId, etag = :etag, #size = :size, #s = if_not_exists(#s, :pending), expectedChunks = :expected, completedChunks = if_not_exists(completedChunks, :zero), failedChunks = if_not_exists(failedChunks, :zero), recordsProduced = if_not_exists(recordsProduced, :zero), createdAt = if_not_exists(createdAt, :created), expiresAt = if_not_exists(expiresAt, :expiresAt), configSnapshot = if_not_exists(configSnapshot, :configSnapshot), manifestSealed = if_not_exists(manifestSealed, :false)"),
+		ExpressionAttributeNames: map[string]string{"#s": "status", "#bucket": "bucket", "#key": "key", "#size": "size"}, ExpressionAttributeValues: func() map[string]types.AttributeValue { values[":false"] = boolAttr(false); return values }(),
 	}); err != nil {
 		return err
 	}
@@ -230,7 +230,7 @@ func (a *AWS) Plan(ctx context.Context, plan f2e.JobPlan, chunks []f2e.ChunkJob)
 		ConditionExpression:       aws.String("fileId = :fileId AND expectedChunks = :expected AND (attribute_not_exists(manifestSealed) OR manifestSealed = :false)"),
 		UpdateExpression:          aws.String("SET manifestSealed = :true, sealedAt = :now, #s = :status, pendingChunks = :expected, updatedAt = :now"),
 		ExpressionAttributeNames:  map[string]string{"#s": "status"},
-		ExpressionAttributeValues: map[string]types.AttributeValue{":fileId": text(plan.FileID), ":expected": number(int64(plan.ExpectedChunks)), ":false": boolAttr(false), ":true": boolAttr(true), ":now": text(time.Now().UTC().Format(time.RFC3339Nano)), ":status": text(string(sealedStatus))},
+		ExpressionAttributeValues: map[string]types.AttributeValue{":fileId": text(plan.FileID), ":expected": number(int64(plan.ExpectedChunks)), ":false": boolAttr(false), ":true": boolAttr(true), ":now": text(time.Now().Local().Format(time.RFC3339Nano)), ":status": text(string(sealedStatus))},
 	})
 	if err != nil && !conditionalConflict(err) {
 		return err
@@ -246,7 +246,7 @@ func (a *AWS) MarkChunksScheduled(ctx context.Context, chunks []f2e.ChunkJob) er
 		if chunk.Control != "" {
 			continue
 		}
-		_, err := a.DynamoDB.UpdateItem(ctx, &dynamodb.UpdateItemInput{TableName: aws.String(a.LedgerTable), Key: ledgerKey(chunk.JobID, "CHUNK#"+chunk.ChunkID), ConditionExpression: aws.String("#s = :pending"), UpdateExpression: aws.String("SET scheduledAt = if_not_exists(scheduledAt, :now)"), ExpressionAttributeNames: map[string]string{"#s": "status"}, ExpressionAttributeValues: map[string]types.AttributeValue{":pending": text(string(f2e.ChunkStatePending)), ":now": text(time.Now().UTC().Format(time.RFC3339Nano))}})
+		_, err := a.DynamoDB.UpdateItem(ctx, &dynamodb.UpdateItemInput{TableName: aws.String(a.LedgerTable), Key: ledgerKey(chunk.JobID, "CHUNK#"+chunk.ChunkID), ConditionExpression: aws.String("#s = :pending"), UpdateExpression: aws.String("SET scheduledAt = if_not_exists(scheduledAt, :now)"), ExpressionAttributeNames: map[string]string{"#s": "status"}, ExpressionAttributeValues: map[string]types.AttributeValue{":pending": text(string(f2e.ChunkStatePending)), ":now": text(time.Now().Local().Format(time.RFC3339Nano))}})
 		if err != nil && !conditionalConflict(err) {
 			return err
 		}
@@ -292,7 +292,7 @@ func (a *AWS) MarkSchedulingFailed(ctx context.Context, jobIDs []string, message
 
 func (a *AWS) markJobs(ctx context.Context, jobIDs []string, status f2e.JobStatus, message string) error {
 	for _, jobID := range jobIDs {
-		values := map[string]types.AttributeValue{":status": text(string(status)), ":now": text(time.Now().UTC().Format(time.RFC3339Nano)), ":pending": text(string(f2e.JobPending)), ":planning": text(string(f2e.JobStatePlanning)), ":scheduled": text(string(f2e.JobScheduled))}
+		values := map[string]types.AttributeValue{":status": text(string(status)), ":now": text(time.Now().Local().Format(time.RFC3339Nano)), ":pending": text(string(f2e.JobPending)), ":planning": text(string(f2e.JobStatePlanning)), ":scheduled": text(string(f2e.JobScheduled))}
 		update := "SET #s = :status, updatedAt = :now"
 		condition := "attribute_exists(pk) AND manifestSealed = :sealed AND (#s = :pending OR #s = :planning OR #s = :scheduled)"
 		if status == f2e.JobSchedulingFailed {
@@ -314,7 +314,7 @@ func (a *AWS) markJobs(ctx context.Context, jobIDs []string, status f2e.JobStatu
 func (a *AWS) StartChunk(ctx context.Context, jobID, chunkID string, attempt int) error {
 	// A worker may only start an unclaimed pending attempt. In particular, a
 	// delayed delivery cannot move a completed/failed chunk back to RUNNING.
-	_, err := a.DynamoDB.UpdateItem(ctx, &dynamodb.UpdateItemInput{TableName: aws.String(a.LedgerTable), Key: ledgerKey(jobID, "CHUNK#"+chunkID), ConditionExpression: aws.String("attribute_exists(pk) AND (#s = :pending OR #s = :retryPending)"), UpdateExpression: aws.String("SET #s = :running, attempt = :attempt, startedAt = if_not_exists(startedAt, :now), revision = if_not_exists(revision, :zero) + :one"), ExpressionAttributeNames: map[string]string{"#s": "status"}, ExpressionAttributeValues: map[string]types.AttributeValue{":running": text(string(f2e.ChunkStateRunning)), ":pending": text(string(f2e.ChunkStatePending)), ":retryPending": text(string(f2e.ChunkStateRetryPending)), ":attempt": number(int64(attempt)), ":now": text(time.Now().UTC().Format(time.RFC3339Nano)), ":zero": number(0), ":one": number(1)}})
+	_, err := a.DynamoDB.UpdateItem(ctx, &dynamodb.UpdateItemInput{TableName: aws.String(a.LedgerTable), Key: ledgerKey(jobID, "CHUNK#"+chunkID), ConditionExpression: aws.String("attribute_exists(pk) AND (#s = :pending OR #s = :retryPending)"), UpdateExpression: aws.String("SET #s = :running, attempt = :attempt, startedAt = if_not_exists(startedAt, :now), revision = if_not_exists(revision, :zero) + :one"), ExpressionAttributeNames: map[string]string{"#s": "status"}, ExpressionAttributeValues: map[string]types.AttributeValue{":running": text(string(f2e.ChunkStateRunning)), ":pending": text(string(f2e.ChunkStatePending)), ":retryPending": text(string(f2e.ChunkStateRetryPending)), ":attempt": number(int64(attempt)), ":now": text(time.Now().Local().Format(time.RFC3339Nano)), ":zero": number(0), ":one": number(1)}})
 	if err != nil {
 		status, readErr := a.chunkStatus(ctx, jobID, chunkID)
 		if readErr == nil && status == string(f2e.ChunkStateCompleted) {
@@ -477,7 +477,7 @@ func (a *AWS) ReconcileCompletion(ctx context.Context, jobID string) (*f2e.Compl
 	if terminal == f2e.JobFailed {
 		result = ""
 	}
-	now := time.Now().UTC()
+	now := time.Now().Local()
 	event := completionEventFromItem(out.Item, jobID, terminal, result, counts, now)
 	intent := f2e.CompletionIntent{JobID: jobID, Version: 1, Status: terminal, Event: event, CreatedAt: now}
 	payload, err := json.Marshal(intent)
@@ -564,10 +564,10 @@ func (a *AWS) jobRetention() int64 {
 	if retentionDays < 1 {
 		retentionDays = 90
 	}
-	return time.Now().UTC().Add(time.Duration(retentionDays) * 24 * time.Hour).Unix()
+	return time.Now().Local().Add(time.Duration(retentionDays) * 24 * time.Hour).Unix()
 }
 
-func admissionLeaseExpiry() int64 { return time.Now().UTC().Add(15 * time.Minute).Unix() }
+func admissionLeaseExpiry() int64 { return time.Now().Local().Add(15 * time.Minute).Unix() }
 
 // jobStatus reads the current status of a job aggregate item.
 func (a *AWS) jobStatus(ctx context.Context, jobID string) (string, error) {
@@ -588,7 +588,7 @@ func (a *AWS) advanceJob(ctx context.Context, jobID string, from []f2e.JobStatus
 	names := map[string]string{"#s": "status"}
 	values := map[string]types.AttributeValue{
 		":to":    text(string(to)),
-		":now":   text(time.Now().UTC().Format(time.RFC3339Nano)),
+		":now":   text(time.Now().Local().Format(time.RFC3339Nano)),
 		":one":   number(1),
 		":zero":  number(0),
 		":empty": emptyList(),
@@ -645,7 +645,7 @@ func (a *AWS) Admit(ctx context.Context, receipt f2e.Receipt) (f2e.AcquisitionRe
 		return f2e.Busy, fmt.Errorf("receiptId and fileId are required for admission")
 	}
 	jobID := receipt.FileID
-	now := time.Now().UTC().Format(time.RFC3339Nano)
+	now := time.Now().Local().Format(time.RFC3339Nano)
 	snapshot, err := json.Marshal(receipt.ConfigSnapshot)
 	if err != nil {
 		return f2e.Busy, fmt.Errorf("encode admission configuration snapshot: %w", err)
@@ -666,7 +666,7 @@ func (a *AWS) Admit(ctx context.Context, receipt f2e.Receipt) (f2e.AcquisitionRe
 		"environment":    text(receipt.Environment),
 		"token":          text(jobToken()),
 		"revision":       number(0),
-		"receivedAt":     text(receipt.ReceivedAt.UTC().Format(time.RFC3339Nano)),
+		"receivedAt":     text(receipt.ReceivedAt.Local().Format(time.RFC3339Nano)),
 		"createdAt":      text(now),
 		"updatedAt":      text(now),
 		"expiresAt":      number(a.jobRetention()),
@@ -700,13 +700,13 @@ func (a *AWS) Admit(ctx context.Context, receipt f2e.Receipt) (f2e.AcquisitionRe
 	case f2e.JobStateReceived, f2e.JobStateValidating, f2e.JobStatePlanning:
 		// A crashed organizer leaves a renewable lease rather than a permanent
 		// lock. Only one later delivery can reclaim it after expiry.
-		nowUnix := time.Now().UTC().Unix()
+		nowUnix := time.Now().Local().Unix()
 		_, reclaimErr := a.DynamoDB.UpdateItem(ctx, &dynamodb.UpdateItemInput{
 			TableName: aws.String(a.LedgerTable), Key: ledgerKey(jobID, "JOB"),
 			ConditionExpression:       aws.String("leaseExpiresAt <= :now AND (#s = :received OR #s = :validating OR #s = :planning)"),
 			UpdateExpression:          aws.String("SET #token = :token, leaseExpiresAt = :lease, updatedAt = :updated, revision = if_not_exists(revision, :zero) + :one"),
 			ExpressionAttributeNames:  map[string]string{"#s": "status", "#token": "token"},
-			ExpressionAttributeValues: map[string]types.AttributeValue{":now": number(nowUnix), ":lease": number(admissionLeaseExpiry()), ":token": text(jobToken()), ":updated": text(time.Now().UTC().Format(time.RFC3339Nano)), ":zero": number(0), ":one": number(1), ":received": text(string(f2e.JobStateReceived)), ":validating": text(string(f2e.JobStateValidating)), ":planning": text(string(f2e.JobStatePlanning))},
+			ExpressionAttributeValues: map[string]types.AttributeValue{":now": number(nowUnix), ":lease": number(admissionLeaseExpiry()), ":token": text(jobToken()), ":updated": text(time.Now().Local().Format(time.RFC3339Nano)), ":zero": number(0), ":one": number(1), ":received": text(string(f2e.JobStateReceived)), ":validating": text(string(f2e.JobStateValidating)), ":planning": text(string(f2e.JobStatePlanning))},
 		})
 		if reclaimErr == nil {
 			return f2e.Acquired, nil
@@ -790,7 +790,7 @@ func (a *AWS) BeginPlanning(ctx context.Context, jobID string) error {
 // claim, AlreadyCompleted if the chunk is terminal, or Busy if another worker
 // already holds it.
 func (a *AWS) AcquireChunk(ctx context.Context, jobID, chunkID string) (f2e.AcquisitionResult, error) {
-	now := text(time.Now().UTC().Format(time.RFC3339Nano))
+	now := text(time.Now().Local().Format(time.RFC3339Nano))
 	_, err := a.DynamoDB.UpdateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName:                aws.String(a.LedgerTable),
 		Key:                      ledgerKey(jobID, "CHUNK#"+chunkID),
@@ -856,7 +856,7 @@ func (a *AWS) MarkIntentDelivered(ctx context.Context, jobID string, version int
 	if a.LedgerTable == "" {
 		return fmt.Errorf("ledger table is not configured")
 	}
-	now := time.Now().UTC().Format(time.RFC3339Nano)
+	now := time.Now().Local().Format(time.RFC3339Nano)
 	_, err := a.DynamoDB.UpdateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName: aws.String(a.LedgerTable),
 		Key:       ledgerKey(jobID, intentSortKey(version)),

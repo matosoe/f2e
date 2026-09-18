@@ -33,7 +33,10 @@ for spec in \
   [[ "$data_type" == text ]] && max_record_length=65536
   [[ "$data_type" == json ]] && extra=',"jsonArrayLayout":{"firstFieldName":"id","maxBytesPerElement":65536}'
   [[ "$data_type" == multi-line ]] && extra=',"multiLineLayout":{"breakFields":[{"startByte":0,"lengthBytes":1,"value":"1"}],"lineSeparator":"\u001c","maxBytesPerRecord":65536}'
-  value="{\"bucket\":\"f2e-input\",\"prefix\":\"$prefix/\",\"dataType\":\"$data_type\",\"recordsPerChunk\":1000,\"batchSize\":10,\"maxEventBytes\":1044480,\"maxFileBytes\":$max_file_bytes,\"maxChunkBytes\":$max_chunk_bytes,\"maxRecordLengthBytes\":$max_record_length,\"eventSchemaId\":\"f2e-record\",\"eventSchemaVersion\":\"1\",\"eventFormat\":\"json\"$extra}"
+  # A suíte local mantém a leitura lógica registro a registro, mas empacota
+  # três envelopes por mensagem. Com 100 registros por chunk, os arquivos de
+  # 1.000 registros exercitam aproximadamente dez chunks sem massa excessiva.
+  value="{\"bucket\":\"f2e-input\",\"prefix\":\"$prefix/\",\"dataType\":\"$data_type\",\"recordsPerChunk\":100,\"batchSize\":10,\"maxEventBytes\":1044480,\"maxFileBytes\":$max_file_bytes,\"maxChunkBytes\":$max_chunk_bytes,\"maxRecordLengthBytes\":$max_record_length,\"eventSchemaId\":\"f2e-record\",\"eventSchemaVersion\":\"1\",\"eventFormat\":\"json\",\"outputMode\":\"bundle\",\"maxEnvelopesPerMessage\":3,\"maxMessageBytes\":1044480$extra}"
   awslocal ssm put-parameter --name "$config_path/$prefix" --type String --value "$value" --overwrite >/dev/null
 done
 awslocal dynamodb create-table \
@@ -47,7 +50,7 @@ awslocal s3api put-bucket-notification-configuration --bucket f2e-input --notifi
   "{\"QueueConfigurations\":[{\"Id\":\"configured-prefixes\",\"QueueArn\":\"$intake_arn\",\"Events\":[\"s3:ObjectCreated:*\"],\"Filter\":{\"Key\":{\"FilterRules\":[{\"Name\":\"prefix\",\"Value\":\"example-\"}]}}}]}"
 role='arn:aws:iam::000000000000:role/f2e-lambda-role'
 for name in organizer worker; do
-  zip="/opt/f2e/$name.zip"; env="Variables={AWS_ENDPOINT_URL=http://localstack:4566,AWS_REGION=us-east-1,F2E_ENVIRONMENT=local,F2E_FILE_CONFIG_PATH=/f2e/local/file-config,F2E_GLOBAL_LIMITS_PARAMETER=/f2e/local/global-limits,F2E_RECORDS_PER_CHUNK=1000,F2E_BATCH_SIZE=10,F2E_PUBLISH_CONCURRENCY=8,F2E_MAX_RECEIVE_COUNT=1,F2E_LEDGER_TABLE=f2e-job-ledger,F2E_LEDGER_RETENTION_DAYS=90,F2E_CHUNK_QUEUE_URL=$(qurl chunk-jobs),F2E_OUTPUT_QUEUE_URL=$(qurl output-events),F2E_COMPLETION_QUEUE_URL=$(qurl completion-events)}"
+  zip="/opt/f2e/$name.zip"; env="Variables={AWS_ENDPOINT_URL=http://localstack:4566,AWS_REGION=us-east-1,F2E_ENVIRONMENT=local,F2E_TIMEZONE_OFFSET=${F2E_TIMEZONE_OFFSET:-+00:00},F2E_FILE_CONFIG_PATH=/f2e/local/file-config,F2E_GLOBAL_LIMITS_PARAMETER=/f2e/local/global-limits,F2E_RECORDS_PER_CHUNK=100,F2E_BATCH_SIZE=10,F2E_OUTPUT_MODE=bundle,F2E_MAX_ENVELOPES_PER_MESSAGE=3,F2E_MAX_MESSAGE_BYTES=1044480,F2E_PUBLISH_CONCURRENCY=8,F2E_MAX_RECEIVE_COUNT=1,F2E_LEDGER_TABLE=f2e-job-ledger,F2E_LEDGER_RETENTION_DAYS=90,F2E_CHUNK_QUEUE_URL=$(qurl chunk-jobs),F2E_OUTPUT_QUEUE_URL=$(qurl output-events),F2E_COMPLETION_QUEUE_URL=$(qurl completion-events)}"
   awslocal lambda get-function --function-name "f2e-$name" >/dev/null 2>&1 && awslocal lambda update-function-code --function-name "f2e-$name" --zip-file "fileb://$zip" >/dev/null || awslocal lambda create-function --function-name "f2e-$name" --runtime provided.al2 --handler bootstrap --role "$role" --zip-file "fileb://$zip" --timeout 300 --memory-size 1024 --environment "$env" >/dev/null
 done
 for name in organizer worker; do

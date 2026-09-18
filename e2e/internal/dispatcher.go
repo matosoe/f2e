@@ -8,6 +8,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
+	sqstypes "github.com/aws/aws-sdk-go-v2/service/sqs/types"
 )
 
 // MessageDispatcher polls the shared output SQS queue in a background goroutine
@@ -109,16 +110,18 @@ func (d *MessageDispatcher) pollOnce() {
 	defer cancel()
 
 	out, err := d.client.sqsClient.ReceiveMessage(ctx, &sqs.ReceiveMessageInput{
-		QueueUrl:              aws.String(d.client.outputQueueURL),
-		MaxNumberOfMessages:   10,
-		WaitTimeSeconds:       5,
-		MessageAttributeNames: []string{"All"},
+		QueueUrl:                    aws.String(d.client.outputQueueURL),
+		MaxNumberOfMessages:         10,
+		WaitTimeSeconds:             5,
+		MessageAttributeNames:       []string{"All"},
+		MessageSystemAttributeNames: []sqstypes.MessageSystemAttributeName{"SentTimestamp"},
 	})
 	if err != nil {
 		return
 	}
 
 	for _, msg := range out.Messages {
+		d.client.Recorder.Record("output-events", msg)
 		d.routeMessage(*msg.Body, *msg.ReceiptHandle)
 	}
 }
