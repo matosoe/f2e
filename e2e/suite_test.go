@@ -34,7 +34,7 @@ import (
 	"time"
 
 	"github.com/cucumber/godog"
-	"github.com/f2e/f2e/e2e/internal"
+	"github.com/matosoe/f2e/e2e/internal"
 )
 
 func TestE2E(t *testing.T) {
