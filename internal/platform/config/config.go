@@ -6,8 +6,8 @@ import (
 	"os"
 	"strconv"
 
-	"github.com/f2e/f2e/internal/application/port"
-	"github.com/f2e/f2e/internal/domain/f2e"
+	"github.com/matosoe/f2e/internal/application/port"
+	"github.com/matosoe/f2e/internal/domain/f2e"
 )
 
 type Config struct {

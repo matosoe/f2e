@@ -12,13 +12,13 @@ import (
 
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
-	"github.com/f2e/f2e/internal/adapter/inbound/s3event"
-	"github.com/f2e/f2e/internal/application/organizer"
-	"github.com/f2e/f2e/internal/application/port"
-	"github.com/f2e/f2e/internal/domain/f2e"
-	awsclient "github.com/f2e/f2e/internal/platform/aws"
-	"github.com/f2e/f2e/internal/platform/config"
-	"github.com/f2e/f2e/internal/platform/runtimeclock"
+	"github.com/matosoe/f2e/internal/adapter/inbound/s3event"
+	"github.com/matosoe/f2e/internal/application/organizer"
+	"github.com/matosoe/f2e/internal/application/port"
+	"github.com/matosoe/f2e/internal/domain/f2e"
+	awsclient "github.com/matosoe/f2e/internal/platform/aws"
+	"github.com/matosoe/f2e/internal/platform/config"
+	"github.com/matosoe/f2e/internal/platform/runtimeclock"
 )
 
 var service organizer.Service

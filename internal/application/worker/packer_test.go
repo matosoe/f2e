@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/f2e/f2e/internal/application/port"
-	"github.com/f2e/f2e/internal/domain/f2e"
+	"github.com/matosoe/f2e/internal/application/port"
+	"github.com/matosoe/f2e/internal/domain/f2e"
 )
 
 // makeEnvelope creates a minimal test envelope with the given eventId.

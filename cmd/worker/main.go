@@ -12,11 +12,11 @@ import (
 
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
-	"github.com/f2e/f2e/internal/application/worker"
-	awsclient "github.com/f2e/f2e/internal/platform/aws"
-	"github.com/f2e/f2e/internal/platform/config"
-	"github.com/f2e/f2e/internal/platform/processmetrics"
-	"github.com/f2e/f2e/internal/platform/runtimeclock"
+	"github.com/matosoe/f2e/internal/application/worker"
+	awsclient "github.com/matosoe/f2e/internal/platform/aws"
+	"github.com/matosoe/f2e/internal/platform/config"
+	"github.com/matosoe/f2e/internal/platform/processmetrics"
+	"github.com/matosoe/f2e/internal/platform/runtimeclock"
 )
 
 var service worker.Service

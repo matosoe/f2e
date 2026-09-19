@@ -1,4 +1,4 @@
-module github.com/f2e/f2e/e2e
+module github.com/matosoe/f2e/e2e
 
 go 1.26.7
 

@@ -24,7 +24,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
-	"github.com/f2e/f2e/internal/domain/f2e"
+	"github.com/matosoe/f2e/internal/domain/f2e"
 )
 
 // JobSummary is the operational view of a job returned by query operations.

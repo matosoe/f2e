@@ -5,8 +5,8 @@ import (
 	"io"
 	"strings"
 
-	"github.com/f2e/f2e/internal/domain/f2e"
-	"github.com/f2e/f2e/internal/domain/lineio"
+	"github.com/matosoe/f2e/internal/domain/f2e"
+	"github.com/matosoe/f2e/internal/domain/lineio"
 )
 
 const DefaultLineSeparator = "\x1C"

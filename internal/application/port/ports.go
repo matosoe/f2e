@@ -6,7 +6,7 @@ import (
 	"errors"
 	"io"
 
-	"github.com/f2e/f2e/internal/domain/f2e"
+	"github.com/matosoe/f2e/internal/domain/f2e"
 )
 
 // ErrAlreadyCompleted tells a Worker to acknowledge a duplicate chunk delivery

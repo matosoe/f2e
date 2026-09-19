@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/f2e/f2e/internal/domain/f2e"
-	"github.com/f2e/f2e/internal/domain/multiline"
+	"github.com/matosoe/f2e/internal/domain/f2e"
+	"github.com/matosoe/f2e/internal/domain/multiline"
 )
 
 func layout(breakFields, includeFields, ignoreFields []f2e.LineMatchField) f2e.MultiLineLayout {

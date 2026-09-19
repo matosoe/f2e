@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/f2e/f2e/internal/domain/f2e"
-	"github.com/f2e/f2e/internal/platform/config"
+	"github.com/matosoe/f2e/internal/domain/f2e"
+	"github.com/matosoe/f2e/internal/platform/config"
 )
 
 func TestPlanCreatesNewJobForReplayButPreservesFileIdentity(t *testing.T) {

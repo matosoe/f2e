@@ -11,8 +11,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/f2e/f2e/internal/application/port"
-	"github.com/f2e/f2e/internal/domain/f2e"
+	"github.com/matosoe/f2e/internal/application/port"
+	"github.com/matosoe/f2e/internal/domain/f2e"
 )
 
 // bundlePacker retains the already serialised representation of each envelope.

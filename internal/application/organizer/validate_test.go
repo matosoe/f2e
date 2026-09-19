@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/f2e/f2e/internal/domain/f2e"
+	"github.com/matosoe/f2e/internal/domain/f2e"
 )
 
 // baseGlobalLimits returns a valid GlobalLimits for use in validation tests.

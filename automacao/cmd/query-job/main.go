@@ -19,9 +19,9 @@ import (
 	"os"
 	"time"
 
-	"github.com/f2e/f2e/internal/domain/f2e"
-	awsclient "github.com/f2e/f2e/internal/platform/aws"
-	"github.com/f2e/f2e/internal/platform/config"
+	"github.com/matosoe/f2e/internal/domain/f2e"
+	awsclient "github.com/matosoe/f2e/internal/platform/aws"
+	"github.com/matosoe/f2e/internal/platform/config"
 )
 
 func main() {

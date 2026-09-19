@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/f2e/f2e/blob/main/documentacao/schemas/envelope-v1.schema.json",
+  "$id": "https://github.com/matosoe/f2e/blob/main/documentacao/schemas/envelope-v1.schema.json",
   "title": "F2E output envelope v1",
   "type": "object",
   "additionalProperties": false,

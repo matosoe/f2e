@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/f2e/f2e/internal/application/port"
+	"github.com/matosoe/f2e/internal/application/port"
 )
 
 // concurrentSender dispatches SQS SendMessageBatch calls with bounded

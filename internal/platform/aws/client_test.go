@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/f2e/f2e/internal/application/port"
-	"github.com/f2e/f2e/internal/domain/f2e"
+	"github.com/matosoe/f2e/internal/application/port"
+	"github.com/matosoe/f2e/internal/domain/f2e"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)

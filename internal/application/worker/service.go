@@ -14,11 +14,11 @@ import (
 	"path"
 	"time"
 
-	"github.com/f2e/f2e/internal/application/port"
-	"github.com/f2e/f2e/internal/domain/f2e"
-	"github.com/f2e/f2e/internal/domain/lineio"
-	"github.com/f2e/f2e/internal/domain/multiline"
-	"github.com/f2e/f2e/internal/platform/config"
+	"github.com/matosoe/f2e/internal/application/port"
+	"github.com/matosoe/f2e/internal/domain/f2e"
+	"github.com/matosoe/f2e/internal/domain/lineio"
+	"github.com/matosoe/f2e/internal/domain/multiline"
+	"github.com/matosoe/f2e/internal/platform/config"
 )
 
 type Service struct {

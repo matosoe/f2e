@@ -11,7 +11,7 @@ import (
 	awsSDK "github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
-	"github.com/f2e/f2e/internal/domain/f2e"
+	"github.com/matosoe/f2e/internal/domain/f2e"
 )
 
 func TestResolvePrefixConfigurationSelectsMostSpecificPrefix(t *testing.T) {

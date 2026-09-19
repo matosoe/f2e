@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/f2e/f2e/internal/application/port"
-	"github.com/f2e/f2e/internal/domain/f2e"
+	"github.com/matosoe/f2e/internal/application/port"
+	"github.com/matosoe/f2e/internal/domain/f2e"
 )
 
 // ValidateGlobalLimits checks that the global limits are within acceptable bounds.

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/f2e/f2e/internal/domain/lineio"
+	"github.com/matosoe/f2e/internal/domain/lineio"
 )
 
 // collect gathers all records returned by ReadLines into a slice of [offset, raw] pairs.
